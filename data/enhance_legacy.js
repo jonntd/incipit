@@ -4830,12 +4830,12 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     // lines — letting them all flow into a single tool entry hijacks the
     // viewport (violates "reading first, tool second"). Grep results are
     // especially scannable and repetitive, so keep the inline allowance
-    // tighter than generic tool output: first 7 lines (or up to 1800 chars
-    // at last full-line boundary), with full output only at ≤ 9 lines and
-    // ≤ 1800 chars.
-    const GREP_OUT_KEEP_LINES = 7;
-    const GREP_OUT_FULL_BELOW_LINES = 9;
-    const GREP_OUT_KEEP_CHARS = 1800;
+    // tighter than generic tool output: first 5 lines (or up to 1200 chars
+    // at last full-line boundary), with full output only at ≤ 7 lines and
+    // ≤ 1200 chars.
+    const GREP_OUT_KEEP_LINES = 5;
+    const GREP_OUT_FULL_BELOW_LINES = 7;
+    const GREP_OUT_KEEP_CHARS = 1200;
 
     function applyGrepOutTruncation(outContent, fullText) {
       const lines = fullText.split('\n');
@@ -4864,7 +4864,9 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
       }
       const keptLineCount = kept.split('\n').length;
       const hidden = lines.length - keptLineCount;
-      const moreText = '+ ' + hidden + ' more line' + (hidden === 1 ? '' : 's');
+      const moreText = hidden > 0
+        ? '+ ' + hidden + ' more line' + (hidden === 1 ? '' : 's')
+        : '+ more text';
       const lessText = '− show less';
 
       // Toggle state: button sits at the visual tail of the OUT content
@@ -4939,14 +4941,11 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     // CSS-clipping them in place and parking a sibling toggle button
     // outside the clip box.
     //
-    // Generic tool output keeps a slightly looser allowance than Grep:
-    // grep results are repetitive scan lists and use their own tighter
-    // `applyGrepOutTruncation` path above.
-    //   - ≤ 15 logical lines or ≤ 3000 chars: full body, no toggle
-    //   - otherwise: clip to ~12 lines worth of vertical space
-    //     (CSS `max-height: 18em`, since cells render at 11px / 1.5
-    //     line-height = 16.5px per line, 12 × 16.5 ≈ 198px = 18em)
-    //     and append "+ N more lines" toggle
+    // Generic tool output uses the middle allowance: full at ≤ 9 logical
+    // lines and ≤ 1800 chars, otherwise clip to ~7 visual lines. Bash /
+    // PowerShell input commands get a tighter command profile: full at ≤ 4
+    // lines and ≤ 900 chars, otherwise clip to ~3 visual lines. Diff tools
+    // and Grep have their own previews.
     //
     // CSS clip vs text-replace: text-replace would lose syntax
     // highlighting that hljs may apply on the host <pre>, and would
@@ -4954,20 +4953,38 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     // leaves DOM untouched; we only set/clear our own data-attr and
     // add a sibling button. Idempotent across re-decorates.
     // ----------------------------------------------------------------
-    const TOOL_OUT_KEEP_LINES = 12;
-    const TOOL_OUT_FULL_BELOW_LINES = 15;
-    const TOOL_OUT_KEEP_CHARS = 3000;
+    const TOOL_ROW_PREVIEW = {
+      generic: { keepLines: 7, fullBelowLines: 9, keepChars: 1800 },
+      command: { keepLines: 3, fullBelowLines: 4, keepChars: 900 },
+    };
 
-    function applyToolBodyTruncation(grid) {
+    function applyToolBodyTruncation(grid, toolName) {
       const rows = grid.querySelectorAll('[class*="toolBodyRow"]');
       for (const row of rows) {
         const content = row.querySelector('[class*="toolBodyRowContent"]');
         if (!content) continue;
-        applyToolRowTruncation(content);
+        applyToolRowTruncation(content, toolRowPreviewProfile(row, toolName));
       }
     }
 
-    function applyToolRowTruncation(content) {
+    function toolRowPreviewProfile(row, toolName) {
+      const label = (row.querySelector('[class*="toolBodyRowLabel"]')?.textContent || '')
+        .trim()
+        .toLowerCase();
+      const isCommandInput =
+        (toolName === 'Bash' || toolName === 'PowerShell') &&
+        (label === 'in' || label === 'input' || label === 'command');
+      return isCommandInput ? TOOL_ROW_PREVIEW.command : TOOL_ROW_PREVIEW.generic;
+    }
+
+    function toolMoreText(hiddenLines) {
+      return hiddenLines > 0
+        ? '+ ' + hiddenLines + ' more line' + (hiddenLines === 1 ? '' : 's')
+        : '+ more text';
+    }
+
+    function applyToolRowTruncation(content, profile) {
+      profile = profile || TOOL_ROW_PREVIEW.generic;
       // Pick the inner element to clip. OUT cells wrap their pre in a
       // `toolResult_*` div; IN cells expose <pre> directly.
       const clipTarget = content.querySelector('[class*="toolResult_"]') ||
@@ -4976,14 +4993,15 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
 
       const fullText = clipTarget.textContent || '';
       const lines = fullText.split('\n');
-      const tooLong = lines.length > TOOL_OUT_FULL_BELOW_LINES ||
-                      fullText.length > TOOL_OUT_KEEP_CHARS;
+      const tooLong = lines.length > profile.fullBelowLines ||
+                      fullText.length > profile.keepChars;
 
       // Short content — clear any prior truncation state, drop button.
       if (!tooLong) {
         if (clipTarget.getAttribute('data-incipit-tool-out-clipped') !== null) {
           clipTarget.removeAttribute('data-incipit-tool-out-clipped');
         }
+        clipTarget.style.removeProperty('--incipit-tool-out-preview-max-height');
         const oldBtn = content.querySelector(':scope > [data-incipit-tool-out-more]');
         if (oldBtn) oldBtn.remove();
         if (content.dataset.userExpanded) delete content.dataset.userExpanded;
@@ -5000,12 +5018,16 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
         if (clipTarget.getAttribute('data-incipit-tool-out-clipped') !== '1') {
           clipTarget.setAttribute('data-incipit-tool-out-clipped', '1');
         }
+        clipTarget.style.setProperty(
+          '--incipit-tool-out-preview-max-height',
+          (profile.keepLines * 1.5) + 'em'
+        );
       }
 
       // Toggle button. Lives as the LAST child of the content cell so
       // overflow:hidden on clipTarget never swallows it.
-      const hidden = Math.max(lines.length - TOOL_OUT_KEEP_LINES, 0);
-      const moreText = '+ ' + hidden + ' more line' + (hidden === 1 ? '' : 's');
+      const hidden = Math.max(lines.length - profile.keepLines, 0);
+      const moreText = toolMoreText(hidden);
       const lessText = '− show less'; // U+2212 minus, visually paired with '+'
       const btnText = expanded ? lessText : moreText;
 
@@ -5024,7 +5046,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
             // OUT body shrinks by hundreds of pixels.
             const beforeTop = btn.getBoundingClientRect().top;
             content.dataset.userExpanded = '0';
-            applyToolRowTruncation(content);
+            applyToolRowTruncation(content, profile);
             const newBtn = content.querySelector(':scope > [data-incipit-tool-out-more]');
             if (newBtn) {
               const afterTop = newBtn.getBoundingClientRect().top;
@@ -5037,7 +5059,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
             }
           } else {
             content.dataset.userExpanded = '1';
-            applyToolRowTruncation(content);
+            applyToolRowTruncation(content, profile);
           }
         });
         content.appendChild(btn);
@@ -5459,8 +5481,8 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
       if (diff) diff.remove();
     }
 
-    const WRITE_DIFF_PREVIEW_LINES = 16;
-    const WRITE_DIFF_FULL_BELOW_LINES = 18;
+    const WRITE_DIFF_PREVIEW_LINES = 10;
+    const WRITE_DIFF_FULL_BELOW_LINES = 12;
     let writeDiffModal = null;
 
     function writeDiffLines(text) {

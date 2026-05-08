@@ -1079,12 +1079,14 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 
 /* Our truncation clip. Set by `applyToolRowTruncation` on the inner
    <pre> (IN cell) or `toolResult_*` wrapper (OUT cell) when content
-   exceeds 15 lines / 3000 chars. 18em at 11px font-size = 198px ≈
-   12 lines × 1.5 line-height. Toggle button is a sibling of the
-   clip target inside the cell, so overflow:hidden never swallows it. */
+   exceeds the row's preview profile: generic tool rows use 9/7 lines,
+   Bash/PowerShell IN commands use 4/3. JS writes the exact max-height
+   as a CSS variable so the command profile can be shorter than output.
+   Toggle button is a sibling of the clip target inside the cell, so
+   overflow:hidden never swallows it. */
 [data-incipit-tool-use] [data-incipit-tool-out-clipped="1"] {
   display: block;
-  max-height: 18em;
+  max-height: var(--incipit-tool-out-preview-max-height, 10.5em);
   overflow: hidden;
 }
 
@@ -1432,7 +1434,7 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 
 [data-incipit-diff-island][data-incipit-write-diff-clipped="1"] [data-incipit-diff-island-body],
 [data-incipit-write-diff][data-incipit-write-diff-clipped="1"] [data-incipit-write-diff-body] {
-  max-height: var(--incipit-write-diff-preview-max-height, 24.8em);
+  max-height: var(--incipit-write-diff-preview-max-height, 15.5em);
   overflow: hidden;
 }
 
