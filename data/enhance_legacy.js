@@ -3741,8 +3741,45 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     return `${index}/${tabs.length}`;
   }
 
+  function askMessagesScroller() {
+    const candidates = [
+      document.querySelector(SEL.messagesContainer),
+      ...document.querySelectorAll('[class*="messagesContainer_"]'),
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      if (candidate.scrollHeight > candidate.clientHeight + 1) return candidate;
+    }
+    return null;
+  }
+
+  function captureAskScrollState() {
+    const scroller = askMessagesScroller();
+    if (!scroller) return null;
+    const distanceToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (distanceToBottom <= 4) return null;
+    return { scroller, scrollTop: scroller.scrollTop };
+  }
+
+  function restoreAskScrollState(state) {
+    if (!state || !state.scroller || !state.scroller.isConnected) return;
+    const maxScrollTop = Math.max(0, state.scroller.scrollHeight - state.scroller.clientHeight);
+    state.scroller.scrollTop = Math.min(state.scrollTop, maxScrollTop);
+  }
+
+  function scheduleAskScrollRestore(state) {
+    if (!state) return;
+    restoreAskScrollState(state);
+    requestAnimationFrame(() => {
+      restoreAskScrollState(state);
+      requestAnimationFrame(() => restoreAskScrollState(state));
+    });
+    setTimeout(() => restoreAskScrollState(state), 50);
+    setTimeout(() => restoreAskScrollState(state), 140);
+  }
+
   function setAskRequestCollapsed(container, collapsed) {
     if (!container) return;
+    const scrollState = captureAskScrollState();
     if (collapsed) container.setAttribute('data-incipit-ask-collapsed', '1');
     else container.removeAttribute('data-incipit-ask-collapsed');
     const toggle = container.querySelector('[data-incipit-ask-collapse-btn]');
@@ -3759,6 +3796,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
         try { first && first.focus && first.focus({ preventScroll: true }); } catch (_) {}
       });
     }
+    scheduleAskScrollRestore(scrollState);
   }
 
   function ensureAskCollapsedBar(container) {
