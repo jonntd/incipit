@@ -3224,6 +3224,21 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
   // Measure the bubble, classify it as `short` or `long`, and replace the
   // host truncation UI with a custom show-more row when needed.
   const LONG_THRESHOLD_PX = 600;
+  const NATIVE_USER_BUBBLE_EXPAND_SELECTOR =
+    '[class*="contentWrapper_"][class*="clickable_"], ' +
+    '[class*="expandButton_"], [class*="collapseButton_"]';
+  const NATIVE_USER_BUBBLE_CLICK_ALLOW_SELECTOR = [
+    '.claude-show-more-row',
+    '.claude-user-copy-btn-row',
+    '.incipit-transcript-action-row',
+    '[data-incipit-action-dropdown]',
+    'a[href]',
+    'button:not([class*="expandButton_"]):not([class*="collapseButton_"])',
+    'input',
+    'textarea',
+    'select',
+    '[contenteditable="true"]',
+  ].join(', ');
 
   // Walk up to find the nearest scrollable ancestor. Falls back to `window`
   // if no ancestor scrolls. Claude Code keeps the transcript in an overflow
@@ -3278,6 +3293,23 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     });
     row.appendChild(btn);
     bubble.appendChild(row);
+  }
+
+  function suppressNativeUserBubbleExpandClick(event) {
+    const target = event.target;
+    if (!target || !target.closest) return;
+    const nativeExpand = target.closest(NATIVE_USER_BUBBLE_EXPAND_SELECTOR);
+    if (!nativeExpand || !nativeExpand.closest(SEL.userBubble)) return;
+    if (target.closest(NATIVE_USER_BUBBLE_CLICK_ALLOW_SELECTOR)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === 'function') {
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function setupUserBubbleNativeActionSuppression() {
+    document.addEventListener('click', suppressNativeUserBubbleExpandClick, true);
   }
 
   function classifyUserBubble(bubble) {
@@ -6898,6 +6930,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     setupDiffSideBars();
     setupBusyStateObserver();
     setupFileDragReferenceHint();
+    setupUserBubbleNativeActionSuppression();
     setupTranscriptActionDebugTools();
   }
 

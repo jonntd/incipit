@@ -2622,9 +2622,18 @@ pre code {
    flex gap remains. */
 [data-incipit-truncation-gradient],
 [data-incipit-user-bubble] [data-incipit-host-show-more],
-[data-incipit-user-bubble] [data-incipit-host-show-more],
-[data-incipit-user-bubble] [data-incipit-host-show-more] {
+[data-incipit-user-bubble] [class*="expandButton_"],
+[data-incipit-user-bubble] [class*="collapseButton_"] {
   display: none !important;
+  pointer-events: none !important;
+}
+
+/* The host keeps its collapsed user-message content wrapper clickable even
+   after we hide its show-more button. Keep text selection looking like text;
+   JS also suppresses the stale click handler so the custom row is the only
+   expansion affordance. */
+[data-incipit-user-bubble] [class*="contentWrapper_"][class*="clickable_"] {
+  cursor: text !important;
 }
 
 /* Measuring, short, and expanded states should not be clipped. */
@@ -2834,6 +2843,13 @@ pre code {
    ============================================================ */
 [data-incipit-user-message-container] [class*="actionButton_"] {
   display: none !important;
+  pointer-events: none !important;
+  cursor: default !important;
+}
+[data-incipit-user-message-container] [class*="container_v2"]:has([class*="actionButton_"]) {
+  display: none !important;
+  pointer-events: none !important;
+  cursor: default !important;
 }
 /* Popup is body-portaled so it's not under the user-message
    container in the DOM tree — but with the trigger button hidden
