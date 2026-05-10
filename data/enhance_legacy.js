@@ -3688,6 +3688,192 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     } catch (_) {}
   }
 
+  // ========== 8a. AskUserQuestion permission panel ==========
+  //
+  // Claude Code's AskUserQuestion permission UI shares the generic
+  // permissionRequestContainer shell, then renders a navigation strip and a
+  // questionsContainer inside it. Keep this enhancement scoped to that shape:
+  // Bash/Edit/Plan permission requests should retain their normal flow.
+  const ASK_PERMISSION_CONTAINER_SELECTOR = '[class*="permissionRequestContainer_"]';
+  const ASK_QUESTIONS_SELECTOR = '[class*="questionsContainer_"]';
+  const ASK_NAV_SELECTOR = '[class*="navigationBar_"]';
+  const ASK_CLOSE_SELECTOR = 'button[aria-label="Close"]';
+  const ASK_TITLE_SELECTOR = '[class*="questionTextLarge_"]';
+  const ASK_NAV_TAB_SELECTOR = '[class*="navTab_"]';
+  const ASK_NAV_LABEL_SELECTOR = '[class*="navTabLabel_"]';
+  const ASK_ACTIVE_TAB_SELECTOR = '[class*="navTabActive_"]';
+
+  const pendingAskRequests = new Set();
+  let askRequestScanScheduled = false;
+
+  function isAskRequestContainer(el) {
+    return !!(
+      el &&
+      el.nodeType === 1 &&
+      el.matches &&
+      el.matches(ASK_PERMISSION_CONTAINER_SELECTOR) &&
+      el.querySelector &&
+      el.querySelector(ASK_QUESTIONS_SELECTOR)
+    );
+  }
+
+  function closestAskRequestContainer(el) {
+    if (!el || !el.closest) return null;
+    const container = el.closest(ASK_PERMISSION_CONTAINER_SELECTOR);
+    return isAskRequestContainer(container) ? container : null;
+  }
+
+  function askRequestTitle(container) {
+    const question = container.querySelector(ASK_TITLE_SELECTOR);
+    const text = question && question.textContent ? question.textContent.trim() : '';
+    if (text) return text;
+    const active = container.querySelector(`${ASK_ACTIVE_TAB_SELECTOR} ${ASK_NAV_LABEL_SELECTOR}`);
+    const activeText = active && active.textContent ? active.textContent.trim() : '';
+    return activeText || 'Question';
+  }
+
+  function askRequestPosition(container) {
+    const tabs = Array.from(container.querySelectorAll(ASK_NAV_TAB_SELECTOR))
+      .filter(tab => tab.querySelector && tab.querySelector(ASK_NAV_LABEL_SELECTOR));
+    if (tabs.length <= 1) return '';
+    const activeIndex = tabs.findIndex(tab => tab.matches && tab.matches(ASK_ACTIVE_TAB_SELECTOR));
+    const index = activeIndex >= 0 ? activeIndex + 1 : 1;
+    return `${index}/${tabs.length}`;
+  }
+
+  function setAskRequestCollapsed(container, collapsed) {
+    if (!container) return;
+    if (collapsed) container.setAttribute('data-incipit-ask-collapsed', '1');
+    else container.removeAttribute('data-incipit-ask-collapsed');
+    const toggle = container.querySelector('[data-incipit-ask-collapse-btn]');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      toggle.title = collapsed ? 'Expand' : 'Collapse';
+    }
+    const bar = container.querySelector('[data-incipit-ask-collapsed-bar]');
+    if (collapsed) {
+      try { (bar || container).focus({ preventScroll: true }); } catch (_) {}
+    } else {
+      requestAnimationFrame(() => {
+        const first = container.querySelector('[role="radio"], [role="checkbox"]');
+        try { first && first.focus && first.focus({ preventScroll: true }); } catch (_) {}
+      });
+    }
+  }
+
+  function ensureAskCollapsedBar(container) {
+    let bar = container.querySelector(':scope > [data-incipit-ask-collapsed-bar]');
+    if (!bar) {
+      bar = document.createElement('button');
+      bar.type = 'button';
+      bar.className = 'incipit-ask-collapsed-bar';
+      bar.setAttribute('data-incipit-ask-collapsed-bar', '');
+      bar.setAttribute('aria-label', 'Expand question panel');
+      const title = document.createElement('span');
+      title.className = 'incipit-ask-collapsed-title';
+      const meta = document.createElement('span');
+      meta.className = 'incipit-ask-collapsed-meta';
+      bar.appendChild(title);
+      bar.appendChild(meta);
+      bar.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        setAskRequestCollapsed(container, false);
+      });
+      container.appendChild(bar);
+    }
+    const title = bar.querySelector('.incipit-ask-collapsed-title');
+    const meta = bar.querySelector('.incipit-ask-collapsed-meta');
+    if (title) title.textContent = askRequestTitle(container);
+    if (meta) meta.textContent = askRequestPosition(container);
+    return bar;
+  }
+
+  function ensureAskCollapseButton(container) {
+    const nav = container.querySelector(ASK_NAV_SELECTOR);
+    if (!nav) return null;
+    let btn = container.querySelector('[data-incipit-ask-collapse-btn]');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'incipit-ask-collapse-btn';
+      btn.setAttribute('data-incipit-ask-collapse-btn', '');
+      btn.setAttribute('aria-label', 'Collapse question panel');
+      btn.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        setAskRequestCollapsed(container, true);
+      });
+    }
+    if (btn.parentElement !== nav) {
+      const close = nav.querySelector(ASK_CLOSE_SELECTOR);
+      nav.insertBefore(btn, close || null);
+    }
+    btn.setAttribute(
+      'aria-expanded',
+      container.getAttribute('data-incipit-ask-collapsed') === '1' ? 'false' : 'true',
+    );
+    btn.title = container.getAttribute('data-incipit-ask-collapsed') === '1'
+      ? 'Expand'
+      : 'Collapse';
+    return btn;
+  }
+
+  function decorateAskRequest(container) {
+    if (!isAskRequestContainer(container)) return;
+    container.setAttribute('data-incipit-ask-request', '');
+    ensureAskCollapsedBar(container);
+    ensureAskCollapseButton(container);
+  }
+
+  function enqueueAskRequestContainer(container) {
+    if (!container || pendingAskRequests.has(container)) return;
+    pendingAskRequests.add(container);
+    if (askRequestScanScheduled) return;
+    askRequestScanScheduled = true;
+    requestAnimationFrame(() => {
+      askRequestScanScheduled = false;
+      const items = Array.from(pendingAskRequests);
+      pendingAskRequests.clear();
+      for (const item of items) {
+        if (!item.isConnected) continue;
+        try { decorateAskRequest(item); } catch (_) {}
+      }
+    });
+  }
+
+  function enqueueAskRequestRoots(root, includeDescendants = true) {
+    if (!root || root.nodeType !== 1) return;
+    if (isAskRequestContainer(root)) enqueueAskRequestContainer(root);
+    const closest = closestAskRequestContainer(root);
+    if (closest) enqueueAskRequestContainer(closest);
+    if (!includeDescendants || !root.querySelectorAll) return;
+    root.querySelectorAll(ASK_PERMISSION_CONTAINER_SELECTOR).forEach(container => {
+      if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
+    });
+  }
+
+  function setupAskRequestRefinement() {
+    if (document.body) enqueueAskRequestRoots(document.body);
+    const mo = new MutationObserver(muts => {
+      for (let i = 0; i < muts.length; i++) {
+        const m = muts[i];
+        if (m.type === 'childList') {
+          enqueueAskRequestRoots(m.target, false);
+          for (const node of m.addedNodes) enqueueAskRequestRoots(node);
+        } else if (m.type === 'attributes') {
+          enqueueAskRequestRoots(m.target, false);
+        }
+      }
+    });
+    mo.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'aria-checked'],
+    });
+  }
+
   // ========== 8b. permission indicator softening ==========
   //
   // Class names for bypass and danger indicators vary across versions.
@@ -6931,6 +7117,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     setupBusyStateObserver();
     setupFileDragReferenceHint();
     setupUserBubbleNativeActionSuppression();
+    setupAskRequestRefinement();
     setupTranscriptActionDebugTools();
   }
 

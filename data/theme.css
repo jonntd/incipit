@@ -2144,6 +2144,307 @@ pre code {
 }
 
 /* ============================================================
+   AskUserQuestion permission panel.
+
+   Official Claude Code renders this as a generic permission request with a
+   question navigator and option list inside. Give the whole ask block its own
+   raised surface, then let JS add a compact collapsed strip for users who want
+   the prompt out of the way while reading the surrounding context.
+   ============================================================ */
+[data-incipit-ask-request],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) {
+  background: #2c2c2a !important;
+  background-color: #2c2c2a !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 8px !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34),
+              0 2px 8px rgba(0, 0, 0, 0.22) !important;
+  padding: 9px 10px !important;
+  margin-bottom: 8px !important;
+  overflow: hidden !important;
+}
+
+[data-incipit-ask-request] [class*="permissionRequestContainerBackground_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="permissionRequestContainerBackground_"] {
+  display: none !important;
+}
+
+[data-incipit-ask-request] [class*="permissionRequestContent_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="permissionRequestContent_"] {
+  font-family: var(--incipit-body-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  line-height: 1.52 !important;
+}
+
+[data-incipit-ask-request] [class*="navigationBar_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="navigationBar_"] {
+  gap: 8px !important;
+  margin: -1px 0 8px 0 !important;
+  padding: 0 0 5px 0 !important;
+}
+
+[data-incipit-ask-request] [class*="navTab_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="navTab_"] {
+  color: rgba(245, 242, 232, 0.72) !important;
+  border-bottom-color: transparent !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  font-weight: 400 !important;
+}
+
+[data-incipit-ask-request] [class*="navTabActive_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="navTabActive_"] {
+  color: #F5F2E8 !important;
+  border-bottom-color: rgba(217, 119, 87, 0.72) !important;
+}
+
+[data-incipit-ask-request] [class*="navTabAnswered_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="navTabAnswered_"] {
+  color: rgba(245, 242, 232, 0.52) !important;
+}
+
+[data-incipit-ask-request] [class*="questionsContainer_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="questionsContainer_"] {
+  border: none !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  gap: 14px !important;
+  max-height: min(40vh, 330px) !important;
+  scrollbar-width: thin;
+}
+
+[data-incipit-ask-request] [class*="questionBlock_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="questionBlock_"] {
+  gap: 9px !important;
+}
+
+[data-incipit-ask-request] [class*="questionTextLarge_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="questionTextLarge_"] {
+  color: #F5F2E8 !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  font-weight: 400 !important;
+  line-height: 1.48 !important;
+}
+
+[data-incipit-ask-request] [class*="optionsContainer_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="optionsContainer_"] {
+  gap: 5px !important;
+}
+
+[data-incipit-ask-request] [class*="option_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="option_"] {
+  gap: 9px !important;
+  padding: 7px 8px !important;
+  border-radius: 6px !important;
+  background: rgba(18, 18, 18, 0.22) !important;
+  background-color: rgba(18, 18, 18, 0.22) !important;
+  color: #F5F2E8 !important;
+}
+
+[data-incipit-ask-request] [class*="option_"]:hover,
+[data-incipit-ask-request] [class*="option_"]:focus,
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="option_"]:hover,
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="option_"]:focus {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  outline: none !important;
+}
+
+[data-incipit-ask-request] [class*="optionLabel_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="optionLabel_"] {
+  color: #F5F2E8 !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  font-weight: 400 !important;
+}
+
+[data-incipit-ask-request] [class*="optionDescription_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="optionDescription_"] {
+  color: rgba(245, 242, 232, 0.58) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1.45 !important;
+}
+
+[data-incipit-ask-request] [class*="radio_"],
+[data-incipit-ask-request] [class*="checkbox_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) [class*="radio_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) [class*="checkbox_"] {
+  border-color: rgba(245, 242, 232, 0.32) !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+[data-incipit-ask-request] [class*="radioChecked_"],
+[data-incipit-ask-request] [class*="checkboxChecked_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="radioChecked_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="checkboxChecked_"] {
+  border-color: #d97757 !important;
+  background-color: transparent !important;
+  color: #d97757 !important;
+}
+
+[data-incipit-ask-request] [class*="radioDot_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) [class*="radioDot_"] {
+  background: #d97757 !important;
+  background-color: #d97757 !important;
+}
+
+[data-incipit-ask-request] [class*="otherInput_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) [class*="otherInput_"] {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  border: none !important;
+  color: #F5F2E8 !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 242, 232, 0.10) !important;
+}
+
+[data-incipit-ask-request] [class*="buttonContainer_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="buttonContainer_"] {
+  gap: 7px !important;
+  margin-top: 10px !important;
+}
+
+[data-incipit-ask-request] [class*="button_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) [class*="button_"] {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  color: #F5F2E8 !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  line-height: 1.35 !important;
+  font-weight: 400 !important;
+}
+
+[data-incipit-ask-request] [class*="button_"]:hover:not(:disabled),
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="button_"]:hover:not(:disabled) {
+  filter: none !important;
+  background: #1a1a19 !important;
+  background-color: #1a1a19 !important;
+}
+
+[data-incipit-ask-request] [class*="keyboardHints_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="keyboardHints_"] {
+  color: rgba(245, 242, 232, 0.42) !important;
+  margin-top: 8px !important;
+}
+
+.incipit-ask-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(245, 242, 232, 0.58);
+  cursor: pointer;
+}
+.incipit-ask-collapse-btn::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.incipit-ask-collapse-btn:hover,
+.incipit-ask-collapse-btn:focus-visible {
+  background: #121212;
+  color: #F5F2E8;
+  outline: none;
+}
+
+.incipit-ask-collapsed-bar {
+  display: none;
+}
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] {
+  padding: 0 !important;
+  max-height: none !important;
+}
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > [class*="permissionRequestContainerBackground_"],
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > [class*="permissionRequestContent_"],
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > [class*="buttonContainer_"],
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > [class*="keyboardHints_"] {
+  display: none !important;
+}
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  color: #F5F2E8;
+  font-family: var(--incipit-body-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar::before {
+  content: "";
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  background: rgba(245, 242, 232, 0.62);
+  -webkit-mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5 10 7.5 15 12.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5 10 7.5 15 12.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.incipit-ask-collapsed-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.incipit-ask-collapsed-meta {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: rgba(245, 242, 232, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:hover,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible {
+  background: rgba(18, 18, 18, 0.36);
+  outline: none;
+}
+
+/* ============================================================
    Permission-mode indicators.
    ============================================================ */
 [data-claude-softened] {
