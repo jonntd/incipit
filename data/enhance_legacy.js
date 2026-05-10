@@ -6167,6 +6167,14 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
       return toolNameEl ? toolNameEl.parentElement : titleWrap;
     }
 
+    function findToolSummaryInlineHost(summary, titleWrap) {
+      const toolNameEl = titleWrap && (
+        titleWrap.querySelector('[class*="toolNameText_"]') ||
+        titleWrap.querySelector('[data-incipit-tool-name]')
+      );
+      return (toolNameEl && toolNameEl.parentElement) || titleWrap || summary;
+    }
+
     function ensureInjectedToolPath(summary, spec, index) {
       const host = findToolPathInsertHost(summary);
       if (!host) return null;
@@ -6626,11 +6634,12 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
 
       if (!summary) return;
 
-      // Append stats inside the title wrapper (summary's first <span>), not
-      // as a sibling of it. The host summary is a flex container with the
-      // title wrapper set to `flex: 1`, so a sibling span would get pushed
-      // to the far-right end of the row. Going inside the title wrapper
-      // lands our stats in the inline text flow, right after the path.
+      // Append stats inside the same inline host as the tool name, not as a
+      // sibling of the outer title wrapper. The host summary is a flex row,
+      // and some tools (Agent / Task-like rows) wrap name + secondary text in
+      // an inner block div; landing after that block pushes the chevron onto a
+      // second line. The inline host keeps name, fingerprint, stats, chevron
+      // in one text flow.
       const titleWrap = summary.firstElementChild;
       if (!titleWrap) return;
 
@@ -6647,7 +6656,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
         // this. Grep already returned.
         // Idempotent across re-decorates.
         const grid = body.querySelector('[class*="toolBodyGrid"]');
-        if (grid) applyToolBodyTruncation(grid);
+        if (grid) applyToolBodyTruncation(grid, data.block.name);
       }
 
       if (el.dataset.incipitToolBound !== '1') {
@@ -6680,6 +6689,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
       // and since those passes immediately re-add them the resulting
       // attribute churn would flip `innerHTML !== html` back to true
       // every frame and spin up a 60-fps rebuild loop.
+      const inlineHost = findToolSummaryInlineHost(summary, titleWrap);
       let statsEl = summary.querySelector('[data-incipit-tool-stats]');
       let addedSpan, removedSpan, chevronSpan;
       if (!statsEl) {
@@ -6694,8 +6704,11 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
         statsEl.appendChild(addedSpan);
         statsEl.appendChild(removedSpan);
         statsEl.appendChild(chevronSpan);
-        titleWrap.appendChild(statsEl);
+        inlineHost.appendChild(statsEl);
       } else {
+        if (inlineHost && statsEl.parentElement !== inlineHost) {
+          inlineHost.appendChild(statsEl);
+        }
         addedSpan = statsEl.querySelector('[data-incipit-tool-added]');
         removedSpan = statsEl.querySelector('[data-incipit-tool-removed]');
         chevronSpan = statsEl.querySelector('[data-incipit-tool-chevron]');
@@ -6754,7 +6767,9 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
             if (!fpSpan) {
               fpSpan = document.createElement('span');
               fpSpan.setAttribute('data-incipit-tool-fingerprint', '');
-              titleWrap.insertBefore(fpSpan, statsEl);
+            }
+            if (fpSpan.parentElement !== inlineHost) {
+              inlineHost.insertBefore(fpSpan, statsEl);
             }
             if (fpSpan.textContent !== fpText) fpSpan.textContent = fpText;
           } else if (fpSpan) {
@@ -6763,7 +6778,9 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
           if (!labelSpan) {
             labelSpan = document.createElement('span');
             labelSpan.setAttribute('data-incipit-tool-fingerprint-label', '');
-            titleWrap.insertBefore(labelSpan, statsEl);
+          }
+          if (labelSpan.parentElement !== inlineHost) {
+            inlineHost.insertBefore(labelSpan, statsEl);
           }
           if (labelSpan.textContent !== label) labelSpan.textContent = label;
         }

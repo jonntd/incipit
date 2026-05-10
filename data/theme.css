@@ -663,11 +663,15 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 
 /* Host uses flex with a `flex: 1` plaintext span inside the title wrapper
    for Bash / LSP / TodoWrite rows, which justifies any trailing sibling
-   (our stats) to the far-right of the summary. Force the title wrapper
+   (our stats) to the far-right of the summary. Some Agent/Task-style rows
+   put name + secondary text inside an inner block div. Force both wrappers
    back to inline flow whenever we've injected stats so the `+N -M` and
    chevron land immediately after the title text, matching the Edit case
    where the host uses an inline-only `toolNameTextSecondary` span. */
 [data-incipit-tool-summary]:has([data-incipit-tool-stats]) > span:first-child {
+  display: inline !important;
+}
+[data-incipit-tool-summary]:has([data-incipit-tool-stats]) > span:first-child > div:has([data-incipit-tool-name]) {
   display: inline !important;
 }
 [data-incipit-tool-summary]:has([data-incipit-tool-stats]) [data-incipit-tool-name] {
