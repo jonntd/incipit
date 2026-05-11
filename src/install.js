@@ -840,29 +840,38 @@ function patchExtensionJs(content) {
 // own `index.css`, so the very first paint already wears incipit's
 // colours.
 //
-// Anchor: the host template contains exactly one
-//   <link href="${H}" rel="stylesheet">
-// where `H` is the `vscode.Uri` for `webview/index.css`. We append our
-// own links right after it; their hrefs reuse `H.toString().replace(...)`
-// so we never depend on a minified-variable name beyond `H` itself
-// (which is the same name the anchor already uses).
+// Anchor: the host template contains exactly one stylesheet link for
+// `webview/index.css`, rendered as:
+//   <link href="${X}" rel="stylesheet">
+// where `X` is the minified variable that already points at the webview URI.
+// We append our own links right after it and derive their hrefs from that
+// captured expression. The important invariant is the HTML/resource shape,
+// not the variable name: Claude Code 2.1.133 used `${H}`, while 2.1.138
+// moved the visible link to `${L}` after splitting raw Uri and webview Uri.
 //
 // Strip-and-reinject pattern: a prior apply may have written one
 // palette's links; if the user later switched palette and re-runs apply,
-// we strip any prior `H.toString().replace(...)` link block back to the
+// we strip any prior `*.toString().replace(...)` link block back to the
 // bare anchor before injecting the active palette's set. Idempotent
 // when the active palette already matches.
 function patchExtensionHtmlHead(content, theme) {
   const palette = (theme && theme.palette) === 'warm-white' ? 'warm-white' : 'warm-black';
   const wantWarmWhite = palette === 'warm-white';
 
-  const ANCHOR = '<link href="${H}" rel="stylesheet">';
-  // Match anchor + 1..N of our own injected links (each carries the
-  // unique `H.toString().replace` marker).
+  // Match the host stylesheet anchor by shape, but capture its actual
+  // minified href variable instead of assuming a stable name.
+  const ANCHOR_RE = /<link href="\$\{([A-Za-z_$][\w$]*)\}" rel="stylesheet">/g;
+  // Match anchor + 1..N of our own injected links. Current links carry stable
+  // ids; older in-flight builds are still stripped by the `toString().replace`
+  // marker so palette switching remains idempotent.
   const STRIP_RE =
-    /(<link href="\$\{H\}" rel="stylesheet">)(?:<link [^>]*\$\{H\.toString\(\)\.replace[^>]*>)+/;
-  // Single-anchor sanity check after stripping.
-  const ANCHOR_RE = /<link href="\$\{H\}" rel="stylesheet">/g;
+    /(<link href="\$\{[A-Za-z_$][\w$]*\}" rel="stylesheet">)(?:<link [^>]*(?:claude-enhance-styles-link|incipit-warm-white-link|\.toString\(\)\.replace\(\/index\\\.css)[^>]*>)+/g;
+  // If the host stylesheet anchor drifts again, `HTML head 提速` should
+  // degrade to runtime CSS injection instead of aborting the whole install.
+  // Remove any old incipit head links by id/marker first so `enhance.js` can
+  // safely append fresh links after the webview boots.
+  const ORPHAN_INCIPIT_LINK_RE =
+    /<link [^>]*(?:id="(?:claude-enhance-styles-link|incipit-warm-white-link)"|\.toString\(\)\.replace\(\/index\\\.css[^>]*(?:theme\.css|warm-white-override\.css))[^>]*>/g;
 
   // The replace regexes anchor to end-of-string (with optional `?` /
   // `#`) so we only match the filename segment, never a parent path
@@ -871,11 +880,11 @@ function patchExtensionHtmlHead(content, theme) {
   // these ids, the first-paint head links work, but enhance.js later appends a
   // duplicate copy of the same stylesheet, forcing an avoidable CSS parse /
   // cascade pass right in the boot window.
-  const themeLink =
-    '<link id="claude-enhance-styles-link" href="${H.toString().replace(/index\\.css(?=$|[?#])/,\'theme.css\')}" rel="stylesheet">';
-  const wwLink = wantWarmWhite
-    ? '<link id="incipit-warm-white-link" href="${H.toString().replace(/index\\.css(?=$|[?#])/,\'warm-white-override.css\')}" rel="stylesheet">'
-    : '';
+  function stylesheetLink(id, hrefVar, fileName) {
+    return '<link id="' + id + '" href="${' +
+      hrefVar + ".toString().replace(/index\\.css(?=$|[?#])/,'" +
+      fileName + '\')}" rel="stylesheet">';
+  }
   // NOTE — `modulepreload` was tried as a third hint to start fetching
   // enhance.js in parallel with index.js, but webview CSP is
   // `script-src 'nonce-${D}' https://cdnjs.cloudflare.com` (no 'self'),
@@ -889,8 +898,6 @@ function patchExtensionHtmlHead(content, theme) {
   // nonce into the link tag (currently we have no clean way to thread
   // `${D}` into the patched fragment without more parser surgery).
 
-  const desired = ANCHOR + themeLink + wwLink;
-
   // Always strip-and-reinject. Using `content.includes(desired)` as
   // the "already" check was wrong because `desired` could be a prefix
   // of the actual patched block (e.g., a previous apply added an
@@ -898,16 +905,27 @@ function patchExtensionHtmlHead(content, theme) {
   // the stale extra link would be left in place. Strip first, then
   // compare the stripped text to "what would be patched fresh" — if
   // they're equivalent we report 已存在 without writing.
-  const stripped = content.replace(STRIP_RE, '$1');
-  const baseMatches = stripped.match(ANCHOR_RE) || [];
+  const stripped = content
+    .replace(STRIP_RE, '$1')
+    .replace(ORPHAN_INCIPIT_LINK_RE, '');
+  const baseMatches = Array.from(stripped.matchAll(ANCHOR_RE));
   if (baseMatches.length !== 1) {
-    throw new Error(
-      `HTML head anchor not unique after strip (found ${baseMatches.length}); ` +
-      'aborting head-link patch.',
-    );
+    const status = stripped === content ? '已跳过' : '已清理并跳过';
+    return [
+      stripped,
+      `${padLabel('HTML head 提速')}: ${status} (anchor ${baseMatches.length}; runtime CSS fallback)`,
+    ];
   }
 
-  const updated = stripped.replace(ANCHOR, desired);
+  const anchor = baseMatches[0][0];
+  const hrefVar = baseMatches[0][1];
+  const themeLink = stylesheetLink('claude-enhance-styles-link', hrefVar, 'theme.css');
+  const wwLink = wantWarmWhite
+    ? stylesheetLink('incipit-warm-white-link', hrefVar, 'warm-white-override.css')
+    : '';
+  const desired = anchor + themeLink + wwLink;
+
+  const updated = stripped.replace(anchor, desired);
   if (updated === content) {
     return [content, `${padLabel('HTML head 提速')}: 已存在 (${palette})`];
   }
