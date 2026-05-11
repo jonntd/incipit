@@ -9,6 +9,13 @@ const { StringDecoder } = require('string_decoder');
 const GLOBAL_KEY = '__cceBadge';
 const POLL_INTERVAL_MS = 1500;
 const JSONL_SUFFIX = '.jsonl';
+const EDIT_ACTIVITY_SCHEMA_VERSION = 1;
+const EDIT_ACTIVITY_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-edit-activity-v1');
+const PROJECT_INDEX_BATCH_FILES = 2;
+const PROJECT_INDEX_BATCH_BYTES = 8 * 1024 * 1024;
+const PROJECT_INDEX_BATCH_DELAY_MS = 45;
+const PROJECT_INDEX_SCAN_MIN_INTERVAL_MS = 12000;
+const GLOBAL_INDEX_SCAN_MIN_INTERVAL_MS = 60000;
 // Keep rollback tokens long enough to cover Claude Code's 5-minute
 // launch/byte watchdog path, but cap entries because each one keeps
 // the original transcript text in memory until send succeeds or fails.
@@ -40,6 +47,11 @@ function createState() {
     commIdentities: new Map(),
     targetCache: new Map(),
     parsers: new Map(),
+    editProjectIndexes: new Map(),
+    editProjectJobs: new Map(),
+    editProjectScanAt: new Map(),
+    editGlobalJob: null,
+    editGlobalScanAt: 0,
     truncateRollbacks: new Map(),
     log(message) {
       try { console.log(`[cceBadge] ${message}`); } catch (_) {}
@@ -82,6 +94,10 @@ function handleWebviewMessage(comm, state, message) {
     handleBadgeIdentityUpdate(comm, state, message);
     return;
   }
+  if (message.type === 'edit_activity_identity_update') {
+    handleEditActivityIdentityUpdate(comm, state, message);
+    return;
+  }
   if (message.type === 'diff_line_info_request') {
     handleDiffLineInfoRequest(comm, state, message);
     return;
@@ -113,6 +129,30 @@ function handleBadgeIdentityUpdate(comm, state, message) {
     return;
   }
   sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory);
+}
+
+function handleEditActivityIdentityUpdate(comm, state, message) {
+  const sessionId = typeof message.sessionId === 'string' ? message.sessionId : '';
+  const includeProject = message.includeProject === true;
+  if (!sessionId) {
+    state.commIdentities.delete(comm);
+    sendEditActivityPayload(comm, emptyEditActivityPayload(null, null));
+    return;
+  }
+  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+  const previous = state.commIdentities.get(comm);
+  if (previous && previous.sessionId === sessionId && previous.cwd === cwd && previous.target) {
+    sendCurrentEditActivityPayload(state, comm, previous.target, sessionId, includeProject);
+    return;
+  }
+  const target = resolveTargetFromIdentity(sessionId, cwd);
+  const identity = { sessionId, cwd, target };
+  state.commIdentities.set(comm, identity);
+  if (!target) {
+    sendEditActivityPayload(comm, emptyEditActivityPayload(sessionId, null));
+    return;
+  }
+  sendCurrentEditActivityPayload(state, comm, target, sessionId, includeProject);
 }
 
 function handleDiffLineInfoRequest(comm, state, message) {
@@ -984,9 +1024,24 @@ function poll(state) {
     for (const target of targets) {
       if (!target || !fs.existsSync(target)) continue;
       const stat = fs.statSync(target);
-      if (isCacheHit(state, target, stat.mtimeMs)) continue;
+      if (isCacheHit(state, target, stat)) continue;
+      const before = state.targetCache.get(target);
+      const beforeSnapshot = before ? {
+        payload: before.payload,
+        usageVersion: before.usageVersion,
+        editPayload: before.editPayload,
+        editVersion: before.editVersion,
+      } : null;
       const payload = buildCachedPayload(state, target, stat, false);
-      broadcastTarget(state, target, payload);
+      const after = state.targetCache.get(target);
+      if (badgeCacheChanged(beforeSnapshot, after)) broadcastTarget(state, target, payload);
+      const parser = state.parsers.get(target);
+      if (parser) {
+        const editPayload = buildCachedEditActivityPayload(state, target, parser);
+        persistProjectEditActivitySession(state, target, parser, stat);
+        const afterEdit = state.targetCache.get(target);
+        if (editCacheChanged(beforeSnapshot, afterEdit)) broadcastEditActivityTarget(state, target, editPayload);
+      }
     }
   } catch (error) {
     state.log(`tick error: ${error}`);
@@ -1051,11 +1106,13 @@ function resolveTargetFromIdentity(sessionId, cwd) {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-function isCacheHit(state, filePath, mtimeMs) {
+function isCacheHit(state, filePath, stat) {
   const cached = state.targetCache.get(filePath);
   return (
     cached &&
-    cached.mtimeMs === mtimeMs &&
+    stat &&
+    cached.size === stat.size &&
+    cached.mtimeMs === stat.mtimeMs &&
     cached.payload
   );
 }
@@ -1066,22 +1123,63 @@ function cachedBadgePayload(state, target, includeHistory) {
   return includeHistory ? (cached.historyPayload || null) : (cached.payload || null);
 }
 
+function badgeCacheChanged(before, after) {
+  if (!after || !after.payload) return false;
+  if (!before || !before.payload) return true;
+  return before.usageVersion !== after.usageVersion;
+}
+
+function editCacheChanged(before, after) {
+  if (!after || !after.editPayload) return false;
+  if (!before || !before.editPayload) return true;
+  return before.editVersion !== after.editVersion;
+}
+
 function buildCachedPayload(state, target, stat, includeHistory) {
   const cached = state.targetCache.get(target);
-  const sameMtime = cached && cached.mtimeMs === stat.mtimeMs;
-  if (sameMtime) {
+  const sameFileStat = cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs;
+  if (sameFileStat) {
     const hit = includeHistory ? cached.historyPayload : cached.payload;
     if (hit) return hit;
   }
 
   const parser = updateParser(state, target, stat);
-  const next = sameMtime ? cached : { mtimeMs: stat.mtimeMs, payload: null, historyPayload: null };
+  const sameUsageVersion = cached && cached.usageVersion === parser.usageVersion;
+  const next = sameFileStat ? cached : {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    usageVersion: parser.usageVersion,
+    editVersion: cached ? cached.editVersion : undefined,
+    payload: sameUsageVersion ? cached.payload : null,
+    historyPayload: sameUsageVersion ? cached.historyPayload : null,
+    editPayload: cached ? cached.editPayload : null,
+  };
+  next.size = stat.size;
+  next.mtimeMs = stat.mtimeMs;
+  next.usageVersion = parser.usageVersion;
   if (!next.payload) next.payload = buildPayload(parser, false) || emptyBadgePayload(null, target);
   if (includeHistory && !next.historyPayload) {
     next.historyPayload = buildPayload(parser, true) || emptyBadgePayload(null, target);
   }
   state.targetCache.set(target, next);
   return includeHistory ? next.historyPayload : next.payload;
+}
+
+function buildCachedEditActivityPayload(state, target, parser) {
+  const cached = state.targetCache.get(target) || {
+    size: parser.size || 0,
+    mtimeMs: parser.mtimeMs || 0,
+    usageVersion: parser.usageVersion || 0,
+    payload: null,
+    historyPayload: null,
+  };
+  if (cached.editPayload && cached.editVersion === parser.editVersion) {
+    return cached.editPayload;
+  }
+  cached.editVersion = parser.editVersion;
+  cached.editPayload = buildEditActivityPayload(parser);
+  state.targetCache.set(target, cached);
+  return cached.editPayload;
 }
 
 function sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory) {
@@ -1092,12 +1190,35 @@ function sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory)
   try {
     const stat = fs.statSync(target);
     let payload = cachedBadgePayload(state, target, includeHistory);
-    if (!payload || !isCacheHit(state, target, stat.mtimeMs)) {
+    if (!payload || !isCacheHit(state, target, stat)) {
       payload = buildCachedPayload(state, target, stat, includeHistory);
     }
     sendPayload(comm, annotateBadgePayload(payload, sessionId, target));
   } catch (_) {
     sendPayload(comm, emptyBadgePayload(sessionId, target));
+  }
+}
+
+function sendCurrentEditActivityPayload(state, comm, target, sessionId, includeProject) {
+  if (!target || !fs.existsSync(target)) {
+    sendEditActivityPayload(comm, emptyEditActivityPayload(sessionId, target || null));
+    return;
+  }
+  try {
+    const stat = fs.statSync(target);
+    const parser = updateParser(state, target, stat);
+    const conversation = annotateEditActivityPayload(
+      buildCachedEditActivityPayload(state, target, parser),
+      sessionId,
+      target
+    );
+    persistProjectEditActivitySession(state, target, parser, stat);
+    const project = includeProject
+      ? buildProjectEditActivityResponse(state, target, comm, sessionId)
+      : null;
+    sendEditActivityPayload(comm, editActivityEnvelope(conversation, project));
+  } catch (_) {
+    sendEditActivityPayload(comm, emptyEditActivityPayload(sessionId, target));
   }
 }
 
@@ -1112,10 +1233,39 @@ function emptyBadgePayload(sessionId, target) {
   };
 }
 
+function emptyEditActivityPayload(sessionId, target) {
+  return {
+    empty: true,
+    sessionId: sessionId || null,
+    src: target || null,
+    ts: Date.now(),
+    totals: { added: 0, removed: 0, edits: 0, activeDays: 0 },
+    days: [],
+  };
+}
+
 function annotateBadgePayload(payload, sessionId, target) {
   if (!payload || typeof payload !== 'object') return emptyBadgePayload(sessionId, target);
   if (!sessionId || payload.sessionId === sessionId) return payload;
   return { ...payload, sessionId };
+}
+
+function annotateEditActivityPayload(payload, sessionId, target) {
+  if (!payload || typeof payload !== 'object') return emptyEditActivityPayload(sessionId, target);
+  return {
+    ...payload,
+    sessionId: sessionId || payload.sessionId || null,
+    src: target || payload.src || null,
+  };
+}
+
+function editActivityEnvelope(conversation, project) {
+  const base = conversation || emptyEditActivityPayload(null, null);
+  return {
+    ...base,
+    conversation: base,
+    project: project || null,
+  };
 }
 
 // JSONL session files are append-only in steady state. Reading the whole file
@@ -1149,16 +1299,27 @@ function updateParser(state, target, stat) {
   return parser;
 }
 
-function createParser(filePath) {
+function createParser(filePath, options = {}) {
   return {
     path: filePath,
+    editOnly: options.editOnly === true,
     size: 0,
     mtimeMs: 0,
     partialLine: '',
+    partialChunks: [],
+    partialLength: 0,
     decoder: new StringDecoder('utf8'),
     byRequest: new Map(),
     order: [],
     sums: { fresh: 0, cw: 0, cr: 0, out: 0 },
+    latestUsageId: null,
+    projectCwd: null,
+    editPending: new Map(),
+    editCounted: new Map(),
+    editDays: new Map(),
+    editSums: { added: 0, removed: 0, edits: 0 },
+    usageVersion: 0,
+    editVersion: 0,
   };
 }
 
@@ -1169,20 +1330,64 @@ function appendNewBytes(parser, filePath, newSize) {
   try {
     const buffer = Buffer.alloc(length);
     fs.readSync(fd, buffer, 0, length, parser.size);
-    const text = parser.partialLine + parser.decoder.write(buffer);
     parser.size = newSize;
-    const lines = text.split('\n');
-    parser.partialLine = lines.pop() || '';
-    for (let i = 0; i < lines.length; i++) processLine(parser, lines[i]);
+    const decoded = parser.decoder.write(buffer);
+    appendDecodedText(parser, decoded);
   } finally {
     fs.closeSync(fd);
   }
 }
 
+function appendDecodedText(parser, decoded) {
+  if (!decoded) return;
+  // Streaming writes may extend one unfinished JSONL row for many ticks.
+  // Keep those chunks as an array so each poll does not repeatedly flatten
+  // the whole growing assistant message before a newline arrives.
+  if (decoded.indexOf('\n') === -1) {
+    appendPartialLine(parser, decoded);
+    return;
+  }
+  const text = takePartialLine(parser) + decoded;
+  const lines = text.split('\n');
+  setPartialLine(parser, lines.pop() || '');
+  for (let i = 0; i < lines.length; i++) processLine(parser, lines[i]);
+}
+
+function appendPartialLine(parser, text) {
+  if (!text) return;
+  parser.partialChunks.push(text);
+  parser.partialLength += text.length;
+  parser.partialLine = parser.partialLength <= 4096
+    ? parser.partialLine + text
+    : '';
+}
+
+function setPartialLine(parser, text) {
+  parser.partialChunks = text ? [text] : [];
+  parser.partialLength = text ? text.length : 0;
+  parser.partialLine = text && text.length <= 4096 ? text : '';
+}
+
+function takePartialLine(parser) {
+  if (!parser.partialChunks.length) return parser.partialLine || '';
+  const text = parser.partialChunks.join('');
+  setPartialLine(parser, '');
+  return text;
+}
+
 function processLine(parser, line) {
   if (!line) return;
-  const entry = parseUsageEntry(line);
+  const entry = parseJsonLine(line);
   if (!entry) return;
+  if (typeof entry.cwd === 'string' && entry.cwd) parser.projectCwd = entry.cwd;
+  processUsageEntry(parser, entry);
+  processEditActivityEntry(parser, entry);
+}
+
+function processUsageEntry(parser, entry) {
+  if (parser.editOnly) return;
+  if (!entry || entry.type !== 'assistant') return;
+  if (!entry.message?.usage) return;
   const requestId = entry.requestId || `idx${parser.order.length}`;
   const usage = entry.message.usage;
   const ts = entry.timestamp || '';
@@ -1192,6 +1397,11 @@ function processLine(parser, line) {
     parser.sums.cw    -= old.usage.cache_creation_input_tokens || 0;
     parser.sums.cr    -= old.usage.cache_read_input_tokens || 0;
     parser.sums.out   -= old.usage.output_tokens || 0;
+    if (parser.order[parser.order.length - 1] !== requestId) {
+      const idx = parser.order.indexOf(requestId);
+      if (idx !== -1) parser.order.splice(idx, 1);
+      parser.order.push(requestId);
+    }
   } else {
     parser.order.push(requestId);
   }
@@ -1200,17 +1410,161 @@ function processLine(parser, line) {
   parser.sums.cr    += usage.cache_read_input_tokens || 0;
   parser.sums.out   += usage.output_tokens || 0;
   parser.byRequest.set(requestId, { usage, ts });
+  parser.latestUsageId = requestId;
+  parser.usageVersion += 1;
 }
 
-function parseUsageEntry(line) {
+function parseJsonLine(line) {
   try {
-    const entry = JSON.parse(line);
-    if (!entry || entry.type !== 'assistant') return null;
-    if (!entry.message?.usage) return null;
-    return entry;
+    return JSON.parse(line);
   } catch (_) {
     return null;
   }
+}
+
+function processEditActivityEntry(parser, entry) {
+  if (!entry || typeof entry !== 'object') return;
+  const expectedSessionId = path.basename(parser.path, JSONL_SUFFIX);
+  if (entry.sessionId && entry.sessionId !== expectedSessionId) return;
+  const blocks = Array.isArray(entry.message?.content) ? entry.message.content : [];
+  if (!blocks.length) return;
+
+  if (entry.type === 'assistant') {
+    for (const block of blocks) {
+      if (!block || block.type !== 'tool_use') continue;
+      const item = editActivityFromToolUse(block, entry.timestamp || '');
+      if (!item || !item.id) continue;
+      if (parser.editCounted.has(item.id)) continue;
+      parser.editPending.set(item.id, item);
+    }
+    return;
+  }
+
+  if (entry.type !== 'user') return;
+  for (const block of blocks) {
+    if (!block || block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
+    const item = parser.editPending.get(block.tool_use_id);
+    if (!item) continue;
+    parser.editPending.delete(block.tool_use_id);
+    if (toolResultIsError(block)) continue;
+    countEditActivity(parser, item);
+  }
+}
+
+function toolResultIsError(block) {
+  return block && block.is_error === true;
+}
+
+function editActivityFromToolUse(block, ts) {
+  if (!block || typeof block.id !== 'string') return null;
+  const name = block.name;
+  if (name !== 'Write' && name !== 'Edit' && name !== 'MultiEdit') return null;
+  const input = block.input && typeof block.input === 'object' ? block.input : null;
+  if (!input) return null;
+  const stats = computeEditActivityStats(name, input);
+  if (!stats) return null;
+  return {
+    id: block.id,
+    name,
+    ts: ts || '',
+    day: localDayKey(ts),
+    added: stats.added || 0,
+    removed: stats.removed || 0,
+  };
+}
+
+function computeEditActivityStats(name, input) {
+  if (name === 'Write') {
+    if (typeof input.content !== 'string') return null;
+    return { added: countTextLines(input.content), removed: 0 };
+  }
+  if (name === 'Edit') {
+    if (typeof input.old_string !== 'string' && typeof input.new_string !== 'string') return null;
+    return lineDiffStats(
+      typeof input.old_string === 'string' ? input.old_string : '',
+      typeof input.new_string === 'string' ? input.new_string : ''
+    );
+  }
+  if (name === 'MultiEdit') {
+    if (typeof input.old_string === 'string' || typeof input.new_string === 'string') {
+      return lineDiffStats(
+        typeof input.old_string === 'string' ? input.old_string : '',
+        typeof input.new_string === 'string' ? input.new_string : ''
+      );
+    }
+    const edits = Array.isArray(input.edits) ? input.edits : [];
+    let added = 0;
+    let removed = 0;
+    for (const edit of edits) {
+      if (!edit || typeof edit !== 'object') continue;
+      if (typeof edit.old_string !== 'string' && typeof edit.new_string !== 'string') continue;
+      const stat = lineDiffStats(
+        typeof edit.old_string === 'string' ? edit.old_string : '',
+        typeof edit.new_string === 'string' ? edit.new_string : ''
+      );
+      added += stat.added || 0;
+      removed += stat.removed || 0;
+    }
+    return added || removed ? { added, removed } : null;
+  }
+  return null;
+}
+
+function countTextLines(text) {
+  return text === '' ? 0 : String(text).split('\n').length;
+}
+
+function lineDiffStats(oldText, newText) {
+  const a = String(oldText == null ? '' : oldText).split('\n');
+  const b = String(newText == null ? '' : newText).split('\n');
+  const m = a.length;
+  const n = b.length;
+  if (m === 0 && n === 0) return { added: 0, removed: 0 };
+  if (m * n > 500000) {
+    return {
+      added: Math.max(0, n - m),
+      removed: Math.max(0, m - n),
+    };
+  }
+  const prev = new Array(n + 1).fill(0);
+  const curr = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) curr[j] = prev[j - 1] + 1;
+      else curr[j] = curr[j - 1] > prev[j] ? curr[j - 1] : prev[j];
+    }
+    for (let j = 0; j <= n; j++) prev[j] = curr[j];
+  }
+  const lcs = prev[n];
+  return { added: n - lcs, removed: m - lcs };
+}
+
+function localDayKey(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  const t = d.getTime();
+  const x = Number.isNaN(t) ? new Date() : d;
+  const y = x.getFullYear();
+  const m = String(x.getMonth() + 1).padStart(2, '0');
+  const day = String(x.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function countEditActivity(parser, item) {
+  if (!item || !item.id || parser.editCounted.has(item.id)) return;
+  parser.editCounted.set(item.id, item);
+  parser.editSums.added += item.added || 0;
+  parser.editSums.removed += item.removed || 0;
+  parser.editSums.edits += 1;
+  parser.editVersion += 1;
+  const key = item.day || localDayKey(item.ts);
+  let day = parser.editDays.get(key);
+  if (!day) {
+    day = { day: key, added: 0, removed: 0, edits: 0 };
+    parser.editDays.set(key, day);
+  }
+  day.added += item.added || 0;
+  day.removed += item.removed || 0;
+  day.edits += 1;
 }
 
 function payloadHistoryEntry(parser, id) {
@@ -1229,7 +1583,10 @@ function payloadHistoryEntry(parser, id) {
 
 function buildPayload(parser, includeHistory) {
   if (!parser.order.length) return null;
-  const lastUsage = parser.byRequest.get(parser.order[parser.order.length - 1]).usage;
+  const lastId = parser.latestUsageId && parser.byRequest.has(parser.latestUsageId)
+    ? parser.latestUsageId
+    : parser.order[parser.order.length - 1];
+  const lastUsage = parser.byRequest.get(lastId).usage;
   const ctx = totalContextTokens(lastUsage);
   const totalContext = parser.sums.fresh + parser.sums.cw + parser.sums.cr;
   const totals = {
@@ -1243,7 +1600,7 @@ function buildPayload(parser, includeHistory) {
   };
   if (parser.order.length >= 2) {
     const firstTs = parser.byRequest.get(parser.order[0]).ts;
-    const lastTs  = parser.byRequest.get(parser.order[parser.order.length - 1]).ts;
+    const lastTs  = parser.byRequest.get(lastId).ts;
     const a = Date.parse(firstTs);
     const b = Date.parse(lastTs);
     if (!Number.isNaN(a) && !Number.isNaN(b)) totals.durationMs = b - a;
@@ -1263,6 +1620,570 @@ function buildPayload(parser, includeHistory) {
   };
   if (includeHistory) payload.history = parser.order.map(id => payloadHistoryEntry(parser, id));
   return payload;
+}
+
+function buildEditActivityPayload(parser) {
+  if (!parser) return emptyEditActivityPayload(null, null);
+  const projectDir = parser.path ? path.dirname(parser.path) : null;
+  const projectName = projectDisplayName(projectDir, parser.projectCwd);
+  const days = Array.from(parser.editDays.values())
+    .sort((a, b) => a.day < b.day ? -1 : (a.day > b.day ? 1 : 0))
+    .map(day => ({
+      day: day.day,
+      added: day.added || 0,
+      removed: day.removed || 0,
+      edits: day.edits || 0,
+    }));
+  return {
+    empty: parser.editSums.edits <= 0,
+    sessionId: path.basename(parser.path, JSONL_SUFFIX),
+    src: parser.path,
+    cwd: parser.projectCwd || null,
+    projectName,
+    ts: Date.now(),
+    totals: {
+      added: parser.editSums.added || 0,
+      removed: parser.editSums.removed || 0,
+      edits: parser.editSums.edits || 0,
+      activeDays: days.length,
+    },
+    days,
+  };
+}
+
+function buildProjectEditActivityResponse(state, target, comm, sessionId) {
+  const indexing = scheduleGlobalIndexJob(state, comm, sessionId);
+  return buildEditActivityPopupPayload(state, target, indexing ? 'indexing' : 'ready');
+}
+
+function buildEditActivityPopupPayload(state, target, status) {
+  const projectDir = target ? path.dirname(target) : null;
+  const currentIndex = projectDir ? loadProjectEditActivityIndex(state, projectDir) : null;
+  return {
+    scope: 'popup',
+    status: status || 'ready',
+    ts: Date.now(),
+    currentProject: currentIndex ? buildProjectEditActivityPayload(currentIndex, 'ready') : null,
+    global: buildGlobalEditActivityPayload(loadAllProjectEditActivityIndexes(state), status || 'ready'),
+  };
+}
+
+function persistProjectEditActivitySession(state, target, parser, stat) {
+  if (!target || !parser) return null;
+  const payload = buildEditActivityPayload(parser);
+  const projectDir = path.dirname(target);
+  const index = loadProjectEditActivityIndex(state, projectDir);
+  const changed = upsertProjectIndexSession(
+    index,
+    payload,
+    target,
+    stat || null,
+    parser.editVersion || 0
+  );
+  if (changed) saveProjectEditActivityIndex(index);
+  return index;
+}
+
+function projectKeyForDir(projectDir) {
+  const normalized = path.resolve(projectDir || '').toLowerCase();
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 32);
+}
+
+function projectIndexPath(projectKey) {
+  return path.join(EDIT_ACTIVITY_INDEX_DIR, projectKey + '.json');
+}
+
+function projectDisplayName(projectDir, cwd) {
+  if (typeof cwd === 'string' && cwd) {
+    const normalized = cwd.replace(/[\\/]+$/, '');
+    const base = path.basename(normalized);
+    if (base && base !== normalized) return base;
+    if (base) return base;
+  }
+  const dirName = path.basename(projectDir || '');
+  return dirName || 'Current project';
+}
+
+function createProjectEditActivityIndex(projectDir) {
+  const projectKey = projectKeyForDir(projectDir);
+  return {
+    schemaVersion: EDIT_ACTIVITY_SCHEMA_VERSION,
+    projectKey,
+    projectDir,
+    projectName: projectDisplayName(projectDir, null),
+    cwd: null,
+    updatedAt: Date.now(),
+    sessions: {},
+  };
+}
+
+function loadProjectEditActivityIndex(state, projectDir) {
+  const projectKey = projectKeyForDir(projectDir);
+  const cached = state.editProjectIndexes.get(projectKey);
+  if (cached) return cached;
+  const filePath = projectIndexPath(projectKey);
+  let index = null;
+  try {
+    if (fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (parsed && parsed.schemaVersion === EDIT_ACTIVITY_SCHEMA_VERSION && parsed.projectKey === projectKey) {
+        index = parsed;
+      }
+    }
+  } catch (_) {
+    index = null;
+  }
+  if (!index || typeof index !== 'object') index = createProjectEditActivityIndex(projectDir);
+  if (!index.sessions || typeof index.sessions !== 'object') index.sessions = {};
+  index.projectDir = projectDir;
+  index.projectKey = projectKey;
+  if (!index.projectName) index.projectName = projectDisplayName(projectDir, index.cwd || null);
+  state.editProjectIndexes.set(projectKey, index);
+  return index;
+}
+
+function saveProjectEditActivityIndex(index) {
+  if (!index || !index.projectKey) return;
+  try {
+    fs.mkdirSync(EDIT_ACTIVITY_INDEX_DIR, { recursive: true });
+    index.updatedAt = Date.now();
+    const finalPath = projectIndexPath(index.projectKey);
+    const tmpPath = finalPath + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmpPath, JSON.stringify(index));
+    fs.renameSync(tmpPath, finalPath);
+  } catch (_) {}
+}
+
+function upsertProjectIndexSession(index, payload, filePath, stat, editVersion) {
+  if (!index || !payload || !payload.sessionId) return false;
+  const sessionId = payload.sessionId;
+  const hasEdits = payload.totals && (payload.totals.edits || 0) > 0;
+  if (!hasEdits) {
+    if (index.sessions[sessionId]) {
+      delete index.sessions[sessionId];
+      return true;
+    }
+    return false;
+  }
+  const days = {};
+  let metaChanged = false;
+  if (payload.cwd && index.cwd !== payload.cwd) {
+    index.cwd = payload.cwd;
+    metaChanged = true;
+  }
+  if (payload.projectName && index.projectName !== payload.projectName) {
+    index.projectName = payload.projectName;
+    metaChanged = true;
+  }
+  const dayRows = Array.isArray(payload.days) ? payload.days : [];
+  for (const day of dayRows) {
+    if (!day || !day.day) continue;
+    days[day.day] = {
+      added: day.added || 0,
+      removed: day.removed || 0,
+      edits: day.edits || 0,
+    };
+  }
+  const next = {
+    sessionId,
+    src: filePath ? path.basename(filePath) : null,
+    cwd: payload.cwd || null,
+    projectName: payload.projectName || projectDisplayName(index.projectDir, payload.cwd || index.cwd || null),
+    size: stat && Number.isFinite(stat.size) ? stat.size : null,
+    mtimeMs: stat && Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : null,
+    editVersion: Number.isFinite(editVersion) ? editVersion : null,
+    indexedAt: Date.now(),
+    totals: {
+      added: payload.totals.added || 0,
+      removed: payload.totals.removed || 0,
+      edits: payload.totals.edits || 0,
+      activeDays: payload.totals.activeDays || Object.keys(days).length,
+    },
+    days,
+  };
+  const old = index.sessions[sessionId];
+  if (old &&
+      old.size === next.size &&
+      old.mtimeMs === next.mtimeMs &&
+      old.editVersion === next.editVersion &&
+      old.totals &&
+      old.totals.added === next.totals.added &&
+      old.totals.removed === next.totals.removed &&
+      old.totals.edits === next.totals.edits) {
+    return metaChanged;
+  }
+  index.sessions[sessionId] = next;
+  return true;
+}
+
+function projectJsonlFiles(projectDir) {
+  let entries = [];
+  try { entries = fs.readdirSync(projectDir, { withFileTypes: true }); } catch (_) { return []; }
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith(JSONL_SUFFIX)) continue;
+    const filePath = path.join(projectDir, entry.name);
+    try {
+      const stat = fs.statSync(filePath);
+      files.push({ filePath, stat, sessionId: path.basename(entry.name, JSONL_SUFFIX) });
+    } catch (_) {}
+  }
+  files.sort((a, b) => (b.stat.mtimeMs || 0) - (a.stat.mtimeMs || 0));
+  return files;
+}
+
+function claudeProjectDirs() {
+  let entries = [];
+  try { entries = fs.readdirSync(projectsRoot(), { withFileTypes: true }); } catch (_) { return []; }
+  const dirs = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(projectsRoot(), entry.name);
+    let stat = null;
+    try { stat = fs.statSync(dir); } catch (_) {}
+    dirs.push({ projectDir: dir, mtimeMs: stat ? stat.mtimeMs : 0 });
+  }
+  dirs.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  return dirs.map(item => item.projectDir);
+}
+
+function projectIndexNeedsFile(index, file) {
+  if (!index || !file || !file.sessionId) return false;
+  const old = index.sessions[file.sessionId];
+  if (!old) return true;
+  return old.size !== file.stat.size || old.mtimeMs !== file.stat.mtimeMs;
+}
+
+function scheduleProjectIndexJob(state, projectDir, comm, sessionId) {
+  const index = loadProjectEditActivityIndex(state, projectDir);
+  const projectKey = index.projectKey;
+  let job = state.editProjectJobs.get(projectKey);
+  const now = Date.now();
+  const lastScanAt = state.editProjectScanAt.get(projectKey) || 0;
+  const shouldScan = !job || now - lastScanAt >= PROJECT_INDEX_SCAN_MIN_INTERVAL_MS;
+  const files = shouldScan
+    ? projectJsonlFiles(projectDir).filter(file => projectIndexNeedsFile(index, file))
+    : [];
+  if (shouldScan) state.editProjectScanAt.set(projectKey, now);
+  if (!files.length && !job) return false;
+  if (!job) {
+    job = {
+      projectKey,
+      projectDir,
+      index,
+      files,
+      cursor: 0,
+      subscribers: new Map(),
+      scheduled: false,
+    };
+    state.editProjectJobs.set(projectKey, job);
+  } else if (files.length) {
+    const seen = new Set(job.files.slice(job.cursor).map(file => file.filePath));
+    for (const file of files) {
+      if (!seen.has(file.filePath)) job.files.push(file);
+    }
+  }
+  if (comm && sessionId) job.subscribers.set(comm, { comm, sessionId });
+  if (!job.scheduled) {
+    job.scheduled = true;
+    setTimeout(() => runProjectIndexJob(state, projectKey), 0);
+  }
+  return job.cursor < job.files.length;
+}
+
+function loadAllProjectEditActivityIndexes(state) {
+  const indexes = new Map();
+  for (const index of state.editProjectIndexes.values()) {
+    if (index && index.projectKey) indexes.set(index.projectKey, index);
+  }
+  let entries = [];
+  try { entries = fs.readdirSync(EDIT_ACTIVITY_INDEX_DIR, { withFileTypes: true }); } catch (_) { entries = []; }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue;
+    const filePath = path.join(EDIT_ACTIVITY_INDEX_DIR, entry.name);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (!parsed || parsed.schemaVersion !== EDIT_ACTIVITY_SCHEMA_VERSION || !parsed.projectKey) continue;
+      if (!parsed.sessions || typeof parsed.sessions !== 'object') parsed.sessions = {};
+      state.editProjectIndexes.set(parsed.projectKey, parsed);
+      indexes.set(parsed.projectKey, parsed);
+    } catch (_) {}
+  }
+  return Array.from(indexes.values());
+}
+
+function scheduleGlobalIndexJob(state, comm, sessionId) {
+  let job = state.editGlobalJob;
+  if (comm && sessionId && job) job.subscribers.set(comm, { comm, sessionId });
+  if (job) return true;
+
+  const now = Date.now();
+  if (state.editGlobalScanAt && now - state.editGlobalScanAt < GLOBAL_INDEX_SCAN_MIN_INTERVAL_MS) {
+    return false;
+  }
+  const projectDirs = claudeProjectDirs();
+  if (!projectDirs.length) {
+    state.editGlobalScanAt = now;
+    return false;
+  }
+  job = {
+    projectDirs,
+    dirCursor: 0,
+    fileQueue: [],
+    subscribers: new Map(),
+    scheduled: false,
+  };
+  if (comm && sessionId) job.subscribers.set(comm, { comm, sessionId });
+  state.editGlobalJob = job;
+  job.scheduled = true;
+  setTimeout(() => runGlobalIndexJob(state), 0);
+  return true;
+}
+
+function runGlobalIndexJob(state) {
+  const job = state.editGlobalJob;
+  if (!job) return;
+  job.scheduled = false;
+  let processed = 0;
+  let bytes = 0;
+  let scannedDirs = 0;
+  const changedIndexes = new Set();
+
+  while (processed < PROJECT_INDEX_BATCH_FILES &&
+         bytes < PROJECT_INDEX_BATCH_BYTES &&
+         (job.fileQueue.length || job.dirCursor < job.projectDirs.length)) {
+    if (!job.fileQueue.length) {
+      const projectDir = job.projectDirs[job.dirCursor++];
+      scannedDirs++;
+      const index = loadProjectEditActivityIndex(state, projectDir);
+      const files = projectJsonlFiles(projectDir).filter(file => projectIndexNeedsFile(index, file));
+      for (const file of files) job.fileQueue.push({ ...file, index });
+      if (!job.fileQueue.length && scannedDirs < 4) continue;
+      if (!job.fileQueue.length) break;
+    }
+
+    const file = job.fileQueue.shift();
+    if (!file || !file.index) continue;
+    bytes += file.stat.size || 0;
+    processed++;
+    if (!projectIndexNeedsFile(file.index, file)) continue;
+    let payload = null;
+    try {
+      payload = parseEditActivityFile(file.filePath, file.stat);
+    } catch (error) {
+      try {
+        state.log(`global edit activity index skip ${file.filePath}: ${error && error.message ? error.message : error}`);
+      } catch (_) {}
+      continue;
+    }
+    if (upsertProjectIndexSession(file.index, payload, file.filePath, file.stat, null)) {
+      changedIndexes.add(file.index);
+    }
+  }
+
+  for (const index of changedIndexes) saveProjectEditActivityIndex(index);
+  const done = !job.fileQueue.length && job.dirCursor >= job.projectDirs.length;
+  notifyGlobalIndexSubscribers(state, job, done ? 'ready' : 'indexing');
+  if (done) {
+    state.editGlobalScanAt = Date.now();
+    state.editGlobalJob = null;
+    return;
+  }
+  job.scheduled = true;
+  setTimeout(() => runGlobalIndexJob(state), PROJECT_INDEX_BATCH_DELAY_MS);
+}
+
+function notifyGlobalIndexSubscribers(state, job, status) {
+  for (const [comm, sub] of job.subscribers) {
+    if (!state.comms.has(comm)) {
+      job.subscribers.delete(comm);
+      continue;
+    }
+    const identity = state.commIdentities.get(comm);
+    const target = identity && identity.target
+      ? identity.target
+      : resolveTargetFromIdentity(sub.sessionId, identity && identity.cwd);
+    sendEditActivityPayload(comm, {
+      projectOnly: true,
+      sessionId: sub.sessionId || null,
+      project: buildEditActivityPopupPayload(state, target, status),
+    });
+  }
+}
+
+function runProjectIndexJob(state, projectKey) {
+  const job = state.editProjectJobs.get(projectKey);
+  if (!job) return;
+  job.scheduled = false;
+  let processed = 0;
+  let bytes = 0;
+  let changed = false;
+  while (job.cursor < job.files.length &&
+         processed < PROJECT_INDEX_BATCH_FILES &&
+         bytes < PROJECT_INDEX_BATCH_BYTES) {
+    const file = job.files[job.cursor++];
+    bytes += file.stat.size || 0;
+    processed++;
+    if (!projectIndexNeedsFile(job.index, file)) continue;
+    let payload = null;
+    try {
+      payload = parseEditActivityFile(file.filePath, file.stat);
+    } catch (error) {
+      try {
+        state.log(`edit activity index skip ${file.filePath}: ${error && error.message ? error.message : error}`);
+      } catch (_) {}
+      continue;
+    }
+    if (upsertProjectIndexSession(job.index, payload, file.filePath, file.stat, null)) changed = true;
+  }
+  if (changed) saveProjectEditActivityIndex(job.index);
+  const done = job.cursor >= job.files.length;
+  notifyProjectIndexSubscribers(state, job, done ? 'ready' : 'indexing');
+  if (done) {
+    state.editProjectJobs.delete(projectKey);
+    return;
+  }
+  job.scheduled = true;
+  setTimeout(() => runProjectIndexJob(state, projectKey), PROJECT_INDEX_BATCH_DELAY_MS);
+}
+
+function notifyProjectIndexSubscribers(state, job, status) {
+  const project = buildProjectEditActivityPayload(job.index, status);
+  for (const [comm, sub] of job.subscribers) {
+    if (!state.comms.has(comm)) {
+      job.subscribers.delete(comm);
+      continue;
+    }
+    sendEditActivityPayload(comm, {
+      projectOnly: true,
+      sessionId: sub.sessionId || null,
+      project,
+    });
+  }
+}
+
+function parseEditActivityFile(filePath, stat) {
+  const parser = createParser(filePath, { editOnly: true });
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(Math.min(1024 * 1024, Math.max(1, stat.size || 1)));
+    let pos = 0;
+    while (pos < stat.size) {
+      const len = Math.min(buffer.length, stat.size - pos);
+      const read = fs.readSync(fd, buffer, 0, len, pos);
+      if (read <= 0) break;
+      pos += read;
+      appendDecodedText(parser, parser.decoder.write(buffer.subarray(0, read)));
+    }
+    appendDecodedText(parser, parser.decoder.end());
+    const tail = takePartialLine(parser);
+    if (tail) processLine(parser, tail);
+    parser.size = stat.size;
+    parser.mtimeMs = stat.mtimeMs;
+    return buildEditActivityPayload(parser);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function buildProjectEditActivityPayload(index, status) {
+  const dayMap = new Map();
+  let added = 0;
+  let removed = 0;
+  let edits = 0;
+  let sessionCount = 0;
+  for (const session of Object.values(index.sessions || {})) {
+    if (!session || !session.totals || (session.totals.edits || 0) <= 0) continue;
+    sessionCount++;
+    added += session.totals.added || 0;
+    removed += session.totals.removed || 0;
+    edits += session.totals.edits || 0;
+    const days = session.days || {};
+    for (const [key, day] of Object.entries(days)) {
+      if (!key || !day) continue;
+      let out = dayMap.get(key);
+      if (!out) {
+        out = { day: key, added: 0, removed: 0, edits: 0 };
+        dayMap.set(key, out);
+      }
+      out.added += day.added || 0;
+      out.removed += day.removed || 0;
+      out.edits += day.edits || 0;
+    }
+  }
+  const days = Array.from(dayMap.values())
+    .sort((a, b) => a.day < b.day ? -1 : (a.day > b.day ? 1 : 0));
+  return {
+    empty: edits <= 0,
+    scope: 'project',
+    status: status || 'ready',
+    projectKey: index.projectKey,
+    projectDir: index.projectDir,
+    cwd: index.cwd || null,
+    projectName: index.projectName || projectDisplayName(index.projectDir, index.cwd || null),
+    ts: Date.now(),
+    totals: {
+      added,
+      removed,
+      edits,
+      activeDays: days.length,
+      sessions: sessionCount,
+    },
+    days,
+  };
+}
+
+function buildGlobalEditActivityPayload(indexes, status) {
+  const dayMap = new Map();
+  let added = 0;
+  let removed = 0;
+  let edits = 0;
+  let sessionCount = 0;
+  let projectCount = 0;
+  const list = Array.isArray(indexes) ? indexes : [];
+  for (const index of list) {
+    if (!index || !index.sessions) continue;
+    let projectHasEdits = false;
+    for (const session of Object.values(index.sessions || {})) {
+      if (!session || !session.totals || (session.totals.edits || 0) <= 0) continue;
+      projectHasEdits = true;
+      sessionCount++;
+      added += session.totals.added || 0;
+      removed += session.totals.removed || 0;
+      edits += session.totals.edits || 0;
+      const days = session.days || {};
+      for (const [key, day] of Object.entries(days)) {
+        if (!key || !day) continue;
+        let out = dayMap.get(key);
+        if (!out) {
+          out = { day: key, added: 0, removed: 0, edits: 0 };
+          dayMap.set(key, out);
+        }
+        out.added += day.added || 0;
+        out.removed += day.removed || 0;
+        out.edits += day.edits || 0;
+      }
+    }
+    if (projectHasEdits) projectCount++;
+  }
+  const days = Array.from(dayMap.values())
+    .sort((a, b) => a.day < b.day ? -1 : (a.day > b.day ? 1 : 0));
+  return {
+    empty: edits <= 0,
+    scope: 'global',
+    label: 'Claude Code global',
+    status: status || 'ready',
+    ts: Date.now(),
+    totals: {
+      added,
+      removed,
+      edits,
+      activeDays: days.length,
+      sessions: sessionCount,
+      projects: projectCount,
+    },
+    days,
+  };
 }
 
 function totalContextTokens(usage) {
@@ -1285,12 +2206,34 @@ function broadcastTarget(state, target, payload) {
   }
 }
 
+function broadcastEditActivityTarget(state, target, payload) {
+  for (const comm of state.comms) {
+    const identity = state.commIdentities.get(comm);
+    if (!identity || !identity.sessionId) continue;
+    if (identity.target !== target) {
+      if (!identity.target) identity.target = resolveTargetFromIdentity(identity.sessionId, identity.cwd);
+      if (identity.target !== target) continue;
+    }
+    const conversation = annotateEditActivityPayload(payload, identity.sessionId, target);
+    sendEditActivityPayload(comm, editActivityEnvelope(conversation, null));
+  }
+}
+
 function sendPayload(comm, payload) {
   try {
     if (!comm.webview || typeof comm.webview.postMessage !== 'function') {
       throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
     }
     comm.webview.postMessage({ __cceBadge: true, payload });
+  } catch (_) {}
+}
+
+function sendEditActivityPayload(comm, payload) {
+  try {
+    if (!comm.webview || typeof comm.webview.postMessage !== 'function') {
+      throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
+    }
+    comm.webview.postMessage({ __incipitEditActivity: true, payload });
   } catch (_) {}
 }
 

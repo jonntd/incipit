@@ -472,6 +472,7 @@ function processSegment(segment) {
 // ========== 6. observer / scheduler ==========
 
 const pendingSegments = new Set();
+const deferredSegments = new Set();
 // Roots whose subtree may contain new code blocks or user bubbles. We used
 // to re-scan the entire document on every flush, which was fine in short
 // sessions but became a measurable per-frame cost during long streaming
@@ -481,6 +482,8 @@ const pendingSegments = new Set();
 const pendingRoots = new Set();
 let deferredCodeHighlightUntilIdle = false;
 let rafId = null;
+let deferredSegmentsTimer = 0;
+const STREAMING_TYPOGRAPHY_RECHECK_MS = 240;
 
 function closestSegment(node) {
   let el = node;
@@ -506,8 +509,28 @@ function closestSegment(node) {
   return el;
 }
 
-function enqueueNode(node) {
+function nodeContainsMathPlaceholder(node) {
+  if (!CFG.math || !node) return false;
+  if (node.nodeType === 3) return (node.nodeValue || '').indexOf('CCREMATH') !== -1;
+  if (node.nodeType === 1) return (node.textContent || '').indexOf('CCREMATH') !== -1;
+  return false;
+}
+
+function queueSegment(seg, deferUntilIdle) {
+  if (!seg) return;
+  if (deferUntilIdle) {
+    pendingSegments.delete(seg);
+    deferredSegments.add(seg);
+    scheduleDeferredSegmentsFlush();
+    return;
+  }
+  deferredSegments.delete(seg);
+  pendingSegments.add(seg);
+}
+
+function enqueueNode(node, options = {}) {
   if (!node) return;
+  const deferUntilIdle = options.deferTypography === true;
   if (node.nodeType === 1) {
     const cls = (typeof node.className === 'string' ? node.className : '') || '';
     if (cls.indexOf('katex') !== -1 ||
@@ -522,18 +545,45 @@ function enqueueNode(node) {
     if (node.isContentEditable) return;
     if (isDiffSurfaceNode(node)) return;
     const seg = closestSegment(node);
-    if (seg) pendingSegments.add(seg);
+    if (seg) queueSegment(seg, deferUntilIdle);
     if (node.querySelectorAll) {
       for (const s of node.querySelectorAll(SEG_SELECTOR)) {
         if (s.isContentEditable) continue;
         if (isDiffSurfaceNode(s)) continue;
-        pendingSegments.add(s);
+        queueSegment(s, deferUntilIdle);
       }
     }
   } else if (node.nodeType === 3) {
     const seg = closestSegment(node);
-    if (seg) pendingSegments.add(seg);
+    if (seg) queueSegment(seg, deferUntilIdle);
   }
+}
+
+function flushDeferredSegmentsIfReady() {
+  if (!deferredSegments.size) return false;
+  if (conversationIsBusy()) {
+    scheduleDeferredSegmentsFlush();
+    return false;
+  }
+  if (deferredSegmentsTimer) {
+    clearTimeout(deferredSegmentsTimer);
+    deferredSegmentsTimer = 0;
+  }
+  const segs = Array.from(deferredSegments);
+  deferredSegments.clear();
+  for (const seg of segs) {
+    if (seg && seg.isConnected) pendingSegments.add(seg);
+  }
+  schedule();
+  return true;
+}
+
+function scheduleDeferredSegmentsFlush() {
+  if (deferredSegmentsTimer || !deferredSegments.size) return;
+  deferredSegmentsTimer = setTimeout(() => {
+    deferredSegmentsTimer = 0;
+    flushDeferredSegmentsIfReady();
+  }, STREAMING_TYPOGRAPHY_RECHECK_MS);
 }
 
 function schedule() {
@@ -579,13 +629,25 @@ function flush() {
 
 function handleMutations(mutations) {
   let dirty = false;
+  let busy = false;
+  try { busy = conversationIsBusy(); } catch (_) { busy = false; }
   for (const m of mutations) {
     if (m.type === 'characterData') {
       const seg = closestSegment(m.target);
-      if (seg) { pendingSegments.add(seg); dirty = true; }
+      if (seg) {
+        // During streaming, plain prose grows token-by-token. CJK punctuation
+        // wrapping would otherwise rescan the whole paragraph on every text
+        // mutation. Math placeholders stay eager so raw CCREMATH tokens do
+        // not leak into the visible stream; everything else is polished once
+        // the turn is idle.
+        queueSegment(seg, busy && !nodeContainsMathPlaceholder(m.target));
+        dirty = true;
+      }
     } else if (m.type === 'childList') {
       for (const node of m.addedNodes) {
-        enqueueNode(node);
+        enqueueNode(node, {
+          deferTypography: busy && !nodeContainsMathPlaceholder(node),
+        });
         // Element-only — text nodes never match hljs/userBubble selectors.
         // For streaming markdown, also rescan the nearest markdown root.
         // Regular assistant code highlighting itself stays deferred while
@@ -922,17 +984,18 @@ function runCodeHighlightChunk() {
 }
 
 export function flushDeferredCodeHighlights() {
+  const flushedTypography = flushDeferredSegmentsIfReady();
   if (!deferredCodeHighlightUntilIdle || typeof window.hljs === 'undefined' || !document.body) {
-    return false;
+    return flushedTypography;
   }
-  if (conversationIsBusy()) return false;
+  if (conversationIsBusy()) return flushedTypography;
   deferredCodeHighlightUntilIdle = false;
   enqueueCodeHighlight(document.body);
   return true;
 }
 
 export function hasDeferredCodeHighlights() {
-  return deferredCodeHighlightUntilIdle === true;
+  return deferredCodeHighlightUntilIdle === true || deferredSegments.size > 0;
 }
 
 export function scanCopyButtons(root, options = {}) {

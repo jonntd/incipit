@@ -2738,6 +2738,308 @@ pre code {
   box-shadow: inset 0 -1px 0 rgba(0,0,0,0.55) !important;
 }
 
+/* Conversation edit activity: a compact +/- counter beside the right-side
+   session actions. Keep the title shrinkable, but do not reserve a fixed
+   title-adjacent slot for the chip; JS anchors it before Session history. */
+[data-incipit-edit-header] [class*="titleGroup"] {
+  min-width: 0 !important;
+}
+[data-incipit-edit-header] [class*="titleText_"] {
+  min-width: 0 !important;
+}
+.cceEditChip {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55em;
+  height: 24px;
+  flex: 0 0 auto;
+  margin: 0 4px 0 2px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #d8d6ce;
+  font-family: var(--incipit-body-font);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cceEditChip:hover,
+.cceEditChip:focus-visible,
+.cceEditChip.cceEditChipActive {
+  background: rgba(248,246,240,0.07);
+  color: #f8f8f6;
+  outline: none;
+}
+.cceEditChip:active {
+  background: rgba(248,246,240,0.11);
+}
+.cceEditChip[hidden] {
+  display: none !important;
+}
+
+.cceEditPopup {
+  position: fixed;
+  z-index: 99999;
+  display: none;
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 16px));
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 13px 12px 12px;
+  --cce-edit-cell: 10px;
+  --cce-edit-gap: 3px;
+  --cce-edit-weekday-col: 13px;
+  --cce-edit-weekday-gap: 5px;
+  --cce-edit-matrix-width: 366px;
+  background: #2c2c2a;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.35);
+  color: #e8e6dd;
+  font-family: var(--incipit-body-font);
+  font-size: var(--incipit-body-size, 13px);
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  font-synthesis: none;
+  user-select: none;
+}
+.cceEditPopup.cceEditOpen {
+  display: block;
+}
+.cceEditShell {
+  width: var(--cce-edit-matrix-width);
+  max-width: 100%;
+  margin: 0 auto;
+}
+.cceEditProjectSummary {
+  min-width: 0;
+}
+.cceEditProjectLabel {
+  color: #989898;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.cceEditProjectName {
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #d8d6ce;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cceEditRule {
+  height: 1px;
+  margin: 12px 0 11px;
+  background: rgba(248,246,240,0.08);
+}
+.cceEditHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 3px;
+}
+.cceEditTitleBlock {
+  min-width: 0;
+}
+.cceEditKicker {
+  color: #989898;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.cceEditScope {
+  margin-top: 2px;
+  color: #b3b0a8;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+.cceEditStatus {
+  flex: 0 0 auto;
+  margin-top: -1px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(168,137,110,0.14);
+  color: #c8b19d;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.cceEditTotal {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.7em;
+  margin-top: 8px;
+  color: #f8f8f6;
+  font-family: var(--incipit-emphasis-font);
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.2;
+}
+.cceEditFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  margin-bottom: 12px;
+  color: #989898;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+.cceEditFacts span {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.cceEditHeatmap {
+  width: var(--cce-edit-matrix-width);
+  max-width: 100%;
+  min-width: var(--cce-edit-matrix-width);
+  margin: 0;
+  overflow: visible;
+}
+.cceEditBand {
+  width: var(--cce-edit-matrix-width);
+}
+.cceEditBand + .cceEditBand {
+  margin-top: 14px;
+}
+.cceEditMonths {
+  display: grid;
+  grid-template-columns: repeat(var(--cce-edit-weeks, 26), var(--cce-edit-cell));
+  gap: var(--cce-edit-gap);
+  width: max-content;
+  margin: 0 0 4px calc(var(--cce-edit-weekday-col) + var(--cce-edit-weekday-gap));
+  color: #989898;
+  font-size: 10px;
+  line-height: 1.1;
+}
+.cceEditMonths span {
+  min-width: 0;
+  overflow: visible;
+  white-space: nowrap;
+}
+.cceEditHeatmapBody {
+  display: grid;
+  grid-template-columns: var(--cce-edit-weekday-col) max-content;
+  gap: var(--cce-edit-weekday-gap);
+  align-items: start;
+  width: max-content;
+}
+.cceEditWeekdays {
+  display: grid;
+  grid-template-rows: repeat(7, var(--cce-edit-cell));
+  gap: var(--cce-edit-gap);
+  color: #989898;
+  font-size: 10px;
+  line-height: 1;
+}
+.cceEditWeekdays span {
+  min-height: 0;
+}
+.cceEditWeeks {
+  display: grid;
+  grid-template-columns: repeat(var(--cce-edit-weeks, 53), var(--cce-edit-cell));
+  gap: var(--cce-edit-gap);
+  width: max-content;
+}
+.cceEditWeek {
+  display: grid;
+  grid-template-rows: repeat(7, var(--cce-edit-cell));
+  gap: var(--cce-edit-gap);
+  width: var(--cce-edit-cell);
+}
+.cceEditCell {
+  display: block;
+  width: var(--cce-edit-cell);
+  height: var(--cce-edit-cell);
+  border-radius: 2px;
+  background: rgba(248,246,240,0.055);
+  box-shadow: inset 0 0 0 1px rgba(248,246,240,0.035);
+}
+.cceEditCell[data-level="1"] { background: rgba(168,137,110,0.26); }
+.cceEditCell[data-level="2"] { background: rgba(168,137,110,0.42); }
+.cceEditCell[data-level="3"] { background: rgba(168,137,110,0.62); }
+.cceEditCell[data-level="4"] { background: rgba(168,137,110,0.86); }
+.cceEditCellFuture {
+  opacity: 0.32;
+}
+.cceEditLegend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: var(--cce-edit-matrix-width);
+  max-width: 100%;
+  margin: 11px 0 0;
+  color: #989898;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.cceEditLegendCells {
+  display: inline-flex;
+  gap: 3px;
+}
+.cceEditLegendCells i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: rgba(248,246,240,0.055);
+  box-shadow: inset 0 0 0 1px rgba(248,246,240,0.035);
+}
+.cceEditLegendCells i[data-level="1"] { background: rgba(168,137,110,0.26); }
+.cceEditLegendCells i[data-level="2"] { background: rgba(168,137,110,0.42); }
+.cceEditLegendCells i[data-level="3"] { background: rgba(168,137,110,0.62); }
+.cceEditLegendCells i[data-level="4"] { background: rgba(168,137,110,0.86); }
+.cceEditTooltip {
+  position: fixed;
+  z-index: 100000;
+  display: none;
+  max-width: calc(100vw - 16px);
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: rgba(31,31,30,0.92);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.26);
+  color: #f8f8f6;
+  font-family: var(--incipit-body-font);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.cceEditTooltip[data-active="1"] {
+  display: block;
+}
+
 /* Remove dividers around the attached-files container. */
 [data-incipit-attached-files-top],
 [data-incipit-attached-files] {

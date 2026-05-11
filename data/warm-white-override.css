@@ -528,6 +528,79 @@
   box-shadow: inset 0 -1px 0 rgba(0,0,0,0.14) !important;
 }
 
+.cceEditChip {
+  color: #3f3d38;
+}
+.cceEditChip:hover,
+.cceEditChip:focus-visible,
+.cceEditChip.cceEditChipActive {
+  background: #DDDBD5;
+  color: #0d0d0d;
+}
+.cceEditChip:active {
+  background: #E6E4DE;
+}
+.cceEditPopup {
+  background: #ffffff;
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 12px 36px rgba(60,55,40,0.22), 0 2px 8px rgba(60,55,40,0.14);
+  color: #0d0d0d;
+}
+.cceEditKicker,
+.cceEditScope,
+.cceEditFacts,
+.cceEditProjectLabel,
+.cceEditMonths,
+.cceEditWeekdays,
+.cceEditLegend {
+  color: #797569;
+}
+.cceEditProjectName {
+  color: #0d0d0d;
+}
+.cceEditRule {
+  background: rgba(60,55,40,0.14);
+}
+.cceEditTotal {
+  color: #0d0d0d;
+}
+.cceEditPopup [data-incipit-tool-added] {
+  color: #2f8c3a !important;
+}
+.cceEditPopup [data-incipit-tool-removed] {
+  color: #b24740 !important;
+}
+.cceEditStatus {
+  background: rgba(168,137,110,0.16);
+  color: #8d725b;
+}
+.cceEditCell,
+.cceEditLegendCells i {
+  background: #E6E4DE;
+  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.08);
+}
+.cceEditCell[data-level="1"],
+.cceEditLegendCells i[data-level="1"] {
+  background: rgba(168,137,110,0.32);
+}
+.cceEditCell[data-level="2"],
+.cceEditLegendCells i[data-level="2"] {
+  background: rgba(168,137,110,0.50);
+}
+.cceEditCell[data-level="3"],
+.cceEditLegendCells i[data-level="3"] {
+  background: rgba(168,137,110,0.68);
+}
+.cceEditCell[data-level="4"],
+.cceEditLegendCells i[data-level="4"] {
+  background: rgba(168,137,110,0.90);
+}
+.cceEditTooltip {
+  background: rgba(255,255,255,0.94);
+  box-shadow: 0 2px 8px rgba(60,55,40,0.16);
+  color: #0d0d0d;
+}
+
 /* ---------- Image-attachment chip ----------
    Mirror of the dark-palette rule in `theme.css`. Same selector, same
    intent — only the rgba flips so the soft hairline reads as paper-toned
@@ -779,13 +852,21 @@
   color: rgba(61,57,41,0.56) !important;
 }
 
+[data-incipit-ask-request] [class*="optionsContainer_"],
+[class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
+  [class*="optionsContainer_"] {
+  gap: 0 !important;
+}
+
 [data-incipit-ask-request] [class*="option_"],
 [class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
   [class*="option_"] {
-  background: #F4F2EC !important;
-  background-color: #F4F2EC !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  border-top: 1px solid rgba(60,55,40,0.10) !important;
+  border-radius: 0 !important;
   color: #0d0d0d !important;
-  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.06) !important;
+  box-shadow: none !important;
 }
 
 [data-incipit-ask-request] [class*="option_"]:hover,
@@ -794,9 +875,9 @@
   [class*="option_"]:hover,
 [class*="permissionRequestContainer_"]:has([class*="questionsContainer_"])
   [class*="option_"]:focus {
-  background: #E6E4DE !important;
-  background-color: #E6E4DE !important;
-  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.08) !important;
+  background: rgba(230,228,222,0.50) !important;
+  background-color: rgba(230,228,222,0.50) !important;
+  box-shadow: none !important;
 }
 
 [data-incipit-ask-request] [class*="radio_"],
@@ -899,6 +980,12 @@
   box-shadow: 0 12px 36px rgba(60,55,40,0.22), 0 2px 8px rgba(60,55,40,0.14);
   color: #0d0d0d;
 }
+.cceStatOverview {
+  gap: 0;
+  margin-bottom: 11px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(60,55,40,0.10);
+}
 .cceStatHeading {
   color: #0d0d0d;
 }
@@ -909,18 +996,54 @@
 .cceHitChartShell,
 .cceHitStat,
 .cceSelectedMetric {
-  background: #F4F2EC;
-  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.07);
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+.cceStatMetric {
+  padding: 0 10px 0 0;
+}
+.cceStatMetric + .cceStatMetric {
+  padding: 0 0 0 12px;
+  border-left: 1px solid rgba(60,55,40,0.10);
+}
+.cceHitChartShell {
+  padding: 2px 0 0;
+}
+.cceHitStats {
+  gap: 0;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(60,55,40,0.10);
+}
+.cceHitStat {
+  padding: 0 8px;
+}
+.cceHitStat:first-child {
+  padding-left: 0;
+}
+.cceHitStat + .cceHitStat {
+  border-left: 1px solid rgba(60,55,40,0.10);
+}
+.cceStatTotals {
+  gap: 12px;
+}
+.cceSelectedGrid {
+  gap: 8px 12px;
+}
+.cceSelectedMetric {
+  padding: 5px 0 0;
+  border-top: 1px solid rgba(60,55,40,0.10);
 }
 .cceStatMetricLabel,
 .cceHitChartMeta,
 .cceHitStat span,
 .cceSelectedMetric span,
 .cceFlowRangeTime {
-  color: #a39f8e;
+  color: #797569;
 }
 .cceHitAxisLabel {
-  fill: #a39f8e;
+  fill: #797569;
 }
 .cceStatMetricValue,
 .cceHitStat strong,
@@ -981,12 +1104,12 @@
   color: #797569;
 }
 .cceHitChartMeta span:nth-child(2) {
-  color: #a39f8e;
+  color: #797569;
 }
 .cceFlowHeader span,
 .cceFlowLegend,
 .cceFlowLabel {
-  color: #a39f8e;
+  color: #797569;
 }
 .cceFlowHeader strong,
 .cceFlowValue {

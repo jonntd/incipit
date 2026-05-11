@@ -1114,6 +1114,8 @@ function setupCacheBadge() {
   window.addEventListener('message', function(ev) {
     var d = ev && ev.data;
     if (!d || d.__cceBadge !== true || !d.payload) return;
+    var current = getActiveClaudeSessionId();
+    if (current && d.payload.sessionId && d.payload.sessionId !== current) return;
     var hasFullHistory = Array.isArray(d.payload.history);
     latest = mergeRetainedHistory(d.payload);
     ensureBadge();
@@ -1169,8 +1171,608 @@ function setupCacheBadge() {
   setupBadgeIdentityBridge();
 }
 
+// ============================================================
+// Header edit-activity chip.
+// ============================================================
+// A conversation-scoped, GitHub-style edit activity surface. The compact
+// header chip stays tiny beside the session title; the heavier 371-cell
+// heatmap is rendered only when the user opens the popup.
+function setupEditActivityHeader() {
+  if (!CFG.sessionUsage) return;
+
+  var CHIP_CLASS = 'cceEditChip';
+  var POPUP_CLASS = 'cceEditPopup';
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var latest = null;       // Current conversation activity, used by the header chip.
+  var projectLatest = null; // Current Claude Code project activity, used by the popup header.
+  var globalLatest = null;  // Claude Code global activity, used by the heatmap.
+  var popupLatestSig = '';
+  var popupEl = null;
+  var popupAnchor = null;
+  var tooltipEl = null;
+  var lastIdentityKey = null;
+  var identityPublishScheduled = false;
+  var identityPublishForce = false;
+  var identityPublishNeedsProject = false;
+
+  function getIncipitVsCodeApi() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') {
+        return globalThis.__incipitGetVsCodeApi();
+      }
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function publishActivityIdentity(force, includeProject) {
+    identityPublishScheduled = false;
+    var api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') return;
+    var sessionId = getActiveClaudeSessionId();
+    var key = sessionId || '';
+    if (!force && !includeProject && key === lastIdentityKey) return;
+    var identityChanged = key !== lastIdentityKey;
+    lastIdentityKey = key;
+    if (identityChanged) {
+      latest = null;
+      projectLatest = null;
+      globalLatest = null;
+      popupLatestSig = '';
+      ensureHeaderChip();
+      if (isActivityOpen()) {
+        renderActivityPopup();
+        positionActivityPopup();
+      }
+    }
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'edit_activity_identity_update',
+        sessionId: sessionId || null,
+        includeProject: !!includeProject,
+      });
+    } catch (_) {}
+  }
+
+  function scheduleActivityIdentityPublish(force, includeProject) {
+    identityPublishForce = identityPublishForce || !!force;
+    identityPublishNeedsProject = identityPublishNeedsProject || !!includeProject;
+    if (identityPublishScheduled) return;
+    identityPublishScheduled = true;
+    requestAnimationFrame(function() {
+      var forceNow = identityPublishForce;
+      var needsProjectNow = identityPublishNeedsProject;
+      identityPublishForce = false;
+      identityPublishNeedsProject = false;
+      publishActivityIdentity(forceNow, needsProjectNow);
+    });
+  }
+
+  function setupActivityIdentityBridge() {
+    scheduleActivityIdentityPublish(true);
+    setTimeout(function() { scheduleActivityIdentityPublish(true); }, 450);
+    setTimeout(function() { scheduleActivityIdentityPublish(true); }, 1800);
+    setInterval(function() { scheduleActivityIdentityPublish(false); }, 2600);
+    window.addEventListener('focus', function() { scheduleActivityIdentityPublish(true); });
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden) scheduleActivityIdentityPublish(true);
+    });
+    document.addEventListener('click', function() {
+      setTimeout(function() { scheduleActivityIdentityPublish(false); }, 0);
+    }, true);
+  }
+
+  function headerParts() {
+    var header = document.querySelector('[class^="header_"]:has([class*="titleGroup"])');
+    if (!header) return null;
+    var titleGroup = header.querySelector('[class*="titleGroup"]');
+    if (!titleGroup) return null;
+    var spacer = header.querySelector('[class*="headerSpacer"]');
+    return { header: header, titleGroup: titleGroup, spacer: spacer };
+  }
+
+  function directHeaderChip(header) {
+    if (!header || !header.children) return null;
+    for (var i = 0; i < header.children.length; i++) {
+      var child = header.children[i];
+      if (child && child.classList && child.classList.contains(CHIP_CLASS)) return child;
+    }
+    return null;
+  }
+
+  function sessionHistoryButton(header) {
+    if (!header || !header.children) return null;
+    for (var i = 0; i < header.children.length; i++) {
+      var child = header.children[i];
+      if (!child || child.tagName !== 'BUTTON') continue;
+      var label = String(child.getAttribute('aria-label') || '').toLowerCase();
+      var title = String(child.getAttribute('title') || '').toLowerCase();
+      if (label === 'session history' || title === 'session history') return child;
+    }
+    return null;
+  }
+
+  function ensureHeaderChip() {
+    var parts = headerParts();
+    if (!parts) return null;
+    var header = parts.header;
+    header.setAttribute('data-incipit-edit-header', '1');
+    var chip = directHeaderChip(header);
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = CHIP_CLASS;
+      chip.setAttribute('aria-label', 'Model edit activity');
+      chip.innerHTML =
+        '<span data-incipit-tool-added data-edit-added></span>' +
+        '<span data-incipit-tool-removed data-edit-removed></span>';
+      chip.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        if (isActivityOpen() && popupAnchor === ev.currentTarget) {
+          closeActivityPopup();
+        } else {
+          openActivityPopup(ev.currentTarget);
+        }
+      });
+    }
+    var before = sessionHistoryButton(header);
+    if (!before) {
+      before = parts.spacer && parts.spacer.parentNode === header
+        ? parts.spacer
+        : parts.titleGroup.nextSibling;
+    }
+    if (before && before !== chip && before.parentNode === header) header.insertBefore(chip, before);
+    else if (chip.parentNode !== header) header.appendChild(chip);
+    renderActivityChip(chip);
+    return chip;
+  }
+
+  function fmtCount(n) {
+    n = Math.max(0, Math.round(Number(n) || 0));
+    if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+    return String(n);
+  }
+
+  function fmtFullCount(n) {
+    n = Math.max(0, Math.round(Number(n) || 0));
+    try { return n.toLocaleString(); } catch (_) { return String(n); }
+  }
+
+  function totals() {
+    return latest && latest.totals ? latest.totals : { added: 0, removed: 0, edits: 0, activeDays: 0 };
+  }
+
+  function popupActivityPayload() {
+    return globalLatest || null;
+  }
+
+  function popupTotals() {
+    var payload = popupActivityPayload();
+    return payload && payload.totals
+      ? payload.totals
+      : { added: 0, removed: 0, edits: 0, activeDays: 0, sessions: 0 };
+  }
+
+  function renderActivityChip(chip) {
+    if (!chip) return;
+    var sessionId = getActiveClaudeSessionId();
+    chip.hidden = !sessionId && !latest;
+    var T = totals();
+    var added = '+' + fmtCount(T.added);
+    var removed = '\u2212' + fmtCount(T.removed);
+    var addEl = chip.querySelector('[data-edit-added]');
+    var remEl = chip.querySelector('[data-edit-removed]');
+    if (addEl && addEl.textContent !== added) addEl.textContent = added;
+    if (remEl && remEl.textContent !== removed) remEl.textContent = removed;
+    chip.title = 'Model edits: +' + fmtFullCount(T.added) +
+      ' / \u2212' + fmtFullCount(T.removed) +
+      ' across ' + fmtFullCount(T.edits) + ' tool edits';
+  }
+
+  function activityPayloadSignature(payload) {
+    if (!payload || !payload.totals) return '';
+    var T = payload.totals;
+    var days = Array.isArray(payload.days) ? payload.days : [];
+    var daySig = '';
+    for (var i = 0; i < days.length; i++) {
+      var d = days[i] || {};
+      daySig += ';' + (d.day || '') + ',' + (d.added || 0) + ',' + (d.removed || 0) + ',' + (d.edits || 0);
+    }
+    return [
+      payload.scope || '',
+      payload.status || '',
+      T.added || 0,
+      T.removed || 0,
+      T.edits || 0,
+      T.sessions || 0,
+      T.projects || 0,
+      T.activeDays || 0,
+      days.length,
+      daySig
+    ].join('|');
+  }
+
+  function setPopupActivityPayload(payload) {
+    if (!payload) return false;
+    if (payload.currentProject || payload.global) {
+      projectLatest = payload.currentProject || projectLatest;
+      globalLatest = payload.global || globalLatest;
+    } else {
+      globalLatest = payload;
+    }
+    var sig = activityPayloadSignature(projectLatest) + '##' + activityPayloadSignature(globalLatest);
+    if (sig && sig === popupLatestSig) return false;
+    popupLatestSig = sig;
+    return true;
+  }
+
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  function dayKeyFromDate(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  function startOfLocalDay(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function addDays(d, n) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  }
+
+  function parseDayKey(key) {
+    var m = String(key || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+
+  function fmtDayTitle(key) {
+    var d = parseDayKey(key);
+    if (!d || isNaN(d.getTime())) return key || '';
+    return MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+  }
+
+  function activityDayMap() {
+    var map = Object.create(null);
+    var payload = popupActivityPayload();
+    var days = payload && Array.isArray(payload.days) ? payload.days : [];
+    for (var i = 0; i < days.length; i++) {
+      var d = days[i];
+      if (!d || !d.day) continue;
+      map[d.day] = {
+        day: d.day,
+        added: Number(d.added) || 0,
+        removed: Number(d.removed) || 0,
+        edits: Number(d.edits) || 0,
+      };
+    }
+    return map;
+  }
+
+  function heatLevel(value, max) {
+    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(max) || max <= 0) return 0;
+    return Math.max(1, Math.min(4, Math.ceil(Math.sqrt(value) / Math.sqrt(max) * 4)));
+  }
+
+  function buildHeatmap() {
+    var map = activityDayMap();
+    var today = startOfLocalDay(new Date());
+    var start = addDays(today, -today.getDay() - 53 * 7);
+    var end = addDays(today, 6 - today.getDay());
+    var weeks = [];
+    var maxChanged = 0;
+    for (var w = 0; w < 54; w++) {
+      var week = [];
+      for (var dow = 0; dow < 7; dow++) {
+        var date = addDays(start, w * 7 + dow);
+        var key = dayKeyFromDate(date);
+        var item = map[key] || { day: key, added: 0, removed: 0, edits: 0 };
+        var changed = item.added + item.removed;
+        if (date <= today && changed > maxChanged) maxChanged = changed;
+        week.push({ date: date, key: key, item: item, future: date > today || date > end });
+      }
+      weeks.push(week);
+    }
+    return { weeks: weeks, maxChanged: maxChanged };
+  }
+
+  function cellTip(cell) {
+    var item = cell.item || {};
+    return fmtDayTitle(cell.key) +
+      ' · +' + fmtFullCount(item.added) +
+      ' / \u2212' + fmtFullCount(item.removed) +
+      ' · ' + fmtFullCount(item.edits) + ' edits';
+  }
+
+  function escapeAttr(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderActivityHeatmap() {
+    var H = buildHeatmap();
+    var split = 27;
+    var bands = [H.weeks.slice(0, split), H.weeks.slice(split)];
+
+    function renderBand(weeks) {
+      var monthHtml = '';
+      var weeksHtml = '';
+      for (var w = 0; w < weeks.length; w++) {
+        var week = weeks[w];
+        var label = '';
+        for (var d = 0; d < week.length; d++) {
+          if (week[d].date.getDate() === 1) {
+            label = MONTHS[week[d].date.getMonth()];
+            break;
+          }
+        }
+        if (w === 0 && !label) label = MONTHS[week[0].date.getMonth()];
+        monthHtml += '<span>' + label + '</span>';
+        weeksHtml += '<div class="cceEditWeek">';
+        for (var i = 0; i < week.length; i++) {
+          var cell = week[i];
+          var changed = cell.item.added + cell.item.removed;
+          var level = cell.future ? 0 : heatLevel(changed, H.maxChanged);
+          var tip = cell.future ? '' : cellTip(cell);
+          weeksHtml +=
+            '<span class="cceEditCell' + (cell.future ? ' cceEditCellFuture' : '') + '"' +
+            ' data-level="' + level + '"' +
+            ' data-date="' + cell.key + '"' +
+            ' data-tip="' + escapeAttr(tip) + '"' +
+            ' aria-label="' + escapeAttr(tip) + '"></span>';
+        }
+        weeksHtml += '</div>';
+      }
+
+      return (
+        '<div class="cceEditBand" style="--cce-edit-weeks:' + weeks.length + '">' +
+          '<div class="cceEditMonths">' + monthHtml + '</div>' +
+          '<div class="cceEditHeatmapBody">' +
+            '<div class="cceEditWeekdays" aria-hidden="true">' +
+              '<span></span><span>M</span><span></span><span>W</span><span></span><span>F</span><span></span>' +
+            '</div>' +
+            '<div class="cceEditWeeks">' + weeksHtml + '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    return (
+      '<div class="cceEditHeatmap">' +
+        renderBand(bands[0]) +
+        renderBand(bands[1]) +
+      '</div>'
+    );
+  }
+
+  function renderActivityPopup() {
+    if (!popupEl) return;
+    var G = popupTotals();
+    var P = projectLatest && projectLatest.totals
+      ? projectLatest.totals
+      : { added: 0, removed: 0, edits: 0, activeDays: 0, sessions: 0 };
+    var hasEdits = (G.edits || 0) > 0;
+    var hasGlobal = !!globalLatest;
+    var indexing = globalLatest && globalLatest.status === 'indexing';
+    var projectName = projectLatest && projectLatest.projectName
+      ? projectLatest.projectName
+      : 'Current project';
+    var facts = hasGlobal
+      ? '<span>' + fmtFullCount(G.edits) + ' global tool edits</span>' +
+        '<span>' + fmtFullCount(G.sessions || 0) + ' conversations</span>' +
+        '<span>' + fmtFullCount(G.projects || 0) + ' recorded projects</span>' +
+        '<span>' + fmtFullCount(G.activeDays) + ' active days</span>'
+      : '<span>Loading index</span>';
+    popupEl.innerHTML =
+      '<div class="cceEditShell">' +
+        '<div class="cceEditProjectSummary">' +
+          '<div class="cceEditProjectLabel">Current project</div>' +
+          '<div class="cceEditProjectName" title="' + escapeAttr(projectName) + '">' + escapeAttr(projectName) + '</div>' +
+          '<div class="cceEditTotal">' +
+            '<span data-incipit-tool-added>+' + fmtFullCount(P.added) + '</span>' +
+            '<span data-incipit-tool-removed>\u2212' + fmtFullCount(P.removed) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="cceEditRule"></div>' +
+        '<div class="cceEditHead">' +
+          '<div class="cceEditTitleBlock">' +
+            '<div class="cceEditKicker">All Claude Code conversations</div>' +
+            '<div class="cceEditScope">Across recorded projects</div>' +
+          '</div>' +
+          (indexing ? '<div class="cceEditStatus">Indexing</div>' : '') +
+        '</div>' +
+        '<div class="cceEditFacts">' +
+          facts +
+        '</div>' +
+        renderActivityHeatmap() +
+        '<div class="cceEditLegend">' +
+          '<span>' + (hasEdits ? 'Less' : 'No model edits yet') + '</span>' +
+          '<span class="cceEditLegendCells" aria-hidden="true">' +
+            '<i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i>' +
+          '</span>' +
+          '<span>More</span>' +
+        '</div>' +
+      '</div>' +
+      '';
+  }
+
+  function buildActivityPopup() {
+    var el = document.createElement('div');
+    el.className = POPUP_CLASS;
+    el.setAttribute('role', 'dialog');
+    el.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    el.addEventListener('pointermove', handleActivityPointerMove);
+    el.addEventListener('pointerleave', hideActivityTooltip);
+    return el;
+  }
+
+  function ensureActivityTooltip() {
+    if (tooltipEl) return tooltipEl;
+    tooltipEl = document.createElement('div');
+    tooltipEl.className = 'cceEditTooltip';
+    document.body.appendChild(tooltipEl);
+    return tooltipEl;
+  }
+
+  function handleActivityPointerMove(ev) {
+    var cell = ev.target && ev.target.closest ? ev.target.closest('.cceEditCell') : null;
+    if (!cell || !popupEl || !popupEl.contains(cell)) {
+      hideActivityTooltip();
+      return;
+    }
+    var tip = cell.getAttribute('data-tip') || '';
+    if (!tip) {
+      hideActivityTooltip();
+      return;
+    }
+    var tt = ensureActivityTooltip();
+    if (tt.textContent !== tip) tt.textContent = tip;
+    tt.setAttribute('data-active', '1');
+    var margin = 8;
+    var x = ev.clientX + 12;
+    var y = ev.clientY - 30;
+    var w = tt.offsetWidth || 160;
+    var h = tt.offsetHeight || 24;
+    if (x + w > window.innerWidth - margin) x = window.innerWidth - margin - w;
+    if (y + h > window.innerHeight - margin) y = window.innerHeight - margin - h;
+    if (x < margin) x = margin;
+    if (y < margin) y = margin;
+    tt.style.left = Math.round(x) + 'px';
+    tt.style.top = Math.round(y) + 'px';
+  }
+
+  function hideActivityTooltip() {
+    if (tooltipEl) tooltipEl.removeAttribute('data-active');
+  }
+
+  function positionActivityPopup() {
+    if (!popupEl || !popupAnchor) return;
+    var r = popupAnchor.getBoundingClientRect();
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var margin = 8;
+    var safeWidth = Math.min(420, Math.max(320, vw - margin * 2));
+    popupEl.style.width = safeWidth + 'px';
+    popupEl.style.maxWidth = safeWidth + 'px';
+    var w = popupEl.offsetWidth;
+    var h = popupEl.offsetHeight;
+    var left = Math.round(r.left);
+    if (left + w > vw - margin) left = vw - margin - w;
+    if (left < margin) left = margin;
+    var top = Math.round(r.bottom + 8);
+    if (top + h > vh - margin) top = Math.round(r.top - h - 8);
+    if (top < margin) top = margin;
+    popupEl.style.left = left + 'px';
+    popupEl.style.top = top + 'px';
+  }
+
+  function openActivityPopup(anchor) {
+    popupAnchor = anchor;
+    if (!popupEl) {
+      popupEl = buildActivityPopup();
+      document.body.appendChild(popupEl);
+    }
+    popupEl.classList.add('cceEditOpen');
+    anchor.classList.add('cceEditChipActive');
+    renderActivityPopup();
+    positionActivityPopup();
+    scheduleActivityIdentityPublish(true, true);
+  }
+
+  function closeActivityPopup() {
+    if (!popupEl) return;
+    popupEl.classList.remove('cceEditOpen');
+    if (popupAnchor) popupAnchor.classList.remove('cceEditChipActive');
+    popupAnchor = null;
+    hideActivityTooltip();
+  }
+
+  function isActivityOpen() {
+    return !!(popupEl && popupEl.classList.contains('cceEditOpen'));
+  }
+
+  window.addEventListener('message', function(ev) {
+    var d = ev && ev.data;
+    if (!d || d.__incipitEditActivity !== true || !d.payload) return;
+    var current = getActiveClaudeSessionId();
+    if (current && d.payload.sessionId && d.payload.sessionId !== current) return;
+    var popupChanged = false;
+    var hadProjectBefore = !!projectLatest;
+    if (d.payload.projectOnly) {
+      if (d.payload.project) popupChanged = setPopupActivityPayload(d.payload.project);
+    } else {
+      latest = d.payload.conversation || d.payload;
+      if (d.payload.project) popupChanged = setPopupActivityPayload(d.payload.project);
+    }
+    var chip = ensureHeaderChip();
+    renderActivityChip(chip);
+    if (isActivityOpen() && popupChanged) {
+      renderActivityPopup();
+      if (!hadProjectBefore) positionActivityPopup();
+    }
+  });
+
+  document.addEventListener('click', function(ev) {
+    if (!isActivityOpen()) return;
+    var t = ev.target;
+    if (popupEl && popupEl.contains(t)) return;
+    if (popupAnchor && popupAnchor.contains(t)) return;
+    closeActivityPopup();
+  }, true);
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && isActivityOpen()) closeActivityPopup();
+  }, true);
+  window.addEventListener('resize', function() { if (isActivityOpen()) positionActivityPopup(); });
+  window.addEventListener('scroll', function() { if (isActivityOpen()) positionActivityPopup(); }, true);
+
+  var ensureScheduled = false;
+  function scheduleEnsureHeaderChip() {
+    if (ensureScheduled) return;
+    ensureScheduled = true;
+    requestAnimationFrame(function() {
+      ensureScheduled = false;
+      ensureHeaderChip();
+    });
+  }
+
+  function mutationTouchesHeader(m) {
+    for (var i = 0; i < m.addedNodes.length; i++) {
+      var n = m.addedNodes[i];
+      if (!n || n.nodeType !== 1) continue;
+      var cls = typeof n.className === 'string' ? n.className : '';
+      if (n.tagName === 'BUTTON') {
+        var label = String(n.getAttribute('aria-label') || '').toLowerCase();
+        var title = String(n.getAttribute('title') || '').toLowerCase();
+        if (label === 'session history' || title === 'session history') return true;
+      }
+      if (cls.indexOf('header_') !== -1 || cls.indexOf('titleGroup') !== -1) return true;
+      if (n.querySelector && n.querySelector('[class^="header_"], [class*="titleGroup"], button[aria-label="Session history"], button[title="Session history"]')) return true;
+    }
+    return false;
+  }
+
+  var mo = new MutationObserver(function(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      if (mutationTouchesHeader(mutations[i])) { scheduleEnsureHeaderChip(); return; }
+    }
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  ensureHeaderChip();
+  setupActivityIdentityBridge();
+}
+
 
 export function initFooterBadge() {
+  setupEditActivityHeader();
   setupCacheBadge();
   setupFooterAbbreviation();
   setupKbdSymbols();
