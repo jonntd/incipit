@@ -206,6 +206,6 @@ VS Code 的扩展之间有严格的沙箱隔离，一个插件没有办法向另
 
 ## License
 
-MIT. 见 [LICENSE](LICENSE)。
+从下一个版本开始，incipit 按 GNU Affero General Public License v3.0 or later 发布。此前已经发布的版本仍保留其发布时的许可。见 [LICENSE](LICENSE)。
 
 ---

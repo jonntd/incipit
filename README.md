@@ -208,6 +208,6 @@ Thanks to the [linuxdo](https://linux.do/) community for discussion, sharing, an
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Starting with the next release, incipit is distributed under the GNU Affero General Public License v3.0 or later. Earlier published releases remain under the license they were published with. See [LICENSE](LICENSE).
 
 ---
