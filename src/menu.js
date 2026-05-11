@@ -2124,19 +2124,15 @@ function extractFlags(args) {
 
 // Update-check pipeline. Two cooperating concerns live here:
 //
-//   1. Cache in `~/.incipit/config.json` under `lastUpdateCheck` (epoch ms)
-//      and `lastKnownLatest` (version string). A cold run HTTPs the npm
-//      registry; warm runs within 12h reuse the cached verdict unless the
-//      cached verdict would show an upgrade prompt. Prompt text should not
-//      lag behind a just-published release, so outdated cached installs get
-//      one fresh registry probe before we ask the user to upgrade.
+//   1. Every run probes the npm registry for the latest published version.
+//      `lastUpdateCheck` / `lastKnownLatest` are retained only as diagnostic
+//      breadcrumbs in the config file; they never suppress a fresh check.
 //   2. Opt-out channels — config flag `updateCheck: false`, env var
 //      `INCIPIT_NO_UPDATE_CHECK=1`, and CLI flag `--no-update-check`.
 //      Any one of them skips the check entirely (returns `reason: disabled`).
 //
 // Network and JSON errors are swallowed silently; a failed check is not a
 // reason to block the CLI. Callers branch only on `info.outdated === true`.
-const UPDATE_CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const UPDATE_CHECK_TIMEOUT_MS = 2500;
 
 function isUpdateCheckDisabled() {
@@ -2203,50 +2199,9 @@ async function checkForUpdate() {
     return { current, latest: null, outdated: false, reason: 'disabled' };
   }
 
-  const cfg = readConfig() || {};
   const now = Date.now();
-  const cachedLatest = typeof cfg.lastKnownLatest === 'string' ? cfg.lastKnownLatest : null;
-  const cachedAt = typeof cfg.lastUpdateCheck === 'number' ? cfg.lastUpdateCheck : 0;
-  const cacheFresh = cachedLatest && (now - cachedAt) < UPDATE_CACHE_MAX_AGE_MS;
-
-  if (cacheFresh) {
-    const cachedOutdated = compareVersions(current, cachedLatest) < 0;
-    if (cachedOutdated) {
-      const latest = await fetchLatestVersion(pkg.name, UPDATE_CHECK_TIMEOUT_MS);
-      if (latest) {
-        try {
-          const next = readConfig() || {};
-          next.lastUpdateCheck = now;
-          next.lastKnownLatest = latest;
-          writeConfig(next);
-        } catch (_) {}
-        return {
-          current,
-          latest,
-          outdated: compareVersions(current, latest) < 0,
-          reason: 'fresh',
-        };
-      }
-    }
-    return {
-      current,
-      latest: cachedLatest,
-      outdated: cachedOutdated,
-      reason: 'cache',
-    };
-  }
-
   const latest = await fetchLatestVersion(pkg.name, UPDATE_CHECK_TIMEOUT_MS);
   if (!latest) {
-    // Network error or stale cache: fall back to whatever we last knew.
-    if (cachedLatest) {
-      return {
-        current,
-        latest: cachedLatest,
-        outdated: compareVersions(current, cachedLatest) < 0,
-        reason: 'cache-stale',
-      };
-    }
     return { current, latest: null, outdated: false, reason: 'network' };
   }
 
