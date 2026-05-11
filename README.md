@@ -8,7 +8,7 @@
 
 incipit redesigns Claude Code's entire VS Code frontend — body typography, math rendering, tool-call folding, diff, local history editing — in a literary style, with engineering surfaces folded into the same visual language. It does not touch model requests, authentication, tool schema, or the CLI spawn protocol; every byte sent to the server is identical before and after installation.
 
-Run it once and reload VS Code — no extra dependencies. Each time Claude Code updates and overwrites the frontend files, run it again. Backups are kept per version and revertible at any time.
+Run it once and reload VS Code — no extra dependencies. Each time Claude Code updates and overwrites the frontend files, run it again. incipit keeps a lightweight official restore point per target/version, so you can return the patched extension to stock Claude Code at any time.
 
 ---
 
@@ -39,13 +39,13 @@ incipit
 On first launch you'll choose a CLI language, then enter the interactive menu:
 
 <p align="center">
-  <img src="docs/screenshots/cli-menu-en.png" width="420" alt="incipit CLI main menu: apply patch / restore backup / configure / manage targets / CLI language" />
+  <img src="docs/screenshots/cli-menu-en.png" width="420" alt="incipit CLI main menu: apply patch / restore official Claude Code / configure / manage targets / CLI language" />
   <img src="docs/screenshots/cli-configure-en.png" width="420" alt="incipit configure submenu: math rendering, session usage, body font size, theme palette" />
 </p>
 
 Menu actions:
 
-- **Apply / Restore**: apply the patch, or roll back to the pre-apply state. Each apply is automatically backed up beforehand, scoped per Claude Code version with a full snapshot (including the entire `webview/` directory). Restore does not touch other VS Code settings.
+- **Apply / Restore**: apply the patch, or restore the selected Claude Code target to its official files. The first clean apply for each target/version records one official restore point; later applies reuse it. Restore does not touch other VS Code settings.
 - **Configure**: toggle math rendering and the session usage badge; switch body font size (12 / 13 / 14) and warm-black / warm-white palette.
 - **Manage Claude Code targets**: auto-detects VS Code / Cursor / Insiders / VSCodium / Windsurf / Antigravity, and accepts manually specified extension directories.
 - **CLI language**: switch between Chinese and English at any time.
@@ -54,7 +54,7 @@ Skip the menu and run directly:
 
 ```bash
 incipit apply     # apply directly
-incipit restore   # open the lightweight restore picker
+incipit restore   # restore the current target to official Claude Code files
 ```
 
 After every Claude Code update, the local patch is overwritten by the official files — run `incipit` again and re-apply. To upgrade incipit itself, use the same global install command.
@@ -65,7 +65,7 @@ To uninstall only the incipit CLI:
 npm uninstall -g incipit
 ```
 
-This removes the `incipit` command itself. It does not restore a patched Claude Code extension or delete `~/.incipit/` / `~/.incipit-backup/`; run `incipit restore` first if you want to roll back the patch.
+This removes the `incipit` command itself. It does not restore a patched Claude Code extension or delete `~/.incipit/`; run `incipit restore` first if you want to roll back the patch.
 
 ---
 
@@ -176,7 +176,9 @@ The Claude provider's terms of service govern the relationship between you and t
 incipit restore
 ```
 
-In the restore menu, the CLI first locks onto your current Claude Code target and only offers backups matching the same version and same extension directory. Backups across different Claude Code versions never restore into each other; the same backup name can safely exist under multiple versions. Pick one, confirm, and the modified extension files are written back to their pre-apply state — copied resources under `webview/` are removed too. Any other settings you've configured in VS Code are not affected.
+The CLI locks onto the current Claude Code target, confirms the action, then restores the official files saved for the same version and extension directory. Copied incipit resources under `webview/` are removed too. Any other settings you've configured in VS Code are not affected.
+
+For the `0.1.7` transition, `incipit clean-backups` is available to delete old named backup files under `~/.incipit-backup/`. It does not delete the new official restore points under `~/.incipit/`.
 
 ---
 

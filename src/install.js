@@ -1319,6 +1319,9 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
 
 module.exports = {
   CLAUDE_CODE_EXTENSION_PREFIX,
+  ROOT_WEBVIEW_FILES,
+  LOCAL_ASSET_TREES,
+  LEGACY_ASSET_TREES,
   SYSTEM_FONT_FILES,
   extensionRoot,
   vscodeUserSettingsPath,

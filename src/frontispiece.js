@@ -285,7 +285,7 @@ function renderTitle(printer, inner, version) {
   }
 }
 
-function renderLedger(printer, indent, inner, target, missingText, backupRoot) {
+function renderLedger(printer, indent, inner, target, missingText, restoreRoot) {
   const valueMax = Math.max(10, inner - indent.length - LAYOUT.LABEL_COL);
   const continuation = indent + ' '.repeat(LAYOUT.LABEL_COL);
   const emitRow = (label, value) => {
@@ -310,7 +310,7 @@ function renderLedger(printer, indent, inner, target, missingText, backupRoot) {
       color(missingText, `${Ansi.GREY}${Ansi.ITALIC}`),
     );
   }
-  emitRow('Backup', shortenPath(backupRoot));
+  emitRow('Restore', shortenPath(restoreRoot));
 }
 
 // Cursor indent replaces the first half of `indent` with a terra `›`
@@ -341,7 +341,7 @@ function promptPrefix() {
 }
 
 function renderMainMenu(options) {
-  const { menuItems, target, missingText, backupRoot, version, hint } = options;
+  const { menuItems, target, missingText, restoreRoot, backupRoot, version, hint } = options;
   clearScreen();
   const { inner, framePad, indent } = frameGeometry();
   const gaps = verticalGaps();
@@ -352,7 +352,7 @@ function renderMainMenu(options) {
   for (let i = 0; i < gaps.topBlanks; i++) printer.blank();
   renderTitle(printer, inner, version);
   for (let i = 0; i < gaps.titleGapAfter; i++) printer.blank();
-  renderLedger(printer, indent, inner, target, missingText, backupRoot);
+  renderLedger(printer, indent, inner, target, missingText, restoreRoot || backupRoot);
   for (let i = 0; i < gaps.ledgerGapAfter; i++) printer.blank();
   printer.scrollStart();
   renderMenuItems(printer, indent, menuItems);

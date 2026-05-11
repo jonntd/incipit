@@ -12,11 +12,11 @@ const {
 } = require('./install');
 const {
   BACKUP_ROOT,
-  DEFAULT_BACKUP_NAME,
-  currentBackupDir,
-  createBackup,
-  listAvailableBackups,
-  restoreBackup,
+  OFFICIAL_RESTORE_ROOT,
+  ensureOfficialRestorePoint,
+  restoreOfficialTarget,
+  legacyBackupStats,
+  cleanLegacyBackups,
 } = require('./backup');
 const {
   getLanguage,
@@ -135,7 +135,6 @@ const ASSET_TREE_DESC_KEYS = Object.freeze({
 
 async function handleApply({
   silent = false,
-  askBackupName = false,
   interactive = false,
   extensionsDir = null,
   settingsPath = null,
@@ -204,25 +203,11 @@ async function handleApply({
 
   if (!silent) clearScreen({ history: true });
 
-  let backupName = DEFAULT_BACKUP_NAME;
-  if (askBackupName) {
-    console.log(color(t('apply.title'), Ansi.TERRA));
-    console.log();
-    console.log(`${t('apply.extension_header').padEnd(18)}: ${target.extensionDir}`);
-    console.log(`${t('apply.version_header').padEnd(18)}: ${target.version}`);
-    console.log();
-    try {
-      const raw = (await prompt(t('apply.prompt_backup_name'))).trim();
-      if (raw) backupName = raw;
-    } catch (_) {}
-    console.log();
-  }
-
-  let manifest;
+  let restorePoint;
   try {
-    manifest = createBackup(target, { name: backupName });
+    restorePoint = ensureOfficialRestorePoint(target);
   } catch (exc) {
-    console.log(color(t('apply.backup_failed', { msg: exc.message }), Ansi.RED));
+    console.log(color(t('apply.restore_point_failed', { msg: exc.message }), Ansi.RED));
     if (exc.stack) console.log(exc.stack);
     return 1;
   }
@@ -237,8 +222,7 @@ async function handleApply({
   if (!silent) clearScreen({ history: true });
   printApplyReport({
     target,
-    manifest,
-    backupDir: currentBackupDir(target, manifest.name),
+    restorePoint,
     result,
   });
   return 0;
@@ -296,7 +280,7 @@ function languageDisplayLabel(lang) {
   return lang === 'zh' ? t('picker.option_zh') : t('picker.option_en');
 }
 
-function printApplyReport({ target, manifest, backupDir, result }) {
+function printApplyReport({ target, restorePoint, result }) {
   const appName = inferHostAppName(target);
   console.log(color(t('apply.title'), Ansi.TERRA));
   console.log();
@@ -304,8 +288,8 @@ function printApplyReport({ target, manifest, backupDir, result }) {
   console.log(color(target.extensionDir, Ansi.GREY));
   console.log();
 
-  printReportSection(t('apply.report.backup_heading'), backupDir);
-  printTree(buildBackupTree(manifest));
+  printReportSection(t('apply.report.restore_heading'), restorePoint && restorePoint.restorePointDir);
+  printTree(buildRestorePointTree(restorePoint));
   console.log();
 
   printReportSection(t('apply.report.patch_heading'));
@@ -346,22 +330,25 @@ function padApplyTreeName(name) {
   return String(name || '').padEnd(APPLY_TREE_NAME_WIDTH);
 }
 
-function buildBackupTree(manifest) {
+function buildRestorePointTree(restorePoint) {
+  const status = restorePoint && restorePoint.status ? restorePoint.status : 'existing';
+  const manifest = restorePoint && restorePoint.manifest ? restorePoint.manifest : null;
   const entries = Array.isArray(manifest && manifest.entries) ? manifest.entries : [];
-  return entries.map(e => {
-    if (e.logicalName === 'extension.js') {
-      return { name: 'extension.js', desc: t('apply.report.backup_extension_desc') };
-    }
-    if (e.logicalName === 'webview_dir') {
-      const files = fileCount(e.files ? e.files.length : 0);
-      return { name: 'webview/', desc: t('apply.report.backup_webview_desc', { files }) };
-    }
-    if (e.logicalName === 'vscode_settings.json') {
-      const keys = settingKeyCount(e.keys ? e.keys.length : 0);
-      return { name: 'settings.json', desc: t('apply.report.backup_settings_desc', { keys }) };
-    }
-    return { name: e.logicalName || 'unknown', desc: t('apply.report.backup_generic_desc') };
-  });
+  const ownedPathCount = entries.filter(e =>
+    e && typeof e.logicalName === 'string' && e.logicalName.startsWith('webview/') &&
+    e.logicalName !== 'webview/index.js'
+  ).length;
+  return [
+    { name: 'official files', desc: t(`apply.report.restore_${status}`) },
+    { name: 'extension.js', desc: t('apply.report.restore_extension_desc') },
+    { name: 'webview/index.js', desc: t('apply.report.restore_webview_index_desc') },
+    {
+      name: 'incipit-owned paths',
+      desc: t('apply.report.restore_cleanup_desc', {
+        count: ownedPathCount,
+      }),
+    },
+  ];
 }
 
 function buildPatchTree(result) {
@@ -435,8 +422,12 @@ function fileCount(count) {
   return t('apply.report.file_count', { count });
 }
 
-function settingKeyCount(count) {
-  return t('apply.report.setting_key_count', { count });
+function formatBytes(bytes) {
+  const n = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return `${n} B`;
 }
 
 function inferHostAppName(target) {
@@ -512,53 +503,67 @@ async function handleRestore({
   console.log(`${t('apply.version_header').padEnd(18)}: ${target.version}`);
   console.log();
 
-  const backups = listAvailableBackups({ target });
-  if (!backups.length) {
-    console.log(color(t('restore.none'), Ansi.YELLOW));
-    console.log(t('restore.backup_root', { path: BACKUP_ROOT }));
-    return 0;
-  }
-
-  console.log(t('restore.backup_root', { path: BACKUP_ROOT }));
-  console.log();
-  console.log(t('restore.available'));
-  backups.forEach((b, i) => console.log(`  [${i + 1}] ${b.label}`));
-  console.log('  ' + t('restore.cancel_option'));
+  console.log(t('restore.restore_root', { path: OFFICIAL_RESTORE_ROOT }));
   console.log();
 
-  const choice = (await prompt(t('restore.pick_prompt'))).trim().toLowerCase();
-  if (!choice || choice === 'q' || choice === 'quit') {
-    console.log(color(t('restore.cancelled'), Ansi.YELLOW));
-    return 0;
-  }
-  const idx = parseInt(choice, 10) - 1;
-  if (Number.isNaN(idx) || idx < 0 || idx >= backups.length) {
-    console.log(color(t('restore.invalid_choice'), Ansi.RED));
-    return 1;
+  if (!silent) {
+    const confirm = (await prompt(t('restore.confirm_official'))).trim().toLowerCase();
+    if (confirm !== 'y' && confirm !== 'yes') {
+      console.log(color(t('restore.cancelled'), Ansi.YELLOW));
+      return 0;
+    }
+    console.log();
   }
 
-  const { label, backupDir, manifest } = backups[idx];
-  console.log();
-  console.log(t('restore.will_restore', { label }));
-  console.log(t('restore.backup_dir',   { dir: backupDir }));
-  console.log();
-  const confirm = (await prompt(t('restore.confirm'))).trim().toLowerCase();
-  if (confirm !== 'y' && confirm !== 'yes') {
-    console.log(color(t('restore.cancelled'), Ansi.YELLOW));
-    return 0;
-  }
-
-  let restored, skipped;
+  let result;
   try {
-    [restored, skipped] = restoreBackup(manifest, { target });
+    result = restoreOfficialTarget(target);
   } catch (exc) {
     console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
     if (exc.stack) console.log(exc.stack);
     return 1;
   }
+  if (result.alreadyOfficial) {
+    console.log(color(t('restore.already_official'), Ansi.YELLOW));
+    return 0;
+  }
   console.log();
-  console.log(color(t('restore.done', { restored, skipped }), Ansi.GREEN));
+  console.log(t('restore.restore_point_dir', { dir: result.restorePointDir }));
+  console.log(color(t('restore.done', { restored: result.restored, skipped: result.skipped }), Ansi.GREEN));
   console.log(color(t('restore.reload_hint'), Ansi.YELLOW));
+  return 0;
+}
+
+async function handleCleanLegacyBackups({ silent = false } = {}) {
+  if (!silent) clearScreen({ history: true });
+  console.log(color(t('cleanup.title'), Ansi.CYAN));
+  console.log();
+  const stats = legacyBackupStats();
+  console.log(t('cleanup.backup_root', { path: BACKUP_ROOT }));
+  console.log(t('cleanup.summary', {
+    files: stats.files,
+    dirs: stats.dirs,
+    size: formatBytes(stats.bytes),
+  }));
+  console.log();
+  if (!stats.exists) {
+    console.log(color(t('cleanup.none'), Ansi.YELLOW));
+    return 0;
+  }
+  if (!silent) {
+    const confirm = (await prompt(t('cleanup.confirm'))).trim().toLowerCase();
+    if (confirm !== 'y' && confirm !== 'yes') {
+      console.log(color(t('restore.cancelled'), Ansi.YELLOW));
+      return 0;
+    }
+    console.log();
+  }
+  const removed = cleanLegacyBackups();
+  console.log(color(t('cleanup.done', {
+    files: removed.files,
+    dirs: removed.dirs,
+    size: formatBytes(removed.bytes),
+  }), Ansi.GREEN));
   return 0;
 }
 
@@ -571,12 +576,13 @@ function mainMenuRows() {
     { id: 'configure', mark: '3.', label: t('menu.configure') },
     { id: 'target',    mark: '4.', label: t('menu.target') },
     { id: 'language',  mark: '5.', label: t('menu.cli_language') },
+    { id: 'cleanup',   mark: '6.', label: t('menu.cleanup_backups') },
     { id: 'quit',      mark: 'q.', label: t('menu.quit') },
   ];
 }
 
 // Returns one of:
-// 'apply' | 'restore' | 'configure' | 'target' | 'language' | 'quit'.
+// 'apply' | 'restore' | 'configure' | 'target' | 'language' | 'cleanup' | 'quit'.
 // The ledger shows the target apply would default to — auto-detected
 // and merged with the user's stored manual entries. We try the user's
 // last-used target first; if it's invalid (or no last-used is recorded),
@@ -604,6 +610,7 @@ async function selectMainMenu() {
       target,
       missingText: t('ledger.extension_missing'),
       backupRoot: BACKUP_ROOT,
+      restoreRoot: OFFICIAL_RESTORE_ROOT,
       version: PACKAGE_VERSION,
       menuItems: rows.map((r, i) => ({
         mark: r.mark,
@@ -1992,6 +1999,7 @@ function printHelp() {
     ${cmd('incipit')}                                   ${t('help.cmd_default')}
     ${cmd('incipit apply')}                             ${t('help.cmd_apply')}
     ${cmd('incipit restore')}                           ${t('help.cmd_restore')}
+    ${cmd('incipit clean-backups')}                     ${t('help.cmd_clean_backups')}
     ${cmd('incipit list-targets')}                      ${t('help.cmd_list_targets')}
     ${cmd('incipit --version')}                         ${t('help.cmd_version')}
 
@@ -2344,6 +2352,7 @@ async function runInteractiveScreenLoop() {
       return { action: 'apply', target };
     }
     if (action === 'restore') return { action: 'restore' };
+    if (action === 'cleanup') return { action: 'cleanup' };
     if (action === 'configure') {
       await runScreenTransition(handleConfigure);
     } else if (action === 'target') {
@@ -2362,7 +2371,7 @@ async function main(argv) {
   const interactive = !(
     args.includes('--help') || args.includes('-h') ||
     args.includes('--version') || args.includes('-v') ||
-    args[0] === 'apply' || args[0] === 'restore' || args[0] === 'list-targets'
+    args[0] === 'apply' || args[0] === 'restore' || args[0] === 'clean-backups' || args[0] === 'list-targets'
   );
 
   await resolveLocale({ interactive, forcedLang });
@@ -2385,6 +2394,10 @@ async function main(argv) {
   }
   if (args[0] === 'restore') {
     const code = await handleRestore({ silent: true, extensionsDir, settingsPath });
+    return finishWithUpdateNotice(code, updatePromise);
+  }
+  if (args[0] === 'clean-backups') {
+    const code = await handleCleanLegacyBackups({ silent: true });
     return finishWithUpdateNotice(code, updatePromise);
   }
   if (args[0] === 'list-targets') {
@@ -2418,7 +2431,7 @@ async function main(argv) {
     }
     if (action === 'quit' || (action && action.action === 'back')) return 0;
     if (action && action.action === 'apply') {
-      try { await handleApply({ askBackupName: true, target: action.target }); }
+      try { await handleApply({ target: action.target }); }
       catch (exc) {
         console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
         if (exc.stack) console.log(exc.stack);
@@ -2426,6 +2439,13 @@ async function main(argv) {
       await pause();
     } else if (action && action.action === 'restore') {
       try { await handleRestore(); }
+      catch (exc) {
+        console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
+        if (exc.stack) console.log(exc.stack);
+      }
+      await pause();
+    } else if (action && action.action === 'cleanup') {
+      try { await handleCleanLegacyBackups(); }
       catch (exc) {
         console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
         if (exc.stack) console.log(exc.stack);
