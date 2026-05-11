@@ -3704,6 +3704,7 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
   const ASK_ACTIVE_TAB_SELECTOR = '[class*="navTabActive_"]';
 
   const pendingAskRequests = new Set();
+  const observedAskRequests = new WeakSet();
   let askRequestScanScheduled = false;
 
   function isAskRequestContainer(el) {
@@ -3862,6 +3863,20 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     container.setAttribute('data-incipit-ask-request', '');
     ensureAskCollapsedBar(container);
     ensureAskCollapseButton(container);
+    observeAskRequestContainer(container);
+  }
+
+  function observeAskRequestContainer(container) {
+    if (!container || observedAskRequests.has(container)) return;
+    observedAskRequests.add(container);
+    const localObserver = new MutationObserver(() => enqueueAskRequestContainer(container));
+    localObserver.observe(container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'aria-checked'],
+    });
+    container.__incipitAskRequestObserver = localObserver;
   }
 
   function enqueueAskRequestContainer(container) {
@@ -3885,10 +3900,15 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     if (isAskRequestContainer(root)) enqueueAskRequestContainer(root);
     const closest = closestAskRequestContainer(root);
     if (closest) enqueueAskRequestContainer(closest);
-    if (!includeDescendants || !root.querySelectorAll) return;
-    root.querySelectorAll(ASK_PERMISSION_CONTAINER_SELECTOR).forEach(container => {
-      if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
-    });
+    if (!includeDescendants || !root.querySelector) return;
+    if (root === document.body && root.querySelectorAll) {
+      root.querySelectorAll(ASK_PERMISSION_CONTAINER_SELECTOR).forEach(container => {
+        if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
+      });
+      return;
+    }
+    const container = root.querySelector(ASK_PERMISSION_CONTAINER_SELECTOR);
+    if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
   }
 
   function setupAskRequestRefinement() {
@@ -3907,8 +3927,6 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     mo.observe(document.body, {
       childList: true,
       subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'aria-checked'],
     });
   }
 

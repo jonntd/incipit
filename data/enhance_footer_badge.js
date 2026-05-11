@@ -1,4 +1,4 @@
-import { CFG } from './enhance_shared.js';
+import { CFG, getActiveClaudeSessionId } from './enhance_shared.js';
 import { SEL } from './host_probe.js';
 
 // ============================================================
@@ -153,6 +153,89 @@ function setupCacheBadge() {
   var latest = null;       // Latest payload: ctx/hit plus recent and totals.
   var popupEl = null;
   var popupAnchor = null;  // Badge button currently anchoring the popup.
+  var lastIdentityKey = null;
+  var identityPublishScheduled = false;
+  var identityPublishForce = false;
+  var identityPublishNeedsHistory = false;
+  var historyRequestScheduled = false;
+  var hitRangeStart = 0;
+  var hitRangeEnd = 1;
+  var hitRangeRenderScheduled = false;
+  var selectedHitRows = null;
+
+  function getIncipitVsCodeApi() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') {
+        return globalThis.__incipitGetVsCodeApi();
+      }
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function publishBadgeIdentity(force, includeHistory) {
+    identityPublishScheduled = false;
+    var api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') return;
+    var sessionId = getActiveClaudeSessionId();
+    var key = sessionId || '';
+    if (!force && !includeHistory && key === lastIdentityKey) return;
+    var identityChanged = key !== lastIdentityKey;
+    lastIdentityKey = key;
+    if (identityChanged) {
+      latest = null;
+      hitRangeStart = 0;
+      hitRangeEnd = 1;
+      selectedHitRows = null;
+      ensureBadge();
+      if (isOpen()) { renderPopup(); positionPopup(); }
+    }
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'badge_identity_update',
+        sessionId: sessionId || null,
+        includeHistory: !!includeHistory,
+      });
+    } catch (_) {}
+  }
+
+  function scheduleBadgeIdentityPublish(force, includeHistory) {
+    identityPublishForce = identityPublishForce || !!force;
+    identityPublishNeedsHistory = identityPublishNeedsHistory || !!includeHistory;
+    if (identityPublishScheduled) return;
+    identityPublishScheduled = true;
+    requestAnimationFrame(function() {
+      var forceNow = identityPublishForce;
+      var needsHistoryNow = identityPublishNeedsHistory;
+      identityPublishForce = false;
+      identityPublishNeedsHistory = false;
+      publishBadgeIdentity(forceNow, needsHistoryNow);
+    });
+  }
+
+  function requestBadgeHistory() {
+    if (historyRequestScheduled) return;
+    historyRequestScheduled = true;
+    requestAnimationFrame(function() {
+      historyRequestScheduled = false;
+      if (isOpen()) scheduleBadgeIdentityPublish(true, true);
+    });
+  }
+
+  function setupBadgeIdentityBridge() {
+    scheduleBadgeIdentityPublish(true);
+    setTimeout(function() { scheduleBadgeIdentityPublish(true); }, 450);
+    setTimeout(function() { scheduleBadgeIdentityPublish(true); }, 1800);
+    setInterval(function() { scheduleBadgeIdentityPublish(false); }, 2200);
+    window.addEventListener('focus', function() { scheduleBadgeIdentityPublish(true); });
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden) scheduleBadgeIdentityPublish(true);
+    });
+    document.addEventListener('click', function() {
+      setTimeout(function() { scheduleBadgeIdentityPublish(false); }, 0);
+    }, true);
+  }
 
   function fmtTokens(n) {
     if (!Number.isFinite(n) || n <= 0) return '—';
@@ -177,6 +260,25 @@ function setupCacheBadge() {
     if (s < 86400) return Math.round(s / 3600) + 'h ago';
     return Math.round(s / 86400) + 'd ago';
   }
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+  function sameLocalDate(a, b) {
+    return !!(a && b &&
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate());
+  }
+  function fmtChartTime(iso, rangeStartIso, rangeEndIso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    var start = rangeStartIso ? new Date(rangeStartIso) : null;
+    var end = rangeEndIso ? new Date(rangeEndIso) : null;
+    var time = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    if (sameLocalDate(start, end)) return time;
+    return pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) + ' ' + time;
+  }
   function fmtDuration(ms) {
     if (!Number.isFinite(ms) || ms <= 0) return '—';
     var s = Math.round(ms / 1000);
@@ -185,6 +287,34 @@ function setupCacheBadge() {
     if (m < 60) return m + ' min';
     var h = Math.floor(m / 60), mm = m % 60;
     return h + ' h ' + (mm ? mm + ' min' : '');
+  }
+  function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+  }
+  function axisPct(p) {
+    if (!Number.isFinite(p)) return '—';
+    return Math.round(p * 100) + '%';
+  }
+  function svgNumber(n) {
+    return Number.isFinite(n) ? String(Math.round(n * 10) / 10) : '0';
+  }
+  function pctNumber(n) {
+    if (!Number.isFinite(n) || n <= 0) return '0';
+    return String(Math.round(n * 10) / 10);
+  }
+  function rowTimeMs(row, fallback) {
+    if (row && row.ts) {
+      var t = Date.parse(row.ts);
+      if (!isNaN(t)) return t;
+    }
+    return fallback;
+  }
+  function escapeAttr(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
   function revealVal(el, target) {
     if (el.__cceRAF) { cancelAnimationFrame(el.__cceRAF); el.__cceRAF = null; }
@@ -274,80 +404,638 @@ function setupCacheBadge() {
     el.className = POPUP_CLASS;
     el.setAttribute('role', 'dialog');
     el.innerHTML =
+      '<div class="cceStatOverview" data-overview></div>' +
       '<div class="cceStatSection">' +
-        '<div class="cceStatHeading">Recent requests</div>' +
-        '<div class="cceStatRecent" data-recent></div>' +
+        '<div class="cceStatHeading">Cache hit history</div>' +
+        '<div class="cceHitChart" data-history></div>' +
       '</div>' +
       '<div class="cceStatDivider"></div>' +
       '<div class="cceStatSection">' +
-        '<div class="cceStatHeading">Session</div>' +
+        '<div class="cceStatHeading">Selected range</div>' +
         '<div class="cceStatTotals" data-totals></div>' +
       '</div>';
     el.addEventListener('click', function(ev) { ev.stopPropagation(); });
     return el;
   }
+  function cacheHistoryRows() {
+    var rows = latest && Array.isArray(latest.history) ? latest.history : null;
+    if (!rows || !rows.length) rows = latest && Array.isArray(latest.recent) ? latest.recent : [];
+    return rows
+      .filter(function(r) {
+        return r && Number.isFinite(r.hit) && r.hit >= 0;
+      })
+      .map(function(r) {
+        return {
+          ts: r.ts || '',
+          ctx: Number.isFinite(r.ctx) ? r.ctx : 0,
+          hit: clamp(r.hit, 0, 1),
+          input: Number.isFinite(r.input) ? r.input : 0,
+          write: Number.isFinite(r.cw) ? r.cw : (Number.isFinite(r.write) ? r.write : 0),
+          read: Number.isFinite(r.cr) ? r.cr : (Number.isFinite(r.read) ? r.read : 0),
+          output: Number.isFinite(r.output) ? r.output : 0,
+        };
+      });
+  }
+  function sameBadgePayloadIdentity(a, b) {
+    if (!a || !b) return false;
+    var aSession = a.sessionId || '';
+    var bSession = b.sessionId || '';
+    var aSrc = a.src || '';
+    var bSrc = b.src || '';
+    return (!aSession || !bSession || aSession === bSession) &&
+           (!aSrc || !bSrc || aSrc === bSrc);
+  }
+  function mergeRetainedHistory(payload) {
+    if (!payload || Array.isArray(payload.history)) return payload;
+    if (!latest || !Array.isArray(latest.history) || !sameBadgePayloadIdentity(payload, latest)) {
+      return payload;
+    }
+    var merged = {};
+    for (var key in payload) {
+      if (Object.prototype.hasOwnProperty.call(payload, key)) merged[key] = payload[key];
+    }
+    merged.history = latest.history;
+    return merged;
+  }
+  function minHitRangeFraction(count) {
+    if (!Number.isFinite(count) || count <= 2) return 1;
+    return Math.min(0.25, Math.max(6 / Math.max(1, count - 1), 0.015));
+  }
+  function normalizeHitRange(count) {
+    if (!Number.isFinite(count) || count <= 1) {
+      hitRangeStart = 0;
+      hitRangeEnd = 1;
+      return { start: 0, end: 1, min: 1 };
+    }
+    var min = minHitRangeFraction(count);
+    var start = clamp(hitRangeStart, 0, 1);
+    var end = clamp(hitRangeEnd, 0, 1);
+    if (end < start) {
+      var tmp = start;
+      start = end;
+      end = tmp;
+    }
+    if (end - start < min) {
+      var center = clamp((start + end) / 2, min / 2, 1 - min / 2);
+      start = center - min / 2;
+      end = center + min / 2;
+    }
+    hitRangeStart = clamp(start, 0, 1 - min);
+    hitRangeEnd = clamp(end, hitRangeStart + min, 1);
+    return { start: hitRangeStart, end: hitRangeEnd, min: min };
+  }
+  function visibleHistoryRows(rows) {
+    if (!rows || !rows.length) return [];
+    var range = normalizeHitRange(rows.length);
+    if (range.start <= 0.0001 && range.end >= 0.9999) return rows.slice();
+    var maxIndex = rows.length - 1;
+    var startIndex = Math.floor(range.start * maxIndex);
+    var endIndex = Math.ceil(range.end * maxIndex);
+    startIndex = Math.max(0, Math.min(maxIndex, startIndex));
+    endIndex = Math.max(startIndex, Math.min(maxIndex, endIndex));
+    return rows.slice(startIndex, endIndex + 1);
+  }
+  function setHitRange(start, end) {
+    var rows = cacheHistoryRows();
+    var count = rows.length;
+    var min = minHitRangeFraction(count);
+    start = clamp(start, 0, 1);
+    end = clamp(end, 0, 1);
+    if (end < start) {
+      var t = start;
+      start = end;
+      end = t;
+    }
+    if (end - start < min) {
+      if (Math.abs(start - hitRangeStart) > Math.abs(end - hitRangeEnd)) end = start + min;
+      else start = end - min;
+    }
+    if (start < 0) {
+      end -= start;
+      start = 0;
+    }
+    if (end > 1) {
+      start -= end - 1;
+      end = 1;
+    }
+    start = clamp(start, 0, Math.max(0, 1 - min));
+    end = clamp(end, Math.min(1, start + min), 1);
+    if (Math.abs(start - hitRangeStart) < 0.0005 && Math.abs(end - hitRangeEnd) < 0.0005) return;
+    hitRangeStart = start;
+    hitRangeEnd = end;
+    scheduleHitRangeRender();
+  }
+  function scheduleHitRangeRender() {
+    if (hitRangeRenderScheduled) return;
+    hitRangeRenderScheduled = true;
+    requestAnimationFrame(function() {
+      hitRangeRenderScheduled = false;
+      if (!isOpen()) return;
+      renderPopup();
+      positionPopup();
+    });
+  }
+  function summarizeHistoryRows(rows) {
+    rows = rows || [];
+    var out = {
+      requests: rows.length,
+      fresh: 0,
+      write: 0,
+      read: 0,
+      output: 0,
+      totalContext: 0,
+      latestHit: rows.length ? rows[rows.length - 1].hit : NaN,
+      meanHit: NaN,
+      minHit: NaN,
+      durationMs: 0,
+      firstTs: rows.length ? rows[0].ts : '',
+      lastTs: rows.length ? rows[rows.length - 1].ts : '',
+    };
+    if (!rows.length) return out;
+    var hitSum = 0;
+    var minHit = 1;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      out.fresh += r.input || 0;
+      out.write += r.write || 0;
+      out.read += r.read || 0;
+      out.output += r.output || 0;
+      out.totalContext += r.ctx || 0;
+      hitSum += r.hit || 0;
+      minHit = Math.min(minHit, r.hit || 0);
+    }
+    out.meanHit = hitSum / rows.length;
+    out.minHit = minHit;
+    var first = Date.parse(out.firstTs);
+    var last = Date.parse(out.lastTs);
+    if (!isNaN(first) && !isNaN(last) && last >= first) out.durationMs = last - first;
+    return out;
+  }
+  function rangeTimeLabel(rows) {
+    if (!rows || !rows.length) return '—';
+    var first = rows[0].ts;
+    var last = rows[rows.length - 1].ts;
+    if (rows.length === 1) return fmtChartTime(first, first, last);
+    return fmtChartTime(first, first, last) + ' - ' + fmtChartTime(last, first, last);
+  }
+  function sampledLinePoints(points, maxBuckets) {
+    if (!points || points.length <= maxBuckets * 2) return points || [];
+    var buckets = [];
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      var b = Math.max(0, Math.min(maxBuckets - 1, Math.floor((p.xNorm || 0) * maxBuckets)));
+      if (!buckets[b]) buckets[b] = [];
+      buckets[b].push(p);
+    }
+    var out = [];
+    var seen = new Set();
+    function add(p) {
+      if (!p || seen.has(p.index)) return;
+      seen.add(p.index);
+      out.push(p);
+    }
+    for (var j = 0; j < buckets.length; j++) {
+      var group = buckets[j];
+      if (!group || !group.length) continue;
+      var minY = group[0];
+      var maxY = group[0];
+      for (var k = 1; k < group.length; k++) {
+        if (group[k].y < minY.y) minY = group[k];
+        if (group[k].y > maxY.y) maxY = group[k];
+      }
+      add(group[0]);
+      add(minY);
+      add(maxY);
+      add(group[group.length - 1]);
+    }
+    out.sort(function(a, b) { return a.index - b.index; });
+    return out;
+  }
+  function pathFromPoints(points) {
+    return (points || []).map(function(p, i) {
+      return (i ? 'L' : 'M') + svgNumber(p.x) + ' ' + svgNumber(p.y);
+    }).join(' ');
+  }
+  function renderOverview(box) {
+    if (!box) return;
+    var hitStr = latest && !sessionHasNoCache(latest) ? fmtPct(latest.hit) : '—';
+    var ctxStr = latest ? fmtTokens(latest.ctx) : '—';
+    box.innerHTML =
+      '<div class="cceStatMetric">' +
+        '<div class="cceStatMetricLabel">Current cache</div>' +
+        '<div class="cceStatMetricValue">' + hitStr + '</div>' +
+      '</div>' +
+      '<div class="cceStatMetric">' +
+        '<div class="cceStatMetricLabel">Context</div>' +
+        '<div class="cceStatMetricValue">' + ctxStr + '</div>' +
+      '</div>';
+  }
+  function renderHistoryChart(box) {
+    if (!box) return;
+    if (!latest || sessionHasNoCache(latest)) {
+      selectedHitRows = null;
+      box.innerHTML = '<div class="cceStatEmpty">No cache hit history yet</div>';
+      return;
+    }
+
+    var fullRows = cacheHistoryRows();
+    if (!fullRows.length) {
+      selectedHitRows = null;
+      box.innerHTML = '<div class="cceStatEmpty">No cache hit history yet</div>';
+      return;
+    }
+
+    var range = normalizeHitRange(fullRows.length);
+    var rows = visibleHistoryRows(fullRows);
+    selectedHitRows = rows;
+    var hits = rows.map(function(r) { return r.hit; });
+    var minHit = Math.min.apply(null, hits);
+    var maxHit = Math.max.apply(null, hits);
+    var sum = hits.reduce(function(a, b) { return a + b; }, 0);
+    var mean = hits.length ? sum / hits.length : 0;
+    var latestHit = hits[hits.length - 1];
+
+    var spread = maxHit - minHit;
+    var pad = Math.max(0.02, spread * 0.3);
+    var domainMin = clamp(Math.floor((minHit - pad) * 100) / 100, 0, 1);
+    var domainMax = clamp(Math.ceil((maxHit + pad) * 100) / 100, 0, 1);
+    if (domainMax - domainMin < 0.06) {
+      var center = (domainMax + domainMin) / 2;
+      domainMin = clamp(center - 0.03, 0, 1);
+      domainMax = clamp(center + 0.03, 0, 1);
+      if (domainMax - domainMin < 0.06) {
+        if (domainMin <= 0) domainMax = clamp(domainMin + 0.06, 0, 1);
+        else domainMin = clamp(domainMax - 0.06, 0, 1);
+      }
+    }
+
+    var W = 500, H = 184, padL = 36, padR = 12, padT = 30, padB = 26;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var denom = Math.max(1, rows.length - 1);
+    function xAt(i) { return padL + (i / denom) * plotW; }
+    function yAt(hit) {
+      return padT + ((domainMax - hit) / Math.max(0.001, domainMax - domainMin)) * plotH;
+    }
+    var points = rows.map(function(r, i) {
+      var xNorm = denom ? i / denom : 0;
+      return { index: i, xNorm: xNorm, x: xAt(i), y: yAt(r.hit), hit: r.hit, ctx: r.ctx, ts: r.ts };
+    });
+    var path = pathFromPoints(sampledLinePoints(points, Math.max(120, Math.floor(plotW))));
+    var minIndex = hits.indexOf(minHit);
+    var lowPoint = points[minIndex];
+    var latestPoint = points[points.length - 1];
+    var mid = (domainMin + domainMax) / 2;
+    var newestTs = rows[rows.length - 1] && rows[rows.length - 1].ts;
+    var oldestTs = rows[0] && rows[0].ts;
+    var markers = '';
+    if (lowPoint) {
+      markers += '<circle class="cceHitPoint cceHitPointLow" cx="' + svgNumber(lowPoint.x) + '" cy="' + svgNumber(lowPoint.y) + '" r="3.4">' +
+        '<title>Lowest · ' + fmtPct(lowPoint.hit) + ' · ' + fmtTokens(lowPoint.ctx) + ' · ' + fmtChartTime(lowPoint.ts, oldestTs, newestTs) + '</title>' +
+      '</circle>';
+    }
+    if (latestPoint && latestPoint !== lowPoint) {
+      markers += '<circle class="cceHitPoint cceHitPointLatest" cx="' + svgNumber(latestPoint.x) + '" cy="' + svgNumber(latestPoint.y) + '" r="3">' +
+        '<title>Latest · ' + fmtPct(latestPoint.hit) + ' · ' + fmtTokens(latestPoint.ctx) + ' · ' + fmtChartTime(latestPoint.ts, oldestTs, newestTs) + '</title>' +
+      '</circle>';
+    }
+    var midIndex = Math.floor((rows.length - 1) / 2);
+    var midPoint = points[midIndex] || points[0];
+    var midTs = rows[midIndex] && rows[midIndex].ts;
+    var topLabel = axisPct(domainMax);
+    var midLabel = axisPct(mid);
+    var bottomLabel = axisPct(domainMin);
+    var axisY = H - padB;
+    var midX = midPoint ? svgNumber(midPoint.x) : svgNumber(padL + plotW / 2);
+    var oldestLabel = fmtChartTime(oldestTs, oldestTs, newestTs);
+    var midTimeLabel = fmtChartTime(midTs, oldestTs, newestTs);
+    var newestLabel = fmtChartTime(newestTs, oldestTs, newestTs);
+    var fullHits = fullRows.map(function(r) { return r.hit; });
+    var fullMinHit = Math.min.apply(null, fullHits);
+    var fullMaxHit = Math.max.apply(null, fullHits);
+    var overviewPad = Math.max(0.02, (fullMaxHit - fullMinHit) * 0.25);
+    var overviewMin = clamp(fullMinHit - overviewPad, 0, 1);
+    var overviewMax = clamp(fullMaxHit + overviewPad, 0, 1);
+    if (overviewMax - overviewMin < 0.06) {
+      var overviewCenter = (overviewMax + overviewMin) / 2;
+      overviewMin = clamp(overviewCenter - 0.03, 0, 1);
+      overviewMax = clamp(overviewCenter + 0.03, 0, 1);
+      if (overviewMax - overviewMin < 0.06) {
+        if (overviewMin <= 0) overviewMax = clamp(overviewMin + 0.06, 0, 1);
+        else overviewMin = clamp(overviewMax - 0.06, 0, 1);
+      }
+    }
+    var rangeH = 44, rangePadT = 8, rangePadB = 14;
+    var rangePlotH = rangeH - rangePadT - rangePadB;
+    var fullDenom = Math.max(1, fullRows.length - 1);
+    function rangeYAt(hit) {
+      return rangePadT + ((overviewMax - hit) / Math.max(0.001, overviewMax - overviewMin)) * rangePlotH;
+    }
+    var overviewPoints = fullRows.map(function(r, i) {
+      var xNorm = i / fullDenom;
+      return {
+        index: i,
+        xNorm: xNorm,
+        x: padL + xNorm * plotW,
+        y: rangeYAt(r.hit),
+      };
+    });
+    var overviewPath = pathFromPoints(sampledLinePoints(overviewPoints, 180));
+    var selX1 = padL + range.start * plotW;
+    var selX2 = padL + range.end * plotW;
+    var selWidth = Math.max(2, selX2 - selX1);
+
+    box.innerHTML =
+      '<div class="cceHitChartShell">' +
+        '<svg class="cceHitSvg" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' +
+          '<line class="cceHitGrid" x1="' + padL + '" y1="' + svgNumber(yAt(domainMax)) + '" x2="' + (W - padR) + '" y2="' + svgNumber(yAt(domainMax)) + '"></line>' +
+          '<line class="cceHitGrid" x1="' + padL + '" y1="' + svgNumber(yAt(mid)) + '" x2="' + (W - padR) + '" y2="' + svgNumber(yAt(mid)) + '"></line>' +
+          '<line class="cceHitGrid" x1="' + padL + '" y1="' + svgNumber(yAt(domainMin)) + '" x2="' + (W - padR) + '" y2="' + svgNumber(yAt(domainMin)) + '"></line>' +
+          '<line class="cceHitXAxis" x1="' + padL + '" y1="' + axisY + '" x2="' + (W - padR) + '" y2="' + axisY + '"></line>' +
+          '<line class="cceHitXTick" x1="' + padL + '" y1="' + axisY + '" x2="' + padL + '" y2="' + (axisY + 4) + '"></line>' +
+          '<line class="cceHitXTick" x1="' + midX + '" y1="' + axisY + '" x2="' + midX + '" y2="' + (axisY + 4) + '"></line>' +
+          '<line class="cceHitXTick" x1="' + (W - padR) + '" y1="' + axisY + '" x2="' + (W - padR) + '" y2="' + (axisY + 4) + '"></line>' +
+          '<text class="cceHitAxisLabel" x="0" y="' + svgNumber(yAt(domainMax) + 3) + '">' + topLabel + '</text>' +
+          '<text class="cceHitAxisLabel" x="0" y="' + svgNumber(yAt(mid) + 3) + '">' + midLabel + '</text>' +
+          '<text class="cceHitAxisLabel" x="0" y="' + svgNumber(yAt(domainMin) + 3) + '">' + bottomLabel + '</text>' +
+          '<path class="cceHitLine" d="' + path + '"></path>' +
+          markers +
+          '<g class="cceHitHover" aria-hidden="true">' +
+            '<line class="cceHitHoverLine" x1="' + padL + '" y1="' + padT + '" x2="' + padL + '" y2="' + (H - padB) + '"></line>' +
+            '<circle class="cceHitHoverPoint" cx="' + padL + '" cy="' + padT + '" r="3.2"></circle>' +
+          '</g>' +
+        '</svg>' +
+        '<div class="cceHitHoverLabel" data-hit-hover-label></div>' +
+        '<div class="cceHitChartMeta">' +
+          '<span>' + oldestLabel + '</span>' +
+          '<span>' + midTimeLabel + '</span>' +
+          '<span>' + newestLabel + '</span>' +
+        '</div>' +
+        '<div class="cceHitRange" data-hit-range>' +
+          '<svg class="cceRangeSvg" viewBox="0 0 ' + W + ' ' + rangeH + '" aria-hidden="true">' +
+            '<path class="cceRangeLine" d="' + overviewPath + '"></path>' +
+            '<line class="cceRangeTrack" x1="' + padL + '" y1="' + (rangeH - 8) + '" x2="' + (W - padR) + '" y2="' + (rangeH - 8) + '"></line>' +
+            '<rect class="cceRangeHit cceRangeTrackHit" data-range-part="track" x="' + padL + '" y="0" width="' + plotW + '" height="' + rangeH + '"></rect>' +
+            '<rect class="cceRangeWindow" data-range-part="move" x="' + svgNumber(selX1) + '" y="5" width="' + svgNumber(selWidth) + '" height="28" rx="4"></rect>' +
+            '<line class="cceRangeHandle" x1="' + svgNumber(selX1) + '" y1="4" x2="' + svgNumber(selX1) + '" y2="34"></line>' +
+            '<line class="cceRangeHandle" x1="' + svgNumber(selX2) + '" y1="4" x2="' + svgNumber(selX2) + '" y2="34"></line>' +
+            '<rect class="cceRangeHit cceRangeMoveHit" data-range-part="move" x="' + svgNumber(selX1 + 8) + '" y="0" width="' + svgNumber(Math.max(0, selWidth - 16)) + '" height="36"></rect>' +
+            '<rect class="cceRangeHit cceRangeHandleHit" data-range-part="start" x="' + svgNumber(selX1 - 8) + '" y="0" width="16" height="36"></rect>' +
+            '<rect class="cceRangeHit cceRangeHandleHit" data-range-part="end" x="' + svgNumber(selX2 - 8) + '" y="0" width="16" height="36"></rect>' +
+          '</svg>' +
+        '</div>' +
+      '</div>' +
+      '<div class="cceHitStats">' +
+        '<div class="cceHitStat"><span>Latest</span><strong>' + fmtPct(latestHit) + '</strong></div>' +
+        '<div class="cceHitStat"><span>Mean</span><strong>' + fmtPct(mean) + '</strong></div>' +
+        '<div class="cceHitStat"><span>Lowest</span><strong>' + fmtPct(minHit) + '</strong></div>' +
+      '</div>';
+
+    bindHitChartHover(box, points, {
+      width: W,
+      padLeft: padL,
+      padRight: padR,
+      padTop: padT,
+      padBottom: padB,
+      plotWidth: plotW,
+      rangeStart: oldestTs,
+      rangeEnd: newestTs,
+    });
+    bindHitRangeSlider(box, {
+      width: W,
+      padLeft: padL,
+      padRight: padR,
+      plotWidth: plotW,
+      count: fullRows.length,
+    });
+  }
+  function bindHitChartHover(box, points, dims) {
+    if (!box || !points || !points.length) return;
+    var svg = box.querySelector('.cceHitSvg');
+    var shell = box.querySelector('.cceHitChartShell');
+    var line = box.querySelector('.cceHitHoverLine');
+    var dot = box.querySelector('.cceHitHoverPoint');
+    var label = box.querySelector('[data-hit-hover-label]');
+    if (!svg || !shell || !line || !dot || !label) return;
+    if (!label.__cceHitHoverBuilt) {
+      label.innerHTML =
+        '<span class="cceHitHoverPct" data-hit-hover-pct></span>' +
+        '<span class="cceHitHoverTime" data-hit-hover-time></span>';
+      label.__cceHitHoverBuilt = true;
+    }
+    var pctEl = label.querySelector('[data-hit-hover-pct]');
+    var timeEl = label.querySelector('[data-hit-hover-time]');
+
+    var raf = 0;
+    var lastEvent = null;
+
+    function hideHover() {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      lastEvent = null;
+      svg.removeAttribute('data-hit-hovering');
+      label.removeAttribute('data-active');
+    }
+
+    function applyHover(evt) {
+      raf = 0;
+      if (!evt) return;
+      var rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var xSvg = clamp(
+        ((evt.clientX - rect.left) / rect.width) * dims.width,
+        dims.padLeft,
+        dims.width - dims.padRight,
+      );
+      var denom = Math.max(1, points.length - 1);
+      var index = Math.round(((xSvg - dims.padLeft) / Math.max(1, dims.plotWidth)) * denom);
+      index = Math.max(0, Math.min(points.length - 1, index));
+      var p = points[index];
+      if (!p) return;
+
+      var x = svgNumber(p.x);
+      var y = svgNumber(p.y);
+      line.setAttribute('x1', x);
+      line.setAttribute('x2', x);
+      dot.setAttribute('cx', x);
+      dot.setAttribute('cy', y);
+
+      if (pctEl) pctEl.textContent = fmtPct(p.hit);
+      if (timeEl) timeEl.textContent = fmtChartTime(p.ts, dims.rangeStart, dims.rangeEnd);
+      svg.setAttribute('data-hit-hovering', '1');
+      label.setAttribute('data-active', '1');
+
+      var shellRect = shell.getBoundingClientRect();
+      var xPx = (p.x / dims.width) * rect.width + (rect.left - shellRect.left);
+      var labelWidth = label.offsetWidth || 54;
+      xPx = clamp(xPx, labelWidth / 2 + 6, shellRect.width - labelWidth / 2 - 6);
+      label.style.left = Math.round(xPx) + 'px';
+    }
+
+    function scheduleHover(evt) {
+      lastEvent = evt;
+      if (raf) return;
+      raf = requestAnimationFrame(function() { applyHover(lastEvent); });
+    }
+
+    svg.addEventListener('pointermove', scheduleHover);
+    svg.addEventListener('pointerleave', hideHover);
+    svg.addEventListener('pointercancel', hideHover);
+  }
+  function bindHitRangeSlider(box, dims) {
+    if (!box || !dims || dims.count <= 1) return;
+    var svg = box.querySelector('.cceRangeSvg');
+    if (!svg) return;
+    var drag = null;
+    function eventFrac(evt) {
+      var rect = drag && drag.rect ? drag.rect : svg.getBoundingClientRect();
+      if (!rect.width) return hitRangeStart;
+      var xSvg = ((evt.clientX - rect.left) / rect.width) * dims.width;
+      return clamp((xSvg - dims.padLeft) / Math.max(1, dims.plotWidth), 0, 1);
+    }
+    function moveWindowTo(center, width) {
+      var half = width / 2;
+      var start = center - half;
+      var end = center + half;
+      if (start < 0) {
+        end -= start;
+        start = 0;
+      }
+      if (end > 1) {
+        start -= end - 1;
+        end = 1;
+      }
+      setHitRange(start, end);
+    }
+    function onMove(evt) {
+      if (!drag) return;
+      evt.preventDefault();
+      var frac = eventFrac(evt);
+      if (drag.part === 'start') {
+        setHitRange(frac, drag.end);
+      } else if (drag.part === 'end') {
+        setHitRange(drag.start, frac);
+      } else {
+        moveWindowTo(drag.center + (frac - drag.origin), drag.width);
+      }
+    }
+    function onUp() {
+      drag = null;
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+    }
+    svg.addEventListener('pointerdown', function(evt) {
+      var target = evt.target;
+      var part = target && target.getAttribute ? target.getAttribute('data-range-part') : '';
+      var frac = eventFrac(evt);
+      var width = Math.max(minHitRangeFraction(dims.count), hitRangeEnd - hitRangeStart);
+      if (!part || part === 'track') {
+        moveWindowTo(frac, width);
+        part = 'move';
+      }
+      var rect = svg.getBoundingClientRect();
+      drag = {
+        part: part,
+        rect: { left: rect.left, width: rect.width },
+        origin: frac,
+        start: hitRangeStart,
+        end: hitRangeEnd,
+        center: (hitRangeStart + hitRangeEnd) / 2,
+        width: hitRangeEnd - hitRangeStart,
+      };
+      evt.preventDefault();
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', onUp, true);
+      window.addEventListener('pointercancel', onUp, true);
+    });
+  }
+  function tokenBarWidth(value, max) {
+    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(max) || max <= 0) return 0;
+    return Math.max(1.6, (value / max) * 100);
+  }
+  function renderSessionFlow(box) {
+    if (!box) return;
+    if (!latest || !latest.totals) {
+      box.innerHTML = '<div class="cceStatEmpty">—</div>';
+      return;
+    }
+
+    var rows = selectedHitRows && selectedHitRows.length ? selectedHitRows : cacheHistoryRows();
+    var S = summarizeHistoryRows(rows);
+    if (!S.requests) {
+      box.innerHTML = '<div class="cceStatEmpty">—</div>';
+      return;
+    }
+    var promptTotal = S.fresh + S.write + S.read;
+    var freshPct = promptTotal > 0 ? (S.fresh / promptTotal) * 100 : 0;
+    var writePct = promptTotal > 0 ? (S.write / promptTotal) * 100 : 0;
+    var readPct = promptTotal > 0 ? (S.read / promptTotal) * 100 : 0;
+    var requestLabel = String(S.requests) + (S.requests === 1 ? ' request' : ' requests');
+    var durationLabel = S.durationMs > 0 ? ' · ' + fmtDuration(S.durationMs) : '';
+    function metric(label, value, kind) {
+      return '<div class="cceSelectedMetric cceSelectedMetric-' + kind + '">' +
+        '<span>' + label + '</span>' +
+        '<strong>' + value + '</strong>' +
+      '</div>';
+    }
+
+    box.innerHTML =
+      '<div class="cceFlowContext cceSelectedRange">' +
+        '<div class="cceFlowHeader">' +
+          '<span>Selected range</span>' +
+          '<strong>' + requestLabel + durationLabel + '</strong>' +
+        '</div>' +
+        '<div class="cceFlowRangeTime">' + rangeTimeLabel(rows) + '</div>' +
+        '<div class="cceContextStack" aria-hidden="true">' +
+          '<span class="cceContextSeg cceContextSeg-fresh" style="width:' + pctNumber(freshPct) + '%"></span>' +
+          '<span class="cceContextSeg cceContextSeg-write" style="width:' + pctNumber(writePct) + '%"></span>' +
+          '<span class="cceContextSeg cceContextSeg-read" style="width:' + pctNumber(readPct) + '%"></span>' +
+        '</div>' +
+        '<div class="cceFlowLegend">' +
+          '<span><i class="cceLegendFresh"></i>Fresh ' + fmtTokens(S.fresh) + '</span>' +
+          '<span><i class="cceLegendWrite"></i>Write ' + fmtTokens(S.write) + '</span>' +
+          '<span><i class="cceLegendRead"></i>Read ' + fmtTokens(S.read) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="cceSelectedGrid">' +
+        metric('Cache read', fmtTokens(S.read), 'read') +
+        metric('Cache write', fmtTokens(S.write), 'write') +
+        metric('Output', fmtTokens(S.output), 'output') +
+        metric('Fresh input', fmtTokens(S.fresh), 'fresh') +
+      '</div>';
+  }
   function renderPopup() {
     if (!popupEl) return;
-    var recentBox = popupEl.querySelector('[data-recent]');
+    renderOverview(popupEl.querySelector('[data-overview]'));
+    renderHistoryChart(popupEl.querySelector('[data-history]'));
     var totalsBox = popupEl.querySelector('[data-totals]');
-    if (recentBox) {
-      if (!latest || !latest.recent || !latest.recent.length) {
-        recentBox.innerHTML = '<div class="cceStatEmpty">No requests yet</div>';
-      } else {
-        var rows = '';
-        for (var i = 0; i < latest.recent.length; i++) {
-          var r = latest.recent[i];
-          rows +=
-            '<div class="cceStatRow">' +
-              '<span class="cceStatTime" data-ts="' + (r.ts || '') + '">' + fmtRelTime(r.ts) + '</span>' +
-              '<span class="cceStatCtx">' + fmtTokens(r.ctx) + '</span>' +
-              '<span class="cceStatHit">' + fmtPct(r.hit) + '</span>' +
-            '</div>';
-        }
-        recentBox.innerHTML = rows;
-      }
-    }
-    if (totalsBox) {
-      if (!latest || !latest.totals) {
-        totalsBox.innerHTML = '<div class="cceStatEmpty">—</div>';
-      } else {
-        var T = latest.totals;
-        var lines = [
-          ['Requests',    String(T.requests || 0),                ''],
-          ['Duration',    fmtDuration(T.durationMs || 0),         ''],
-          ['Fresh input', fmtTokens(T.fresh || 0),                ''],
-          ['Cache write', fmtTokens(T.cw || 0),                   ''],
-          ['Cache read',  fmtTokens(T.cr || 0),                   sessionHasNoCache(latest) ? '—' : fmtPct(T.hitOverall || 0)],
-          ['Output',      fmtTokens(T.out || 0),                  ''],
-        ];
-        var html = '';
-        for (var j = 0; j < lines.length; j++) {
-          var L = lines[j];
-          html +=
-            '<div class="cceStatKV">' +
-              '<span class="cceStatLabel">' + L[0] + '</span>' +
-              '<span class="cceStatValue">' + L[1] + '</span>' +
-              '<span class="cceStatExtra">' + L[2] + '</span>' +
-            '</div>';
-        }
-        totalsBox.innerHTML = html;
-      }
-    }
+    renderSessionFlow(totalsBox);
   }
   function positionPopup() {
     if (!popupEl || !popupAnchor) return;
     var r = popupAnchor.getBoundingClientRect();
     var vw = window.innerWidth;
     var margin = 8;
-    // Clamp max-width so a narrow side panel collapses the popup instead
-    // of letting it bleed past the viewport right edge.
-    popupEl.style.maxWidth = Math.min(400, Math.max(180, vw - margin * 2)) + 'px';
+    // Clamp the rendered border-box, not just max-width. CSS uses
+    // border-box too, so padding cannot push the popup outside the viewport.
+    var safeWidth = Math.min(560, Math.max(220, vw - margin * 2));
+    popupEl.style.width = safeWidth + 'px';
+    popupEl.style.maxWidth = safeWidth + 'px';
     var w = popupEl.offsetWidth;
     var left = Math.round(r.left);
     if (left + w > vw - margin) left = vw - margin - w;
     if (left < margin) left = margin;
     popupEl.style.left = left + 'px';
-    popupEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+    var vh = window.innerHeight;
+    var h = popupEl.offsetHeight;
+    var bottom = Math.round(vh - r.top + 6);
+    var maxBottom = Math.max(margin, vh - h - margin);
+    if (bottom > maxBottom) bottom = maxBottom;
+    if (bottom < margin) bottom = margin;
+    popupEl.style.bottom = bottom + 'px';
   }
   // Relative-time labels in the popup ("3s ago" / "2m ago") are the only
   // reason this UI ever needs sub-payload refresh. Keep the work local to
@@ -383,6 +1071,7 @@ function setupCacheBadge() {
     anchor.classList.add('cceBadgeActive');
     renderPopup();
     positionPopup();
+    requestBadgeHistory();
     startPopupTimer();
   }
   function closePopup() {
@@ -425,9 +1114,14 @@ function setupCacheBadge() {
   window.addEventListener('message', function(ev) {
     var d = ev && ev.data;
     if (!d || d.__cceBadge !== true || !d.payload) return;
-    latest = d.payload;
+    var hasFullHistory = Array.isArray(d.payload.history);
+    latest = mergeRetainedHistory(d.payload);
     ensureBadge();
-    if (isOpen()) { renderPopup(); positionPopup(); }
+    if (isOpen()) {
+      if (!hasFullHistory && !d.payload.empty && d.payload.totals) requestBadgeHistory();
+      renderPopup();
+      positionPopup();
+    }
   });
 
   document.addEventListener('click', function(ev) {
@@ -463,6 +1157,7 @@ function setupCacheBadge() {
     }
     return false;
   }
+
   var mo = new MutationObserver(function(mutations) {
     for (var i = 0; i < mutations.length; i++) {
       if (mutationTouchesFooter(mutations[i])) { scheduleEnsureBadge(); return; }
@@ -471,6 +1166,7 @@ function setupCacheBadge() {
   mo.observe(document.body, { childList: true, subtree: true });
 
   ensureBadge();
+  setupBadgeIdentityBridge();
 }
 
 

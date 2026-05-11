@@ -42,6 +42,94 @@ export const BASE_URL = (() => {
 
 export const assetURL = (rel) => new URL(rel, BASE_URL).href;
 
+export function reactFiberForElement(el) {
+  if (!el) return null;
+  const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+  return fk ? el[fk] : null;
+}
+
+let cachedClaudeConnection = null;
+let lastClaudeConnectionMissAt = 0;
+
+function isClaudeConnectionLike(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  const a = obj.activeSessionId;
+  if (!a || typeof a !== 'object' || !('value' in a)) return false;
+  const s = obj.sessionStates;
+  if (!s || typeof s !== 'object' || !('value' in s)) return false;
+  return true;
+}
+
+function findClaudeConnectionInValue(value, depth, seen) {
+  if (!value || typeof value !== 'object' || depth < 0) return null;
+  if (isClaudeConnectionLike(value)) return value;
+  if (value.nodeType || value.window === value) return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  const preferred = ['comms', 'connection', 'value', 'current', 'context'];
+  for (const key of preferred) {
+    const v = value[key];
+    if (!v || typeof v !== 'object') continue;
+    const hit = findClaudeConnectionInValue(v, depth - 1, seen);
+    if (hit) return hit;
+  }
+  let scanned = 0;
+  for (const key of Object.keys(value)) {
+    if (preferred.includes(key)) continue;
+    if (++scanned > 25) break;
+    const v = value[key];
+    if (!v || typeof v !== 'object') continue;
+    const hit = findClaudeConnectionInValue(v, depth - 1, seen);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function locateClaudeConnection() {
+  if (cachedClaudeConnection && isClaudeConnectionLike(cachedClaudeConnection)) {
+    return cachedClaudeConnection;
+  }
+  const now = Date.now();
+  if (lastClaudeConnectionMissAt && now - lastClaudeConnectionMissAt < 800) {
+    return null;
+  }
+  const anchors = [
+    document.querySelector('[class*="root_"]'),
+    document.querySelector('[class*="messagesContainer_"]'),
+    document.querySelector('[class*="userMessage_"]'),
+    document.querySelector('[class*="inputContainer_"]'),
+    document.body && document.body.firstElementChild,
+    document.body,
+  ];
+  for (const anchor of anchors) {
+    if (!anchor) continue;
+    let f = reactFiberForElement(anchor);
+    for (let i = 0; i < 120 && f; i++) {
+      let conn = findClaudeConnectionInValue(f.memoizedProps, 6, new WeakSet());
+      if (!conn) conn = findClaudeConnectionInValue(f.stateNode, 6, new WeakSet());
+      if (!conn) conn = findClaudeConnectionInValue(f.memoizedState, 6, new WeakSet());
+      if (conn) {
+        cachedClaudeConnection = conn;
+        return conn;
+      }
+      f = f.return;
+    }
+  }
+  lastClaudeConnectionMissAt = now;
+  return null;
+}
+
+export function getActiveClaudeSessionId() {
+  const conn = locateClaudeConnection();
+  if (!conn) return null;
+  try {
+    const v = conn.activeSessionId.value;
+    return typeof v === 'string' && v ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export function pageNonce() {
   const el = document.querySelector('script[nonce]');
   return el ? (el.nonce || el.getAttribute('nonce') || '') : '';

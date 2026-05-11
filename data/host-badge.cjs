@@ -20,7 +20,6 @@ function attachComm(comm) {
   state.comms.add(comm);
   wrapShutdown(comm, state);
   attachMessageHandler(comm, state);
-  sendLatest(state, comm);
   startPolling(state);
 }
 
@@ -35,12 +34,12 @@ function getOrCreateState() {
 function createState() {
   return {
     comms: new Set(),
-    latest: null,
     started: false,
     patchedFs: false,
     ourFile: null,
-    cache: { path: null, mtimeMs: 0, payload: null },
-    parser: null,
+    commIdentities: new Map(),
+    targetCache: new Map(),
+    parsers: new Map(),
     truncateRollbacks: new Map(),
     log(message) {
       try { console.log(`[cceBadge] ${message}`); } catch (_) {}
@@ -57,6 +56,7 @@ function wrapShutdown(comm, state) {
   comm.__cceBadgeWrapped = true;
   comm.shutdown = async function wrappedShutdown() {
     state.comms.delete(comm);
+    state.commIdentities.delete(comm);
     if (comm.__incipitMessageDisposable && typeof comm.__incipitMessageDisposable.dispose === 'function') {
       try { comm.__incipitMessageDisposable.dispose(); } catch (_) {}
       comm.__incipitMessageDisposable = null;
@@ -78,6 +78,10 @@ function attachMessageHandler(comm, state) {
 
 function handleWebviewMessage(comm, state, message) {
   if (!message || message.__incipit !== true) return;
+  if (message.type === 'badge_identity_update') {
+    handleBadgeIdentityUpdate(comm, state, message);
+    return;
+  }
   if (message.type === 'diff_line_info_request') {
     handleDiffLineInfoRequest(comm, state, message);
     return;
@@ -85,6 +89,30 @@ function handleWebviewMessage(comm, state, message) {
   if (message.type === 'conversation_mutation_request') {
     handleConversationMutationRequest(comm, state, message);
   }
+}
+
+function handleBadgeIdentityUpdate(comm, state, message) {
+  const sessionId = typeof message.sessionId === 'string' ? message.sessionId : '';
+  const includeHistory = message.includeHistory === true;
+  if (!sessionId) {
+    state.commIdentities.delete(comm);
+    sendPayload(comm, emptyBadgePayload(null, null));
+    return;
+  }
+  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+  const previous = state.commIdentities.get(comm);
+  if (previous && previous.sessionId === sessionId && previous.cwd === cwd && previous.target) {
+    sendCurrentBadgePayload(state, comm, previous.target, sessionId, includeHistory);
+    return;
+  }
+  const target = resolveTargetFromIdentity(sessionId, cwd);
+  const identity = { sessionId, cwd, target };
+  state.commIdentities.set(comm, identity);
+  if (!target) {
+    sendPayload(comm, emptyBadgePayload(sessionId, null));
+    return;
+  }
+  sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory);
 }
 
 function handleDiffLineInfoRequest(comm, state, message) {
@@ -511,11 +539,9 @@ function atomicWriteTranscript(filePath, text) {
 }
 
 function resetTranscriptParserState(state, filePath) {
-  if (state.cache && state.cache.path === filePath) {
-    state.cache = { path: null, mtimeMs: 0, payload: null };
-  }
-  if (state.parser && state.parser.path === filePath) state.parser = null;
-  state.latest = null;
+  if (!filePath) return;
+  state.targetCache.delete(filePath);
+  state.parsers.delete(filePath);
 }
 
 // Apply a text replacement to *every* row sharing this uuid. Compact
@@ -954,28 +980,45 @@ function isSessionFilePath(root, filePath) {
 
 function poll(state) {
   try {
-    const target = resolveTargetFile(state);
-    if (!target || !fs.existsSync(target)) return;
-    const stat = fs.statSync(target);
-    if (isCacheHit(state, target, stat.mtimeMs)) return;
-    const payload = updateAndBuild(state, target, stat);
-    if (!payload) return;
-    state.cache = { path: target, mtimeMs: stat.mtimeMs, payload };
-    broadcast(state, payload);
+    const targets = resolveTargetFiles(state);
+    for (const target of targets) {
+      if (!target || !fs.existsSync(target)) continue;
+      const stat = fs.statSync(target);
+      if (isCacheHit(state, target, stat.mtimeMs)) continue;
+      const payload = buildCachedPayload(state, target, stat, false);
+      broadcastTarget(state, target, payload);
+    }
   } catch (error) {
     state.log(`tick error: ${error}`);
   }
 }
 
-function resolveTargetFile(state) {
-  if (state.ourFile) return state.ourFile;
-  const workspaces = getWorkspaceFolders();
-  if (!workspaces?.length) return null;
-  const cwd = workspaces[0].uri.fsPath;
-  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  const dir = path.join(projectsRoot(), encoded);
-  if (!fs.existsSync(dir)) return null;
-  return newestJsonlFile(dir);
+function resolveTargetFiles(state) {
+  const targets = new Set();
+  let hasIdentity = false;
+  for (const [comm, identity] of state.commIdentities) {
+    if (!state.comms.has(comm) || !identity || !identity.sessionId) continue;
+    hasIdentity = true;
+    let target = identity.target;
+    if (!target || !fs.existsSync(target)) {
+      target = resolveTargetFromIdentity(identity.sessionId, identity.cwd);
+      identity.target = target;
+    }
+    if (target) targets.add(target);
+  }
+  if (!hasIdentity) return [];
+  if (state.ourFile) {
+    const ourBase = path.basename(state.ourFile);
+    for (const identity of state.commIdentities.values()) {
+      if (!identity || !identity.sessionId) continue;
+      if (identity.target === state.ourFile || ourBase === identity.sessionId + JSONL_SUFFIX) {
+        if (!identity.target) identity.target = state.ourFile;
+        targets.add(state.ourFile);
+        break;
+      }
+    }
+  }
+  return Array.from(targets);
 }
 
 // Direct (sessionId, cwd) → JSONL path. Mirrors Claude Code's own encoding
@@ -1008,28 +1051,71 @@ function resolveTargetFromIdentity(sessionId, cwd) {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-function newestJsonlFile(dir) {
-  const files = fs.readdirSync(dir).filter(name => name.endsWith(JSONL_SUFFIX));
-  let latestPath = null;
-  let latestMtime = 0;
-  for (const name of files) {
-    const fullPath = path.join(dir, name);
-    try {
-      const stat = fs.statSync(fullPath);
-      if (stat.mtimeMs <= latestMtime) continue;
-      latestMtime = stat.mtimeMs;
-      latestPath = fullPath;
-    } catch (_) {}
-  }
-  return latestPath;
+function isCacheHit(state, filePath, mtimeMs) {
+  const cached = state.targetCache.get(filePath);
+  return (
+    cached &&
+    cached.mtimeMs === mtimeMs &&
+    cached.payload
+  );
 }
 
-function isCacheHit(state, filePath, mtimeMs) {
-  return (
-    state.cache.path === filePath &&
-    state.cache.mtimeMs === mtimeMs &&
-    state.cache.payload
-  );
+function cachedBadgePayload(state, target, includeHistory) {
+  const cached = target ? state.targetCache.get(target) : null;
+  if (!cached) return null;
+  return includeHistory ? (cached.historyPayload || null) : (cached.payload || null);
+}
+
+function buildCachedPayload(state, target, stat, includeHistory) {
+  const cached = state.targetCache.get(target);
+  const sameMtime = cached && cached.mtimeMs === stat.mtimeMs;
+  if (sameMtime) {
+    const hit = includeHistory ? cached.historyPayload : cached.payload;
+    if (hit) return hit;
+  }
+
+  const parser = updateParser(state, target, stat);
+  const next = sameMtime ? cached : { mtimeMs: stat.mtimeMs, payload: null, historyPayload: null };
+  if (!next.payload) next.payload = buildPayload(parser, false) || emptyBadgePayload(null, target);
+  if (includeHistory && !next.historyPayload) {
+    next.historyPayload = buildPayload(parser, true) || emptyBadgePayload(null, target);
+  }
+  state.targetCache.set(target, next);
+  return includeHistory ? next.historyPayload : next.payload;
+}
+
+function sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory) {
+  if (!target || !fs.existsSync(target)) {
+    sendPayload(comm, emptyBadgePayload(sessionId, target || null));
+    return;
+  }
+  try {
+    const stat = fs.statSync(target);
+    let payload = cachedBadgePayload(state, target, includeHistory);
+    if (!payload || !isCacheHit(state, target, stat.mtimeMs)) {
+      payload = buildCachedPayload(state, target, stat, includeHistory);
+    }
+    sendPayload(comm, annotateBadgePayload(payload, sessionId, target));
+  } catch (_) {
+    sendPayload(comm, emptyBadgePayload(sessionId, target));
+  }
+}
+
+function emptyBadgePayload(sessionId, target) {
+  return {
+    empty: true,
+    sessionId: sessionId || null,
+    src: target || null,
+    ts: Date.now(),
+    recent: [],
+    totals: null,
+  };
+}
+
+function annotateBadgePayload(payload, sessionId, target) {
+  if (!payload || typeof payload !== 'object') return emptyBadgePayload(sessionId, target);
+  if (!sessionId || payload.sessionId === sessionId) return payload;
+  return { ...payload, sessionId };
 }
 
 // JSONL session files are append-only in steady state. Reading the whole file
@@ -1047,8 +1133,8 @@ function isCacheHit(state, filePath, mtimeMs) {
 // The host writer can in principle update the same `requestId` later, so
 // `processLine` subtracts old contributions before adding new ones — keeps
 // `sums` correct without a full re-scan.
-function updateAndBuild(state, target, stat) {
-  let parser = state.parser;
+function updateParser(state, target, stat) {
+  let parser = state.parsers.get(target);
   const needReset =
     !parser ||
     parser.path !== target ||
@@ -1056,11 +1142,11 @@ function updateAndBuild(state, target, stat) {
     (stat.size === parser.size && parser.mtimeMs && stat.mtimeMs !== parser.mtimeMs);
   if (needReset) {
     parser = createParser(target);
-    state.parser = parser;
+    state.parsers.set(target, parser);
   }
   if (stat.size > parser.size) appendNewBytes(parser, target, stat.size);
   parser.mtimeMs = stat.mtimeMs;
-  return buildPayload(parser);
+  return parser;
 }
 
 function createParser(filePath) {
@@ -1127,7 +1213,21 @@ function parseUsageEntry(line) {
   }
 }
 
-function buildPayload(parser) {
+function payloadHistoryEntry(parser, id) {
+  const { usage, ts } = parser.byRequest.get(id);
+  const c = totalContextTokens(usage);
+  return {
+    ts,
+    ctx: c,
+    hit: c > 0 ? (usage.cache_read_input_tokens || 0) / c : 0,
+    input: usage.input_tokens || 0,
+    cw: usage.cache_creation_input_tokens || 0,
+    cr: usage.cache_read_input_tokens || 0,
+    output: usage.output_tokens || 0,
+  };
+}
+
+function buildPayload(parser, includeHistory) {
   if (!parser.order.length) return null;
   const lastUsage = parser.byRequest.get(parser.order[parser.order.length - 1]).usage;
   const ctx = totalContextTokens(lastUsage);
@@ -1148,17 +1248,8 @@ function buildPayload(parser) {
     const b = Date.parse(lastTs);
     if (!Number.isNaN(a) && !Number.isNaN(b)) totals.durationMs = b - a;
   }
-  const recent = parser.order.slice(-5).map(id => {
-    const { usage, ts } = parser.byRequest.get(id);
-    const c = totalContextTokens(usage);
-    return {
-      ts,
-      ctx: c,
-      hit: c > 0 ? (usage.cache_read_input_tokens || 0) / c : 0,
-      output: usage.output_tokens || 0,
-    };
-  });
-  return {
+  const recent = parser.order.slice(-5).map(id => payloadHistoryEntry(parser, id));
+  const payload = {
     ctx,
     hit: ctx > 0 ? (lastUsage.cache_read_input_tokens || 0) / ctx : 0,
     input: lastUsage.input_tokens || 0,
@@ -1170,6 +1261,8 @@ function buildPayload(parser) {
     recent,
     totals,
   };
+  if (includeHistory) payload.history = parser.order.map(id => payloadHistoryEntry(parser, id));
+  return payload;
 }
 
 function totalContextTokens(usage) {
@@ -1180,14 +1273,16 @@ function totalContextTokens(usage) {
   );
 }
 
-function broadcast(state, payload) {
-  state.latest = payload;
-  for (const comm of state.comms) sendPayload(comm, payload);
-}
-
-function sendLatest(state, comm) {
-  if (!state.latest) return;
-  sendPayload(comm, state.latest);
+function broadcastTarget(state, target, payload) {
+  for (const comm of state.comms) {
+    const identity = state.commIdentities.get(comm);
+    if (!identity || !identity.sessionId) continue;
+    if (identity.target !== target) {
+      if (!identity.target) identity.target = resolveTargetFromIdentity(identity.sessionId, identity.cwd);
+      if (identity.target !== target) continue;
+    }
+    sendPayload(comm, annotateBadgePayload(payload, identity.sessionId, target));
+  }
 }
 
 function sendPayload(comm, payload) {
@@ -1201,14 +1296,6 @@ function sendPayload(comm, payload) {
 
 function projectsRoot() {
   return path.join(os.homedir(), '.claude', 'projects');
-}
-
-function getWorkspaceFolders() {
-  try {
-    return require('vscode').workspace?.workspaceFolders;
-  } catch (_) {
-    return null;
-  }
 }
 
 module.exports = { attachComm };
