@@ -9,6 +9,9 @@ const { StringDecoder } = require('string_decoder');
 const GLOBAL_KEY = '__cceBadge';
 const POLL_INTERVAL_MS = 1500;
 const JSONL_SUFFIX = '.jsonl';
+const USAGE_CACHE_SCHEMA_VERSION = 1;
+const USAGE_CACHE_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-usage-cache-v1');
+const USAGE_CACHE_HASH_BYTES = 4096;
 const EDIT_ACTIVITY_SCHEMA_VERSION = 1;
 const EDIT_ACTIVITY_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-edit-activity-v1');
 const PROJECT_INDEX_BATCH_FILES = 2;
@@ -582,6 +585,7 @@ function resetTranscriptParserState(state, filePath) {
   if (!filePath) return;
   state.targetCache.delete(filePath);
   state.parsers.delete(filePath);
+  deleteUsageCacheIndex(filePath);
 }
 
 // Apply a text replacement to *every* row sharing this uuid. Compact
@@ -1291,11 +1295,12 @@ function updateParser(state, target, stat) {
     stat.size < parser.size ||
     (stat.size === parser.size && parser.mtimeMs && stat.mtimeMs !== parser.mtimeMs);
   if (needReset) {
-    parser = createParser(target);
+    parser = loadUsageCacheParser(state, target, stat) || createParser(target);
     state.parsers.set(target, parser);
   }
   if (stat.size > parser.size) appendNewBytes(parser, target, stat.size);
   parser.mtimeMs = stat.mtimeMs;
+  saveUsageCacheParser(state, parser, stat);
   return parser;
 }
 
@@ -1304,6 +1309,7 @@ function createParser(filePath, options = {}) {
     path: filePath,
     editOnly: options.editOnly === true,
     size: 0,
+    committedSize: 0,
     mtimeMs: 0,
     partialLine: '',
     partialChunks: [],
@@ -1320,19 +1326,255 @@ function createParser(filePath, options = {}) {
     editSums: { added: 0, removed: 0, edits: 0 },
     usageVersion: 0,
     editVersion: 0,
+    persistDirty: false,
   };
+}
+
+function usageCacheKeyForFile(filePath) {
+  const resolved = path.resolve(filePath || '');
+  const stable = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  return crypto.createHash('sha256').update(stable).digest('hex').slice(0, 32);
+}
+
+function usageCacheIndexPath(filePath) {
+  return path.join(USAGE_CACHE_INDEX_DIR, usageCacheKeyForFile(filePath) + '.json');
+}
+
+function deleteUsageCacheIndex(filePath) {
+  try {
+    const indexPath = usageCacheIndexPath(filePath);
+    if (fs.existsSync(indexPath)) fs.unlinkSync(indexPath);
+  } catch (_) {}
+}
+
+function readFileHashSlice(filePath, start, length) {
+  if (!Number.isFinite(start) || !Number.isFinite(length) || length <= 0) return null;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const read = fs.readSync(fd, buffer, 0, length, start);
+    return crypto.createHash('sha256').update(buffer.subarray(0, read)).digest('hex');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function usageCacheGuards(filePath, indexedSize) {
+  const size = Math.max(0, Math.floor(indexedSize || 0));
+  const headLength = Math.min(USAGE_CACHE_HASH_BYTES, size);
+  const tailLength = Math.min(USAGE_CACHE_HASH_BYTES, size);
+  const tailStart = Math.max(0, size - tailLength);
+  return {
+    headLength,
+    headHash: headLength ? readFileHashSlice(filePath, 0, headLength) : null,
+    tailStart,
+    tailLength,
+    tailHash: tailLength ? readFileHashSlice(filePath, tailStart, tailLength) : null,
+  };
+}
+
+function usageCacheGuardsMatch(filePath, index) {
+  if (!index || !index.guards) return false;
+  const guards = index.guards;
+  if (guards.headLength) {
+    const headHash = readFileHashSlice(filePath, 0, guards.headLength);
+    if (!headHash || headHash !== guards.headHash) return false;
+  }
+  if (guards.tailLength) {
+    const tailHash = readFileHashSlice(filePath, guards.tailStart || 0, guards.tailLength);
+    if (!tailHash || tailHash !== guards.tailHash) return false;
+  }
+  return true;
+}
+
+function safeTokenNumber(value) {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function compactUsage(usage) {
+  usage = usage && typeof usage === 'object' ? usage : {};
+  return {
+    input_tokens: safeTokenNumber(usage.input_tokens),
+    cache_creation_input_tokens: safeTokenNumber(usage.cache_creation_input_tokens),
+    cache_read_input_tokens: safeTokenNumber(usage.cache_read_input_tokens),
+    output_tokens: safeTokenNumber(usage.output_tokens),
+  };
+}
+
+function compactEditItem(item) {
+  if (!item || typeof item.id !== 'string' || !item.id) return null;
+  return {
+    id: item.id,
+    name: typeof item.name === 'string' ? item.name : '',
+    ts: typeof item.ts === 'string' ? item.ts : '',
+    day: typeof item.day === 'string' && item.day ? item.day : localDayKey(item.ts),
+    added: safeTokenNumber(item.added),
+    removed: safeTokenNumber(item.removed),
+  };
+}
+
+function serializeUsageCacheParser(parser, stat) {
+  if (!parser || parser.editOnly || !parser.path) return null;
+  const indexedSize = Math.max(0, Math.min(parser.committedSize || 0, parser.size || 0));
+  if (indexedSize <= 0) return null;
+  const guards = usageCacheGuards(parser.path, indexedSize);
+  const records = [];
+  for (const id of parser.order) {
+    const row = parser.byRequest.get(id);
+    if (!row) continue;
+    records.push({
+      id,
+      ts: typeof row.ts === 'string' ? row.ts : '',
+      usage: compactUsage(row.usage),
+    });
+  }
+  return {
+    schemaVersion: USAGE_CACHE_SCHEMA_VERSION,
+    pathKey: usageCacheKeyForFile(parser.path),
+    sourceBasename: path.basename(parser.path),
+    indexedSize,
+    fileSizeAtSave: stat && Number.isFinite(stat.size) ? stat.size : parser.size,
+    completeAtSave: !!(stat && indexedSize === stat.size),
+    mtimeMs: stat && Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : parser.mtimeMs,
+    updatedAt: Date.now(),
+    guards,
+    projectCwd: parser.projectCwd || null,
+    usage: {
+      usageVersion: parser.usageVersion || 0,
+      latestUsageId: parser.latestUsageId || null,
+      records,
+    },
+    edit: {
+      editVersion: parser.editVersion || 0,
+      pending: Array.from(parser.editPending.values()).map(compactEditItem).filter(Boolean),
+      counted: Array.from(parser.editCounted.values()).map(compactEditItem).filter(Boolean),
+    },
+  };
+}
+
+function saveUsageCacheParser(state, parser, stat) {
+  if (!parser || parser.editOnly || !parser.persistDirty) return;
+  try {
+    const index = serializeUsageCacheParser(parser, stat);
+    if (!index) return;
+    fs.mkdirSync(USAGE_CACHE_INDEX_DIR, { recursive: true });
+    const finalPath = usageCacheIndexPath(parser.path);
+    const tmpPath = finalPath + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmpPath, JSON.stringify(index));
+    fs.renameSync(tmpPath, finalPath);
+    parser.persistDirty = false;
+  } catch (error) {
+    if (state && typeof state.log === 'function') {
+      state.log(`usage cache index save skipped: ${error && error.message ? error.message : error}`);
+    }
+  }
+}
+
+function loadUsageCacheParser(state, target, stat) {
+  try {
+    const indexPath = usageCacheIndexPath(target);
+    if (!fs.existsSync(indexPath)) return null;
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    if (!index || index.schemaVersion !== USAGE_CACHE_SCHEMA_VERSION) return null;
+    if (index.pathKey !== usageCacheKeyForFile(target)) return null;
+    if (index.sourceBasename !== path.basename(target)) return null;
+    const indexedSize = Number(index.indexedSize);
+    if (!Number.isFinite(indexedSize) || indexedSize < 0 || indexedSize > stat.size) return null;
+    if (indexedSize <= 0) return null;
+    if (index.completeAtSave && indexedSize === stat.size && index.mtimeMs !== stat.mtimeMs) return null;
+    if (!usageCacheGuardsMatch(target, index)) return null;
+    const parser = createParser(target);
+    parser.size = indexedSize;
+    parser.committedSize = indexedSize;
+    parser.mtimeMs = Number.isFinite(index.mtimeMs) ? index.mtimeMs : 0;
+    if (!hydrateUsageCacheParser(parser, index)) return null;
+    parser.persistDirty = false;
+    return parser;
+  } catch (error) {
+    if (state && typeof state.log === 'function') {
+      state.log(`usage cache index ignored: ${error && error.message ? error.message : error}`);
+    }
+    return null;
+  }
+}
+
+function hydrateUsageCacheParser(parser, index) {
+  parser.projectCwd = typeof index.projectCwd === 'string' && index.projectCwd ? index.projectCwd : null;
+  const usage = index.usage && typeof index.usage === 'object' ? index.usage : {};
+  const records = Array.isArray(usage.records) ? usage.records : [];
+  const seen = new Set();
+  parser.byRequest = new Map();
+  parser.order = [];
+  parser.sums = { fresh: 0, cw: 0, cr: 0, out: 0 };
+  for (const record of records) {
+    if (!record || typeof record.id !== 'string' || !record.id || seen.has(record.id)) return false;
+    const compact = compactUsage(record.usage);
+    seen.add(record.id);
+    parser.order.push(record.id);
+    parser.byRequest.set(record.id, {
+      ts: typeof record.ts === 'string' ? record.ts : '',
+      usage: compact,
+    });
+    parser.sums.fresh += compact.input_tokens || 0;
+    parser.sums.cw += compact.cache_creation_input_tokens || 0;
+    parser.sums.cr += compact.cache_read_input_tokens || 0;
+    parser.sums.out += compact.output_tokens || 0;
+  }
+  parser.latestUsageId = typeof usage.latestUsageId === 'string' && parser.byRequest.has(usage.latestUsageId)
+    ? usage.latestUsageId
+    : (parser.order.length ? parser.order[parser.order.length - 1] : null);
+  parser.usageVersion = Number.isFinite(usage.usageVersion)
+    ? usage.usageVersion
+    : parser.order.length;
+
+  const edit = index.edit && typeof index.edit === 'object' ? index.edit : {};
+  parser.editPending = new Map();
+  parser.editCounted = new Map();
+  parser.editDays = new Map();
+  parser.editSums = { added: 0, removed: 0, edits: 0 };
+  const counted = Array.isArray(edit.counted) ? edit.counted : [];
+  for (const raw of counted) {
+    const item = compactEditItem(raw);
+    if (!item || parser.editCounted.has(item.id)) continue;
+    parser.editCounted.set(item.id, item);
+    parser.editSums.added += item.added || 0;
+    parser.editSums.removed += item.removed || 0;
+    parser.editSums.edits += 1;
+    const key = item.day || localDayKey(item.ts);
+    let day = parser.editDays.get(key);
+    if (!day) {
+      day = { day: key, added: 0, removed: 0, edits: 0 };
+      parser.editDays.set(key, day);
+    }
+    day.added += item.added || 0;
+    day.removed += item.removed || 0;
+    day.edits += 1;
+  }
+  const pending = Array.isArray(edit.pending) ? edit.pending : [];
+  for (const raw of pending) {
+    const item = compactEditItem(raw);
+    if (!item || parser.editCounted.has(item.id)) continue;
+    parser.editPending.set(item.id, item);
+  }
+  parser.editVersion = Number.isFinite(edit.editVersion)
+    ? edit.editVersion
+    : parser.editCounted.size;
+  return true;
 }
 
 function appendNewBytes(parser, filePath, newSize) {
   const length = newSize - parser.size;
   if (length <= 0) return;
+  const oldSize = parser.size;
   const fd = fs.openSync(filePath, 'r');
   try {
     const buffer = Buffer.alloc(length);
-    fs.readSync(fd, buffer, 0, length, parser.size);
+    fs.readSync(fd, buffer, 0, length, oldSize);
     parser.size = newSize;
     const decoded = parser.decoder.write(buffer);
     appendDecodedText(parser, decoded);
+    const lastNewline = buffer.lastIndexOf(10);
+    if (lastNewline !== -1) parser.committedSize = oldSize + lastNewline + 1;
   } finally {
     fs.closeSync(fd);
   }
@@ -1379,7 +1621,10 @@ function processLine(parser, line) {
   if (!line) return;
   const entry = parseJsonLine(line);
   if (!entry) return;
-  if (typeof entry.cwd === 'string' && entry.cwd) parser.projectCwd = entry.cwd;
+  if (typeof entry.cwd === 'string' && entry.cwd && parser.projectCwd !== entry.cwd) {
+    parser.projectCwd = entry.cwd;
+    parser.persistDirty = true;
+  }
   processUsageEntry(parser, entry);
   processEditActivityEntry(parser, entry);
 }
@@ -1412,6 +1657,7 @@ function processUsageEntry(parser, entry) {
   parser.byRequest.set(requestId, { usage, ts });
   parser.latestUsageId = requestId;
   parser.usageVersion += 1;
+  parser.persistDirty = true;
 }
 
 function parseJsonLine(line) {
@@ -1436,6 +1682,7 @@ function processEditActivityEntry(parser, entry) {
       if (!item || !item.id) continue;
       if (parser.editCounted.has(item.id)) continue;
       parser.editPending.set(item.id, item);
+      parser.persistDirty = true;
     }
     return;
   }
@@ -1446,6 +1693,7 @@ function processEditActivityEntry(parser, entry) {
     const item = parser.editPending.get(block.tool_use_id);
     if (!item) continue;
     parser.editPending.delete(block.tool_use_id);
+    parser.persistDirty = true;
     if (toolResultIsError(block)) continue;
     countEditActivity(parser, item);
   }
@@ -1556,6 +1804,7 @@ function countEditActivity(parser, item) {
   parser.editSums.removed += item.removed || 0;
   parser.editSums.edits += 1;
   parser.editVersion += 1;
+  parser.persistDirty = true;
   const key = item.day || localDayKey(item.ts);
   let day = parser.editDays.get(key);
   if (!day) {

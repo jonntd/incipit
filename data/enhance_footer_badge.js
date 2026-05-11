@@ -2,6 +2,54 @@ import { CFG, getActiveClaudeSessionId } from './enhance_shared.js';
 import { SEL } from './host_probe.js';
 
 // ============================================================
+// Shared active-session identity heartbeat.
+// ============================================================
+// Cache stats and edit activity both need to notice active-session changes.
+// Keep one lightweight heartbeat/listener set and let each feature decide
+// whether its own payload needs to be posted.
+var identityPublishers = [];
+var identityBridgeInstalled = false;
+var identityBridgeScheduled = false;
+var identityBridgeForce = false;
+
+function registerIdentityPublisher(publisher) {
+  if (typeof publisher !== 'function') return;
+  identityPublishers.push(publisher);
+  ensureIdentityBridge();
+  scheduleIdentityHeartbeat(true);
+}
+
+function scheduleIdentityHeartbeat(force) {
+  identityBridgeForce = identityBridgeForce || !!force;
+  if (identityBridgeScheduled) return;
+  identityBridgeScheduled = true;
+  requestAnimationFrame(function() {
+    var forceNow = identityBridgeForce;
+    identityBridgeForce = false;
+    identityBridgeScheduled = false;
+    var list = identityPublishers.slice();
+    for (var i = 0; i < list.length; i++) {
+      try { list[i](forceNow); } catch (_) {}
+    }
+  });
+}
+
+function ensureIdentityBridge() {
+  if (identityBridgeInstalled) return;
+  identityBridgeInstalled = true;
+  setTimeout(function() { scheduleIdentityHeartbeat(true); }, 450);
+  setTimeout(function() { scheduleIdentityHeartbeat(true); }, 1800);
+  setInterval(function() { scheduleIdentityHeartbeat(false); }, 2400);
+  window.addEventListener('focus', function() { scheduleIdentityHeartbeat(true); });
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) scheduleIdentityHeartbeat(true);
+  });
+  document.addEventListener('click', function() {
+    setTimeout(function() { scheduleIdentityHeartbeat(false); }, 0);
+  }, true);
+}
+
+// ============================================================
 // Footer button label abbreviation.
 // ============================================================
 // Host renders the permission-mode button label in full ("Bypass
@@ -224,17 +272,9 @@ function setupCacheBadge() {
   }
 
   function setupBadgeIdentityBridge() {
-    scheduleBadgeIdentityPublish(true);
-    setTimeout(function() { scheduleBadgeIdentityPublish(true); }, 450);
-    setTimeout(function() { scheduleBadgeIdentityPublish(true); }, 1800);
-    setInterval(function() { scheduleBadgeIdentityPublish(false); }, 2200);
-    window.addEventListener('focus', function() { scheduleBadgeIdentityPublish(true); });
-    document.addEventListener('visibilitychange', function() {
-      if (!document.hidden) scheduleBadgeIdentityPublish(true);
+    registerIdentityPublisher(function(force) {
+      publishBadgeIdentity(force, false);
     });
-    document.addEventListener('click', function() {
-      setTimeout(function() { scheduleBadgeIdentityPublish(false); }, 0);
-    }, true);
   }
 
   function fmtTokens(n) {
@@ -249,16 +289,6 @@ function setupCacheBadge() {
   function fmtPct(p) {
     if (!Number.isFinite(p) || p < 0) return '—';
     return (p * 100).toFixed(2) + '%';
-  }
-  function fmtRelTime(iso) {
-    if (!iso) return '—';
-    var t = Date.parse(iso);
-    if (isNaN(t)) return '—';
-    var s = Math.max(0, Math.round((Date.now() - t) / 1000));
-    if (s < 60) return s + 's ago';
-    if (s < 3600) return Math.round(s / 60) + 'm ago';
-    if (s < 86400) return Math.round(s / 3600) + 'h ago';
-    return Math.round(s / 86400) + 'd ago';
   }
   function pad2(n) {
     return n < 10 ? '0' + n : String(n);
@@ -1037,30 +1067,6 @@ function setupCacheBadge() {
     if (bottom < margin) bottom = margin;
     popupEl.style.bottom = bottom + 'px';
   }
-  // Relative-time labels in the popup ("3s ago" / "2m ago") are the only
-  // reason this UI ever needs sub-payload refresh. Keep the work local to
-  // the popup lifecycle so the extension host does not re-broadcast on a
-  // 1.5s tick just to nudge these spans. We update only `[data-ts]` text,
-  // not the whole row, to avoid innerHTML churn.
-  var popupTimer = null;
-  function refreshRelTimes() {
-    if (!popupEl) return;
-    var nodes = popupEl.querySelectorAll('[data-ts]');
-    for (var i = 0; i < nodes.length; i++) {
-      var iso = nodes[i].getAttribute('data-ts');
-      var next = fmtRelTime(iso);
-      if (nodes[i].textContent !== next) nodes[i].textContent = next;
-    }
-  }
-  function startPopupTimer() {
-    if (popupTimer) return;
-    popupTimer = setInterval(refreshRelTimes, 1000);
-  }
-  function stopPopupTimer() {
-    if (!popupTimer) return;
-    clearInterval(popupTimer);
-    popupTimer = null;
-  }
   function openPopup(anchor) {
     popupAnchor = anchor;
     if (!popupEl) {
@@ -1072,14 +1078,12 @@ function setupCacheBadge() {
     renderPopup();
     positionPopup();
     requestBadgeHistory();
-    startPopupTimer();
   }
   function closePopup() {
     if (!popupEl) return;
     popupEl.classList.remove('cceStatOpen');
     if (popupAnchor) popupAnchor.classList.remove('cceBadgeActive');
     popupAnchor = null;
-    stopPopupTimer();
   }
   function isOpen() {
     return !!(popupEl && popupEl.classList.contains('cceStatOpen'));
@@ -1251,17 +1255,9 @@ function setupEditActivityHeader() {
   }
 
   function setupActivityIdentityBridge() {
-    scheduleActivityIdentityPublish(true);
-    setTimeout(function() { scheduleActivityIdentityPublish(true); }, 450);
-    setTimeout(function() { scheduleActivityIdentityPublish(true); }, 1800);
-    setInterval(function() { scheduleActivityIdentityPublish(false); }, 2600);
-    window.addEventListener('focus', function() { scheduleActivityIdentityPublish(true); });
-    document.addEventListener('visibilitychange', function() {
-      if (!document.hidden) scheduleActivityIdentityPublish(true);
+    registerIdentityPublisher(function(force) {
+      publishActivityIdentity(force, false);
     });
-    document.addEventListener('click', function() {
-      setTimeout(function() { scheduleActivityIdentityPublish(false); }, 0);
-    }, true);
   }
 
   function headerParts() {
