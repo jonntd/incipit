@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+const CLAUDE_CODE_EXTENSION_PREFIX = 'anthropic.claude-code-';
 const WORKBENCH_RESTORE_ROOT = path.join(
   os.homedir(),
   '.incipit',
@@ -14,6 +15,11 @@ const OVERLAY_SENTINEL_ROOT = path.join(
   os.homedir(),
   '.incipit',
   'editor-selection-overlay-v1',
+);
+const HOST_IDENTITY_ROOT = path.join(
+  os.homedir(),
+  '.incipit',
+  'editor-hosts-v1',
 );
 const WORKBENCH_MAIN_REL = path.join('out', 'vs', 'workbench', 'workbench.desktop.main.js');
 const PATCH_START = '/* incipit editor selection overlay start */';
@@ -121,8 +127,21 @@ function atomicWrite(targetPath, data) {
   }
 }
 
+function extensionRootForTarget(target) {
+  const extensionDir = target && target.extensionDir;
+  if (!extensionDir) return '';
+  const base = path.basename(extensionDir).toLowerCase();
+  if (
+    base.startsWith(CLAUDE_CODE_EXTENSION_PREFIX) &&
+    path.basename(path.dirname(extensionDir)).toLowerCase() === 'extensions'
+  ) {
+    return path.dirname(extensionDir);
+  }
+  return extensionDir;
+}
+
 function isVSCodeStableTarget(target) {
-  const extensionDir = canonicalPath(target && target.extensionDir);
+  const extensionDir = canonicalPath(extensionRootForTarget(target));
   const settingsPath = canonicalPath(target && target.settingsPath);
   if (/(?:^|[\\/])\.vscode[\\/]extensions$/.test(extensionDir)) return true;
   return (
@@ -154,15 +173,23 @@ function workbenchPathForAppRoot(appRoot) {
   return path.join(appRoot, WORKBENCH_MAIN_REL);
 }
 
-function appRootLooksSupported(appRoot) {
+function appRootLooksLikeWorkbench(appRoot) {
   const workbenchPath = workbenchPathForAppRoot(appRoot);
   if (!fs.existsSync(workbenchPath)) return false;
+  return !!(safeReadJson(path.join(appRoot, 'package.json')) || safeReadJson(path.join(appRoot, 'product.json')));
+}
+
+function appRootLooksSupported(appRoot) {
+  if (!appRootLooksLikeWorkbench(appRoot)) return false;
   const product = readProductInfo(appRoot);
   return product.applicationName === 'code' || product.name === 'Visual Studio Code' || product.name === 'Code';
 }
 
-function addAppRootCandidate(out, appRoot) {
-  if (!appRoot || !appRootLooksSupported(appRoot)) return;
+function addAppRootCandidate(out, appRoot, options = {}) {
+  const allowAnyWorkbench = options.allowAnyWorkbench === true;
+  if (!appRoot) return;
+  const accepted = allowAnyWorkbench ? appRootLooksLikeWorkbench(appRoot) : appRootLooksSupported(appRoot);
+  if (!accepted) return;
   const key = canonicalPath(appRoot);
   if (!out.some(item => item.key === key)) out.push({ key, appRoot: path.resolve(appRoot) });
 }
@@ -179,12 +206,12 @@ function resolvedWorkbenchTargetFromAppRoot(appRoot) {
 }
 
 function portableAppRootForTarget(target) {
-  const extensionsDir = target && target.extensionDir;
+  const extensionsDir = extensionRootForTarget(target);
   if (!extensionsDir || path.basename(extensionsDir) !== 'extensions') return null;
   const dataDir = path.dirname(extensionsDir);
   if (!fs.existsSync(path.join(dataDir, 'user-data'))) return null;
   const appRoot = path.join(path.dirname(dataDir), 'resources', 'app');
-  return appRootLooksSupported(appRoot) ? path.resolve(appRoot) : null;
+  return appRootLooksLikeWorkbench(appRoot) ? path.resolve(appRoot) : null;
 }
 
 function addInstallRootCandidates(out, installRoot) {
@@ -205,10 +232,59 @@ function pathEntries() {
     .filter(Boolean);
 }
 
+function normalizeCliScriptReference(raw, scriptDir) {
+  if (typeof raw !== 'string') return null;
+  let value = raw.trim();
+  if (!value) return null;
+  if (process.platform === 'win32') {
+    value = value.replace(/^%~dp0/i, scriptDir + path.sep);
+  }
+  if (!path.isAbsolute(value)) {
+    value = path.resolve(scriptDir, value);
+  }
+  return path.normalize(value);
+}
+
+function appRootFromCliReference(raw, scriptDir) {
+  const value = normalizeCliScriptReference(raw, scriptDir);
+  if (!value) return null;
+  const normalized = value.replace(/[\\/]+/g, '/');
+  const match = normalized.match(/^(.*\/resources\/app)(?:\/out\/cli\.js)?$/i);
+  if (!match) return null;
+  return path.normalize(match[1]);
+}
+
+function addCliScriptCandidates(out, scriptPath) {
+  if (!scriptPath || !fs.existsSync(scriptPath)) return;
+  let stat;
+  try { stat = fs.statSync(scriptPath); } catch (_) { return; }
+  if (!stat.isFile()) return;
+
+  let text = '';
+  try { text = fs.readFileSync(scriptPath, 'utf8'); } catch (_) { return; }
+  const scriptDir = path.dirname(scriptPath);
+  const refs = new Set();
+  const patterns = [
+    /["']([^"'\r\n]*resources[\\/]+app[\\/]+out[\\/]+cli\.js)["']/ig,
+    /(["']?)([^"'\r\n]*resources[\\/]+app)\1/ig,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text))) {
+      refs.add(match[2] || match[1]);
+    }
+  }
+  for (const ref of refs) {
+    addAppRootCandidate(out, appRootFromCliReference(ref, scriptDir));
+  }
+}
+
 function addPathBasedCandidates(out) {
   if (process.platform !== 'win32') return;
   for (const entry of pathEntries()) {
     const base = path.basename(entry).toLowerCase();
+    addCliScriptCandidates(out, path.join(entry, 'code.cmd'));
+    addCliScriptCandidates(out, path.join(entry, 'code'));
     if (base === 'bin' && (
       fs.existsSync(path.join(entry, 'code.cmd')) ||
       fs.existsSync(path.join(entry, 'code.exe')) ||
@@ -243,30 +319,113 @@ function addPlatformCandidates(out) {
   addAppRootCandidate(out, '/snap/code/current/usr/share/code/resources/app');
 }
 
+function addEnvironmentCandidates(out) {
+  addAppRootCandidate(out, process.env.INCIPIT_WORKBENCH_APP_ROOT, { allowAnyWorkbench: true });
+}
+
+function readHostIdentities() {
+  if (!fs.existsSync(HOST_IDENTITY_ROOT)) return [];
+  let entries = [];
+  try { entries = fs.readdirSync(HOST_IDENTITY_ROOT, { withFileTypes: true }); } catch (_) { return []; }
+  const out = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const data = safeReadJson(path.join(HOST_IDENTITY_ROOT, entry.name));
+    if (data) out.push(data);
+  }
+  return out;
+}
+
+function addHostIdentityCandidates(out, target) {
+  const targetExtensionDir = canonicalPath(target && target.extensionDir);
+  const targetExtensionRoot = canonicalPath(extensionRootForTarget(target));
+  if (!targetExtensionDir || !targetExtensionRoot) return;
+  for (const identity of readHostIdentities()) {
+    const claudeExtensionPath = canonicalPath(identity && identity.claudeExtensionPath);
+    if (!claudeExtensionPath) continue;
+    const claudeExtensionRoot = canonicalPath(extensionRootForTarget({ extensionDir: claudeExtensionPath }));
+    if (claudeExtensionPath !== targetExtensionDir && claudeExtensionRoot !== targetExtensionRoot) continue;
+    addAppRootCandidate(out, identity.appRoot, { allowAnyWorkbench: true });
+  }
+}
+
+function addRestorePointCandidates(out) {
+  for (const manifestFile of collectWorkbenchManifestPaths()) {
+    const manifest = safeReadJson(manifestFile);
+    const resolved = resolvedWorkbenchTargetFromManifest(manifest);
+    if (!resolved || !resolved.appRoot) continue;
+    addAppRootCandidate(out, resolved.appRoot);
+  }
+}
+
+function unsupportedResult(reason, candidates = []) {
+  return {
+    ok: false,
+    status: 'unsupported',
+    reason,
+    candidates: candidates.map(item => item.appRoot || item).filter(Boolean),
+  };
+}
+
 function resolveWorkbenchTarget(target) {
+  const exactCandidates = [];
+  addEnvironmentCandidates(exactCandidates);
+  addHostIdentityCandidates(exactCandidates, target);
+  if (exactCandidates.length === 1) {
+    return resolvedWorkbenchTargetFromAppRoot(exactCandidates[0].appRoot);
+  }
+  if (exactCandidates.length > 1) {
+    return unsupportedResult('ambiguous-workbench', exactCandidates);
+  }
+
   const portableAppRoot = portableAppRootForTarget(target);
   if (portableAppRoot) {
     return resolvedWorkbenchTargetFromAppRoot(portableAppRoot);
   }
   if (!isVSCodeStableTarget(target)) {
-    return { ok: false, status: 'unsupported', reason: 'only-vscode-stable' };
+    return unsupportedResult('only-vscode-stable');
   }
   const candidates = [];
+  addEnvironmentCandidates(candidates);
+  addHostIdentityCandidates(candidates, target);
   addPathBasedCandidates(candidates);
   addPlatformCandidates(candidates);
+  addRestorePointCandidates(candidates);
   if (candidates.length === 0) {
-    return { ok: false, status: 'unsupported', reason: 'workbench-not-found' };
+    return unsupportedResult('workbench-not-found');
   }
   if (candidates.length > 1) {
-    return {
-      ok: false,
-      status: 'unsupported',
-      reason: 'ambiguous-workbench',
-      candidates: candidates.map(item => item.appRoot),
-    };
+    return unsupportedResult('ambiguous-workbench', candidates);
   }
   const appRoot = candidates[0].appRoot;
   return resolvedWorkbenchTargetFromAppRoot(appRoot);
+}
+
+function overlayResolutionFailureMessage(resolved) {
+  const reason = resolved && resolved.reason ? resolved.reason : 'unknown';
+  const reasonText = {
+    'only-vscode-stable': '当前 Claude Code 目标无法对应到一个可确认的编辑器程序文件',
+    'workbench-not-found': '没有找到 VS Code/编辑器的 Workbench 程序文件',
+    'ambiguous-workbench': '找到了多个可能的 Workbench 程序文件，无法安全选择',
+  }[reason] || reason;
+  const candidates = Array.isArray(resolved && resolved.candidates) && resolved.candidates.length
+    ? ` 候选: ${resolved.candidates.join(' | ')}`
+    : '';
+  return (
+    `编辑器浮层已启用，但浮层没有被安全应用：${reasonText}。` +
+    '本次 apply 已停止，不会退回 CodeLens 兜底。' +
+    '请关闭“编辑器浮层（引用文本或文件）”后重新 apply，或修正编辑器路径后再试。' +
+    candidates
+  );
+}
+
+function preflightWorkbenchOverlayForTarget(claudeTarget, enabled) {
+  if (!enabled) return { status: 'off', enabled: false };
+  const resolved = resolveWorkbenchTarget(claudeTarget);
+  if (!resolved.ok) {
+    throw new Error(overlayResolutionFailureMessage(resolved));
+  }
+  return resolved;
 }
 
 function restorePointDir(target) {
@@ -675,7 +834,7 @@ function applyWorkbenchOverlayForTarget(claudeTarget, enabled, theme = {}) {
     return current;
   }
   if (!resolved.ok) {
-    return { status: 'unsupported', enabled: true, reason: resolved.reason || null, candidates: resolved.candidates || [] };
+    throw new Error(overlayResolutionFailureMessage(resolved));
   }
 
   const currentBytes = fs.readFileSync(resolved.workbenchPath);
@@ -857,6 +1016,7 @@ module.exports = {
   WORKBENCH_RESTORE_ROOT,
   OVERLAY_SENTINEL_ROOT,
   applyWorkbenchOverlayForTarget,
+  preflightWorkbenchOverlayForTarget,
   restoreWorkbenchOverlayForTarget,
   resolveWorkbenchTarget,
   hostKeyForAppRoot,

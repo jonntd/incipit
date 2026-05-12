@@ -13,6 +13,8 @@ const COMMAND_REFERENCE_ACTIVE_FILE = 'incipitClaudeReference.referenceActiveFil
 const CLAUDE_EXTENSION_ID = 'anthropic.claude-code';
 const CLAUDE_INSERT_COMMAND = 'claude-vscode.insertAtMention';
 const OVERLAY_SENTINEL_ROOT = path.join(os.homedir(), '.incipit', 'editor-selection-overlay-v1');
+const HOST_IDENTITY_ROOT = path.join(os.homedir(), '.incipit', 'editor-hosts-v1');
+const INCIPIT_CONFIG_PATH = path.join(os.homedir(), '.incipit', 'config.json');
 
 const LABEL_SELECTION = '◆ 选中段';
 const LABEL_WHOLE_FILE = '▣ 整文件';
@@ -33,6 +35,7 @@ function activate(context) {
   const codeLensEvents = new vscode.EventEmitter();
   let refreshTimer = null;
   let overlayCache = { checkedAt: 0, available: false };
+  let overlayDesiredCache = { checkedAt: 0, desired: false };
 
   const scheduleRefresh = () => {
     if (refreshTimer) clearTimeout(refreshTimer);
@@ -46,6 +49,7 @@ function activate(context) {
     onDidChangeCodeLenses: codeLensEvents.event,
     provideCodeLenses(document) {
       if (!getConfig().enabled) return [];
+      if (overlayDesired()) return [];
       if (overlayAvailable()) return [];
       if (!canReferenceDocument(document)) return [];
       if (!vscode.extensions.getExtension(CLAUDE_EXTENSION_ID)) return [];
@@ -96,7 +100,15 @@ function activate(context) {
     { dispose: () => refreshTimer && clearTimeout(refreshTimer) }
   );
 
+  writeHostIdentity(context);
   scheduleRefresh();
+
+  function overlayDesired() {
+    const now = Date.now();
+    if (now - overlayDesiredCache.checkedAt < 1000) return overlayDesiredCache.desired;
+    overlayDesiredCache = { checkedAt: now, desired: readEditorOverlayDesired() };
+    return overlayDesiredCache.desired;
+  }
 
   function overlayAvailable() {
     const now = Date.now();
@@ -221,6 +233,53 @@ function readOverlaySentinel() {
     return data && data.active === true && data.hostKey === hostKey;
   } catch (_) {
     return false;
+  }
+}
+
+function readEditorOverlayDesired() {
+  try {
+    const text = fs.readFileSync(INCIPIT_CONFIG_PATH, 'utf8');
+    const data = JSON.parse(text);
+    return !!(data && data.features && data.features.editorSelectionOverlay === true);
+  } catch (_) {
+    return false;
+  }
+}
+
+function writeHostIdentity(context) {
+  const appRoot = vscode.env && typeof vscode.env.appRoot === 'string' ? vscode.env.appRoot : '';
+  if (!appRoot) return;
+  const claude = vscode.extensions.getExtension(CLAUDE_EXTENSION_ID);
+  if (!claude || !claude.extensionPath) return;
+  const hostKey = hostKeyForAppRoot(appRoot);
+  const payload = {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    hostKey,
+    appName: vscode.env && vscode.env.appName || '',
+    appHost: vscode.env && vscode.env.appHost || '',
+    uriScheme: vscode.env && vscode.env.uriScheme || '',
+    appRoot,
+    companionExtensionPath: context && context.extensionPath || '',
+    claudeExtensionPath: claude.extensionPath
+  };
+  try {
+    fs.mkdirSync(HOST_IDENTITY_ROOT, { recursive: true });
+    atomicWrite(
+      path.join(HOST_IDENTITY_ROOT, `${hostKey}.json`),
+      Buffer.from(JSON.stringify(payload, null, 2) + '\n', 'utf8')
+    );
+  } catch (_) {}
+}
+
+function atomicWrite(targetPath, data) {
+  const tmp = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, data);
+  try {
+    fs.renameSync(tmp, targetPath);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch (_) {}
+    throw error;
   }
 }
 

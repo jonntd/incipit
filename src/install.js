@@ -27,6 +27,7 @@ const {
 } = require('./config');
 const {
   applyWorkbenchOverlayForTarget,
+  preflightWorkbenchOverlayForTarget,
 } = require('./workbench-overlay');
 
 const CLAUDE_CODE_EXTENSION_PREFIX = 'anthropic.claude-code-';
@@ -1309,6 +1310,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
   const features = getFeatures();
   const theme = getTheme();
   const language = getLanguage() || 'en';
+  preflightWorkbenchOverlayForTarget(target, features.editorSelectionOverlay === true);
   const enhancePreamble = buildEnhancePreamble(features, theme, language);
   const themeOverrideBlock = buildThemeOverrideBlock(theme);
 
