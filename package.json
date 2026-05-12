@@ -9,6 +9,7 @@
   "files": [
     "bin/",
     "src/",
+    "companion/",
     "data/",
     "README.md",
     "LICENSE"

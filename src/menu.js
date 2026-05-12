@@ -14,6 +14,7 @@ const {
   BACKUP_ROOT,
   OFFICIAL_RESTORE_ROOT,
   ensureOfficialRestorePoint,
+  isMissingOfficialRestorePointError,
   restoreOfficialTarget,
   legacyBackupStats,
   cleanLegacyBackups,
@@ -49,6 +50,10 @@ const {
   validateTargetEntry,
 } = require('./host-detect');
 const {
+  WORKBENCH_RESTORE_ROOT,
+  restoreWorkbenchOverlayForTarget,
+} = require('./workbench-overlay');
+const {
   pickFolder,
   isDialogAvailable,
   dialogUnavailableReason,
@@ -60,6 +65,8 @@ const {
   clearScreen,
   color,
   renderConfigureMenu,
+  renderConnectUs,
+  renderExperimentalMenu,
   renderLanguagePicker,
   renderMainMenu,
   renderTargetMenu,
@@ -108,6 +115,7 @@ function loadPackageVersion() {
   catch (_) { return null; }
 }
 const PACKAGE_VERSION = loadPackageVersion();
+const CONNECT_URL = 'https://github.com/yc-duan/incipit';
 
 const APPLY_TREE_NAME_WIDTH = 26;
 
@@ -205,11 +213,32 @@ async function handleApply({
 
   let restorePoint;
   try {
-    restorePoint = ensureOfficialRestorePoint(target);
+    restorePoint = await ensureOfficialRestorePoint(target);
   } catch (exc) {
-    console.log(color(t('apply.restore_point_failed', { msg: exc.message }), Ansi.RED));
-    if (exc.stack) console.log(exc.stack);
-    return 1;
+    if (isMissingOfficialRestorePointError(exc)) {
+      if (!process.stdin.isTTY) {
+        printMissingRestorePointRecoveryNotice(target, { canChoose: false });
+        return 1;
+      }
+      const recovery = await promptMissingRestorePointRecovery(target);
+      if (recovery !== 'download') {
+        console.log(color(t('apply.restore_missing.exit', { app: inferHostAppName(target) }), Ansi.GREY));
+        return 0;
+      }
+      console.log(color(t('apply.restore_missing.downloading'), Ansi.GREY));
+      try {
+        restorePoint = await ensureOfficialRestorePoint(target, { allowMarketplaceDownload: true });
+      } catch (downloadExc) {
+        const msg = t('apply.restore_missing.download_failed', { msg: downloadExc.message });
+        console.log(color(t('apply.restore_point_failed', { msg }), Ansi.RED));
+        if (downloadExc.stack) console.log(downloadExc.stack);
+        return 1;
+      }
+    } else {
+      console.log(color(t('apply.restore_point_failed', { msg: exc.message }), Ansi.RED));
+      if (exc.stack) console.log(exc.stack);
+      return 1;
+    }
   }
   let result;
   try {
@@ -278,6 +307,39 @@ function paletteDisplayLabel(theme) {
 
 function languageDisplayLabel(lang) {
   return lang === 'zh' ? t('picker.option_zh') : t('picker.option_en');
+}
+
+function printMissingRestorePointRecoveryNotice(target, { canChoose = true } = {}) {
+  const appName = inferHostAppName(target);
+  console.log(color(t('apply.restore_missing.heading'), Ansi.TERRA));
+  console.log();
+  console.log(t('apply.restore_missing.body'));
+  console.log();
+  console.log(color(t('apply.restore_missing.target', {
+    app: appName,
+    version: target && target.version || 'unknown',
+  }), Ansi.IVORY));
+  if (target && target.extensionDir) console.log(color(target.extensionDir, Ansi.GREY));
+  console.log();
+  if (canChoose) {
+    console.log(t('apply.restore_missing.option_exit', { app: appName }));
+    console.log(t('apply.restore_missing.option_download'));
+    console.log();
+  } else {
+    console.log(color(t('apply.restore_missing.non_interactive', { app: appName }), Ansi.GREY));
+  }
+}
+
+async function promptMissingRestorePointRecovery(target) {
+  printMissingRestorePointRecoveryNotice(target, { canChoose: true });
+  while (true) {
+    let raw = '';
+    try { raw = await prompt(t('apply.restore_missing.prompt')); } catch (_) { return 'exit'; }
+    const answer = String(raw || '').trim().toLowerCase();
+    if (!answer || answer === '1' || answer === 'q' || answer === 'b' || answer === 'exit') return 'exit';
+    if (answer === '2') return 'download';
+    console.log(color(t('apply.restore_missing.invalid'), Ansi.GREY));
+  }
 }
 
 function printApplyReport({ target, restorePoint, result }) {
@@ -371,9 +433,11 @@ function buildPatchTree(result) {
   const fontTotal = report.systemFonts && Number.isFinite(report.systemFonts.total)
     ? report.systemFonts.total
     : 0;
+  const workbench = report.workbenchOverlay || { status: 'off' };
   return [
     { name: 'extension.js', desc: t('apply.report.desc.extension_js') },
     { name: 'webview/', desc: t('apply.report.desc.webview_dir'), children: webviewChildren },
+    { name: 'editor overlay', desc: t(`apply.report.desc.workbench_overlay_${workbench.status.replace(/-/g, '_')}`) },
     { name: 'system fonts', desc: t('apply.report.desc.system_fonts', { files: fileCount(fontTotal) }) },
   ];
 }
@@ -388,6 +452,7 @@ function formatApplyConfigInline(features, theme) {
   const parts = [
     `${t('configure.feature_math')} ${features && features.math ? on : off}`,
     `${t('configure.feature_session')} ${features && features.sessionUsage ? on : off}`,
+    `${t('configure.feature_editor_overlay')} ${features && features.editorSelectionOverlay ? on : off}`,
     `${t('configure.param_body_size')} ${theme && theme.bodyFontSize ? theme.bodyFontSize : DEFAULT_THEME.bodyFontSize} px`,
     paletteDisplayLabel(theme || DEFAULT_THEME),
     `${t('configure.param_body_font')} ${bodyFontLabel}`,
@@ -414,6 +479,12 @@ function countApplyReportEntries(report) {
   changed += rootFiles.filter(file => file.written).length;
   changed += assetTrees.filter(tree => tree.written > 0).length;
   if (report.systemFonts && report.systemFonts.written > 0) changed++;
+  if (report.workbenchOverlay) {
+    total++;
+    if (report.workbenchOverlay.status === 'patched' || report.workbenchOverlay.status === 'restored') {
+      changed++;
+    }
+  }
   if (!Number.isFinite(total) || total < 0) total = changed;
   return { changed, total };
 }
@@ -504,6 +575,7 @@ async function handleRestore({
   console.log();
 
   console.log(t('restore.restore_root', { path: OFFICIAL_RESTORE_ROOT }));
+  console.log(t('restore.workbench_restore_root', { path: WORKBENCH_RESTORE_ROOT }));
   console.log();
 
   if (!silent) {
@@ -517,7 +589,15 @@ async function handleRestore({
 
   let result;
   try {
-    result = restoreOfficialTarget(target);
+    result = await restoreOfficialTarget(target);
+  } catch (exc) {
+    console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
+    if (exc.stack) console.log(exc.stack);
+    return 1;
+  }
+  let workbenchResult;
+  try {
+    workbenchResult = restoreWorkbenchOverlayForTarget(target);
   } catch (exc) {
     console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
     if (exc.stack) console.log(exc.stack);
@@ -525,11 +605,27 @@ async function handleRestore({
   }
   if (result.alreadyOfficial) {
     console.log(color(t('restore.already_official'), Ansi.YELLOW));
+    if (workbenchResult && workbenchResult.status) {
+      const statusLine = t(`restore.workbench_${workbenchResult.status.replace(/-/g, '_')}`);
+      console.log(color(statusLine, workbenchResult.status === 'restored' ? Ansi.GREEN : Ansi.YELLOW));
+      if (workbenchResult.restorePointDir) {
+        console.log(t('restore.workbench_restore_point_dir', { dir: workbenchResult.restorePointDir }));
+      }
+      if (workbenchResult.status === 'restored') {
+        console.log(color(t('restore.reload_hint'), Ansi.YELLOW));
+      }
+    }
     return 0;
   }
   console.log();
   console.log(t('restore.restore_point_dir', { dir: result.restorePointDir }));
+  if (workbenchResult && workbenchResult.restorePointDir) {
+    console.log(t('restore.workbench_restore_point_dir', { dir: workbenchResult.restorePointDir }));
+  }
   console.log(color(t('restore.done', { restored: result.restored, skipped: result.skipped }), Ansi.GREEN));
+  if (workbenchResult && workbenchResult.status) {
+    console.log(color(t(`restore.workbench_${workbenchResult.status.replace(/-/g, '_')}`), Ansi.GREEN));
+  }
   console.log(color(t('restore.reload_hint'), Ansi.YELLOW));
   return 0;
 }
@@ -576,13 +672,14 @@ function mainMenuRows() {
     { id: 'configure', mark: '3.', label: t('menu.configure') },
     { id: 'target',    mark: '4.', label: t('menu.target') },
     { id: 'language',  mark: '5.', label: t('menu.cli_language') },
-    { id: 'cleanup',   mark: '6.', label: t('menu.cleanup_backups') },
+    { id: 'connect',   mark: '6.', label: t('menu.connect_us') },
+    { id: 'cleanup',   mark: '7.', label: t('menu.cleanup_backups') },
     { id: 'quit',      mark: 'q.', label: t('menu.quit') },
   ];
 }
 
 // Returns one of:
-// 'apply' | 'restore' | 'configure' | 'target' | 'language' | 'cleanup' | 'quit'.
+// 'apply' | 'restore' | 'configure' | 'target' | 'language' | 'connect' | 'cleanup' | 'quit'.
 // The ledger shows the target apply would default to — auto-detected
 // and merged with the user's stored manual entries. We try the user's
 // last-used target first; if it's invalid (or no last-used is recorded),
@@ -649,6 +746,28 @@ async function selectMainMenu() {
   });
 }
 
+async function handleConnectUs() {
+  return keyLoop({
+    render: () => renderConnectUs({
+      version: PACKAGE_VERSION,
+      heading: t('connect.heading'),
+      url: CONNECT_URL,
+      backLabel: t('connect.back'),
+      selectedIndex: 0,
+      hint: t('hint.connect'),
+    }),
+    onKey: (str, key) => {
+      if (!key) return;
+      if (key.name === 'return' || key.name === 'enter' ||
+          key.name === 'backspace' || key.name === 'escape' ||
+          key.name === 'b' || key.name === 'q' ||
+          str === 'b' || str === 'q') {
+        return { done: true, result: { action: 'back' } };
+      }
+    },
+  });
+}
+
 // Configure screen rows — kinds: 'toggle' (space flips), 'knob' (enter
 // drills), 'action' (enter fires). The rows are static; `index` tracks
 // the currently focused row.
@@ -673,6 +792,10 @@ async function handleConfigure() {
       labels: {
         math: t('configure.feature_math'),
         sessionUsage: t('configure.feature_session'),
+        experimental: t('configure.experimental'),
+        experimentalValue: features.editorSelectionOverlay
+          ? t('configure.experimental_value_on')
+          : t('configure.experimental_value_off'),
         bodyFontSize: t('configure.param_body_size'),
         palette: t('configure.param_palette'),
         paletteValue,
@@ -685,8 +808,9 @@ async function handleConfigure() {
       },
     });
 
-    // Rows: math, session, bodysize, palette, bodyfont, codefont, reset, back.
-    const ROW_COUNT = 8;
+    // Rows: math, session, experimental submenu, bodysize, palette,
+    // bodyfont, codefont, reset, back.
+    const ROW_COUNT = 9;
 
     const outcome = await keyLoop({
       render,
@@ -705,23 +829,25 @@ async function handleConfigure() {
             str === 'b' || str === 'q') {
           return { done: true, result: { action: 'back' } };
         }
-        // Space: toggle the boolean on rows 0/1.
+        // Space: toggle booleans on rows 0/1, or enter the experimental page.
         if (key.name === 'space' || str === ' ') {
           if (index === 0 || index === 1) {
             return { done: true, result: { action: 'toggle', index } };
           }
+          if (index === 2) return { done: true, result: { action: 'experimental' } };
           return;
         }
         if (key.name === 'return' || key.name === 'enter') {
           if (index === 0 || index === 1) {
             return { done: true, result: { action: 'toggle', index } };
           }
-          if (index === 2) return { done: true, result: { action: 'bodysize' } };
-          if (index === 3) return { done: true, result: { action: 'palette' } };
-          if (index === 4) return { done: true, result: { action: 'bodyfont' } };
-          if (index === 5) return { done: true, result: { action: 'codefont' } };
-          if (index === 6) return { done: true, result: { action: 'reset' } };
-          if (index === 7) return { done: true, result: { action: 'back' } };
+          if (index === 2) return { done: true, result: { action: 'experimental' } };
+          if (index === 3) return { done: true, result: { action: 'bodysize' } };
+          if (index === 4) return { done: true, result: { action: 'palette' } };
+          if (index === 5) return { done: true, result: { action: 'bodyfont' } };
+          if (index === 6) return { done: true, result: { action: 'codefont' } };
+          if (index === 7) return { done: true, result: { action: 'reset' } };
+          if (index === 8) return { done: true, result: { action: 'back' } };
           return;
         }
         // Letter shortcuts (r for reset, number for direct row activation).
@@ -730,10 +856,11 @@ async function handleConfigure() {
         }
         if (str === '1') { index = 0; return { done: true, result: { action: 'toggle', index: 0 } }; }
         if (str === '2') { index = 1; return { done: true, result: { action: 'toggle', index: 1 } }; }
-        if (str === '3') { index = 2; return { done: true, result: { action: 'bodysize' } }; }
-        if (str === '4') { index = 3; return { done: true, result: { action: 'palette' } }; }
-        if (str === '5') { index = 4; return { done: true, result: { action: 'bodyfont' } }; }
-        if (str === '6') { index = 5; return { done: true, result: { action: 'codefont' } }; }
+        if (str === '3') { index = 2; return { done: true, result: { action: 'experimental' } }; }
+        if (str === '4') { index = 3; return { done: true, result: { action: 'bodysize' } }; }
+        if (str === '5') { index = 4; return { done: true, result: { action: 'palette' } }; }
+        if (str === '6') { index = 5; return { done: true, result: { action: 'bodyfont' } }; }
+        if (str === '7') { index = 6; return { done: true, result: { action: 'codefont' } }; }
       },
     });
 
@@ -741,6 +868,10 @@ async function handleConfigure() {
     if (outcome.action === 'toggle') {
       if (outcome.index === 0) setFeature('math', !features.math);
       else if (outcome.index === 1) setFeature('sessionUsage', !features.sessionUsage);
+      continue;
+    }
+    if (outcome.action === 'experimental') {
+      await runScreenTransition(handleExperimentalFeatures);
       continue;
     }
     if (outcome.action === 'bodysize') {
@@ -768,6 +899,84 @@ async function handleConfigure() {
       continue;
     }
   }
+}
+
+async function handleExperimentalFeatures() {
+  let index = 0;
+  const rowsForRender = () => {
+    const features = getFeatures();
+    return [{
+      mark: '1.',
+      key: 'editorSelectionOverlay',
+      label: t('configure.feature_editor_overlay'),
+      enabled: features.editorSelectionOverlay,
+      description: [
+        t('configure.experimental_overlay_desc_what'),
+        t('configure.experimental_overlay_desc_why'),
+        t('configure.experimental_overlay_desc_restore'),
+      ],
+    }];
+  };
+
+  const render = () => {
+    const rows = rowsForRender();
+    const total = rows.length + 1;
+    if (index >= total) index = total - 1;
+    renderExperimentalMenu({
+      version: PACKAGE_VERSION,
+      heading: t('configure.experimental_heading'),
+      items: rows,
+      selectedIndex: index,
+      backLabel: t('configure.back'),
+      hint: t('hint.experimental'),
+    });
+  };
+
+  await keyLoop({
+    render,
+    onKey: (str, key) => {
+      if (!key) return;
+      const rows = rowsForRender();
+      const total = rows.length + 1;
+      if (key.name === 'up' || key.name === 'k') {
+        index = (index - 1 + total) % total;
+        return;
+      }
+      if (key.name === 'down' || key.name === 'j') {
+        index = (index + 1) % total;
+        return;
+      }
+      if (key.name === 'backspace' || key.name === 'escape' ||
+          key.name === 'b' || key.name === 'q' ||
+          str === 'b' || str === 'q') {
+        return { done: true, result: { action: 'back' } };
+      }
+      if (key.name === 'space' || str === ' ' ||
+          key.name === 'return' || key.name === 'enter') {
+        if (index < rows.length) {
+          if (rows[index].key === 'editorSelectionOverlay') {
+            toggleEditorSelectionOverlayFeature();
+          }
+          return;
+        }
+        return { done: true, result: { action: 'back' } };
+      }
+      const n = parseInt(str, 10);
+      if (Number.isFinite(n) && n >= 1 && n <= rows.length) {
+        index = n - 1;
+        if (rows[index].key === 'editorSelectionOverlay') {
+          toggleEditorSelectionOverlayFeature();
+        }
+        return;
+      }
+    },
+  });
+}
+
+function toggleEditorSelectionOverlayFeature() {
+  const features = getFeatures();
+  setFeature('editorSelectionOverlay', !features.editorSelectionOverlay);
+  invalidateScreenSession();
 }
 
 function normalizeCustomFontInput(raw, fallback) {
@@ -2314,6 +2523,8 @@ async function runInteractiveScreenLoop() {
       await runScreenTransition(handleTarget);
     } else if (action === 'language') {
       await runScreenTransition(chooseCliLanguage);
+    } else if (action === 'connect') {
+      await runScreenTransition(handleConnectUs);
     }
   }
 }

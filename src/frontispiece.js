@@ -6,6 +6,7 @@ const Ansi = {
   RESET: '\x1b[0m',
   BOLD: '\x1b[1m',
   ITALIC: '\x1b[3m',
+  UNDERLINE: '\x1b[4m',
   TERRA: '\x1b[38;2;217;119;87m',
   IVORY: '\x1b[38;2;248;248;246m',
   GREY: '\x1b[38;2;152;152;152m',
@@ -71,6 +72,12 @@ function color(text, code) {
   return `${code}${text}${Ansi.RESET}`;
 }
 
+function terminalLink(label, url) {
+  const styled = color(label, `${Ansi.TERRA}${Ansi.UNDERLINE}`);
+  if (!supportsTerminalControl()) return styled;
+  return `\x1b]8;;${url}\x07${styled}\x1b]8;;\x07`;
+}
+
 function clearScreen(options = {}) {
   if (activeCapture) {
     activeCapture.cleared = true;
@@ -100,7 +107,10 @@ function frameGeometry() {
 }
 
 function stripAnsi(value) {
-  return String(value || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  return String(value || '').replace(
+    /(?:\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))/g,
+    '',
+  );
 }
 
 function visibleWidth(value) {
@@ -189,8 +199,12 @@ function wrapWidth(value, max) {
   while (visibleWidth(remaining) > max) {
     const chunk = takeVisiblePrefix(remaining, max);
     if (!chunk) break;
-    lines.push(chunk);
-    remaining = remaining.slice(chunk.length);
+    const space = Math.max(chunk.lastIndexOf(' '), chunk.lastIndexOf('\t'));
+    const cut = space > 0 && visibleWidth(chunk.slice(0, space)) >= Math.floor(max * 0.5)
+      ? space + 1
+      : chunk.length;
+    lines.push(remaining.slice(0, cut).trimEnd());
+    remaining = remaining.slice(cut).trimStart();
   }
   if (remaining) lines.push(remaining);
   return lines;
@@ -363,6 +377,39 @@ function renderMainMenu(options) {
   for (let i = 0; i < LAYOUT.RULE_GAP_BEFORE_PROMPT; i++) printer.blank();
 }
 
+function renderConnectUs(options) {
+  const { version, heading, url, backLabel, selectedIndex, hint } = options;
+  clearScreen();
+  const { inner, framePad, indent } = frameGeometry();
+  const gaps = verticalGaps();
+  const printer = createPrinter(framePad, inner);
+  const rule = color('━'.repeat(inner), Ansi.GREY);
+  const centered = text => centerLine(text, inner);
+
+  printer.line(rule);
+  for (let i = 0; i < gaps.topBlanks; i++) printer.blank();
+  renderTitle(printer, inner, version);
+  for (let i = 0; i < gaps.titleGapAfter; i++) printer.blank();
+  printer.line(centered(color(heading, Ansi.GREY)));
+  printer.blank();
+  printer.blank();
+  printer.line(centered(terminalLink(url, url)));
+  for (let i = 0; i < gaps.ledgerGapAfter; i++) printer.blank();
+
+  printer.scrollStart();
+  renderMenuItems(printer, indent, [{
+    mark: 'b.',
+    label: backLabel,
+    selected: selectedIndex === 0,
+  }]);
+  printer.scrollEnd();
+
+  for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
+  printer.line(rule);
+  renderHint(printer, indent, hint);
+  for (let i = 0; i < LAYOUT.RULE_GAP_BEFORE_PROMPT; i++) printer.blank();
+}
+
 function renderConfigureMenu(options) {
   const { version, heading, features, theme, labels, selectedIndex, hint } = options;
   clearScreen();
@@ -420,13 +467,74 @@ function renderConfigureMenu(options) {
   printer.scrollStart();
   emitToggle(0, '1.', features.math, labels.math);
   emitToggle(1, '2.', features.sessionUsage, labels.sessionUsage);
-  emitKnob(   2, '3.', labels.bodyFontSize, `${theme.bodyFontSize} px`);
-  emitKnob(   3, '4.', labels.palette, labels.paletteValue);
-  emitKnob(   4, '5.', labels.bodyFont, labels.bodyFontValue);
-  emitKnob(   5, '6.', labels.codeFont, labels.codeFontValue);
+  emitKnob(   2, '3.', labels.experimental, labels.experimentalValue);
   printer.blank();
-  emitPlain(  6, 'r.', labels.reset);
-  emitPlain(  7, 'b.', labels.back);
+  emitKnob(   3, '4.', labels.bodyFontSize, `${theme.bodyFontSize} px`);
+  emitKnob(   4, '5.', labels.palette, labels.paletteValue);
+  emitKnob(   5, '6.', labels.bodyFont, labels.bodyFontValue);
+  emitKnob(   6, '7.', labels.codeFont, labels.codeFontValue);
+  printer.blank();
+  emitPlain(  7, 'r.', labels.reset);
+  emitPlain(  8, 'b.', labels.back);
+  printer.scrollEnd();
+
+  for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
+  printer.line(rule);
+  renderHint(printer, indent, hint);
+  for (let i = 0; i < LAYOUT.RULE_GAP_BEFORE_PROMPT; i++) printer.blank();
+}
+
+function renderExperimentalMenu(options) {
+  const { version, heading, items, selectedIndex, hint } = options;
+  clearScreen();
+  const { inner, framePad, indent } = frameGeometry();
+  const gaps = verticalGaps();
+  const printer = createPrinter(framePad, inner);
+  const rule = color('━'.repeat(inner), Ansi.GREY);
+  const centered = text => centerLine(text, inner);
+  const cursor = cursorIndent();
+  const markCol = LAYOUT.MENU_MARK_COL;
+  const checkCol = 4;
+
+  printer.line(rule);
+  for (let i = 0; i < gaps.topBlanks; i++) printer.blank();
+  renderTitle(printer, inner, version);
+  for (let i = 0; i < gaps.titleGapAfter; i++) printer.blank();
+  printer.line(centered(color(heading, Ansi.GREY)));
+  printer.blank();
+  printer.blank();
+
+  const optionCount = items.length;
+  const descIndent = indent + ' '.repeat(markCol + checkCol);
+  const descWidth = Math.max(20, inner - descIndent.length);
+  const lineFor = rowIndex => (rowIndex === selectedIndex ? cursor : indent);
+
+  printer.scrollStart();
+  items.forEach((item, idx) => {
+    const glyph = item.enabled ? '✓' : '✗';
+    const glyphColor = item.enabled ? Ansi.TERRA : Ansi.GREY;
+    printer.line(
+      lineFor(idx) +
+      color(item.mark.padEnd(markCol), Ansi.TERRA) +
+      color(padVisibleEnd(glyph, checkCol), glyphColor) +
+      color(item.label, Ansi.IVORY),
+    );
+    const descriptions = Array.isArray(item.description) ? item.description : [];
+    for (const text of descriptions) {
+      for (const chunk of wrapWidth(text, descWidth)) {
+        printer.line(descIndent + color(chunk, `${Ansi.GREY}${Ansi.ITALIC}`));
+      }
+    }
+    if (idx < optionCount - 1) printer.blank();
+  });
+
+  printer.blank();
+  printer.line(
+    lineFor(optionCount) +
+    color('b.'.padEnd(markCol), Ansi.TERRA) +
+    ' '.repeat(checkCol) +
+    color(options.backLabel, Ansi.IVORY),
+  );
   printer.scrollEnd();
 
   for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
@@ -871,7 +979,9 @@ module.exports = {
   supportsTerminalControl,
   promptPrefix,
   renderMainMenu,
+  renderConnectUs,
   renderConfigureMenu,
+  renderExperimentalMenu,
   renderLanguagePicker,
   renderTargetMenu,
   renderAddTargetIntro,

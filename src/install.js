@@ -25,6 +25,9 @@ const {
   getLanguage,
   pruneRetiredConfigKeys,
 } = require('./config');
+const {
+  applyWorkbenchOverlayForTarget,
+} = require('./workbench-overlay');
 
 const CLAUDE_CODE_EXTENSION_PREFIX = 'anthropic.claude-code-';
 const ENHANCE_TARGET_NAME = 'enhance.js';
@@ -118,6 +121,20 @@ const MARKDOWN_CODE_COMPONENT_PATTERN =
   /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\},\1\);let ([A-Za-z_$][\w$]*)=String\(\1\);/g;
 const MARKDOWN_CODE_COMPONENT_PATCHED_RE =
   /code:\(\{children:[A-Za-z_$][\w$]*,className:[A-Za-z_$][\w$]*\}\)=>\{if\([A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\},[A-Za-z_$][\w$]*\)\}let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\);/;
+const AT_MENTION_COMMAND_PATTERN =
+  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention",async\(\)=>\{(?=let [A-Za-z_$][\w$]*=\4\.window\.activeTextEditor;[\s\S]{0,700}?\2\.fire\()/g;
+const AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN =
+  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{\2\.fire\(__incipitMention\);return\}(?=let [A-Za-z_$][\w$]*=\4\.window\.activeTextEditor;)/g;
+const AT_MENTION_COMMAND_PATCHED_RE =
+  /commands\.registerCommand\("claude-vscode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(![A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)await [A-Za-z_$][\w$]*\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __incipitFire=\(\)=>[A-Za-z_$][\w$]*\.fire\(__incipitMention\);setTimeout\(__incipitFire,80\);setTimeout\(__incipitFire,360\);return\}/;
+const CLAUDE_VISIBLE_COMMAND_PATTERN =
+  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention"/g;
+const CLAUDE_VISIBLE_COMMAND_PATCHED_RE =
+  /commands\.registerCommand\("incipit\.claudeCode\.hasVisibleWebview",\(\)=>[A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)/;
+const IMPLICIT_SELECTION_SEND_PATTERN =
+  /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)&&![A-Za-z_$][\w$]*;([A-Za-z_$][\w$]*)\(\$\.selection\.value,\1,/g;
+const IMPLICIT_SELECTION_SEND_PATCHED_RE =
+  /let [A-Za-z_$][\w$]*=!1;[A-Za-z_$][\w$]*\(\$\.selection\.value,[A-Za-z_$][\w$]*,/;
 
 const ENHANCE_SCRIPT_TAG_RE =
   /<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>/g;
@@ -366,6 +383,16 @@ function vscodeUserSettingsPath() {
   return path.join(xdg, 'Code', 'User', 'settings.json');
 }
 
+function inferSettingsPathFromExtensionsDir(extensionsDir) {
+  if (!extensionsDir) return null;
+  try {
+    const { deriveSettingsPathFromExtensionsDir } = require('./host-detect');
+    return deriveSettingsPathFromExtensionsDir(extensionsDir);
+  } catch (_) {
+    return null;
+  }
+}
+
 function userFontDir() {
   const home = os.homedir();
   if (process.platform === 'win32') {
@@ -464,7 +491,8 @@ function findLatestClaudeCodeExtension(arg) {
     if (cmp !== 0) return cmp;
     return fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs;
   });
-  return buildTarget(candidates[candidates.length - 1], settingsPath);
+  const inferredSettingsPath = settingsPath || inferSettingsPathFromExtensionsDir(root);
+  return buildTarget(candidates[candidates.length - 1], inferredSettingsPath);
 }
 
 // ============================================================
@@ -831,6 +859,13 @@ function patchExtensionJs(content) {
   });
   statusLines.push(statusBadge);
 
+  let statusAtMention;
+  [updated, statusAtMention] = patchAtMentionCommand(updated);
+  statusLines.push(statusAtMention);
+  let statusVisibleCommand;
+  [updated, statusVisibleCommand] = patchClaudeVisibleCommand(updated);
+  statusLines.push(statusVisibleCommand);
+
   return [updated, statusLines];
 }
 
@@ -963,6 +998,77 @@ function patchMarkdownCodeComponent(content) {
       return text.replace(
         MARKDOWN_CODE_COMPONENT_PATTERN,
         'code:({children:$1,className:$2})=>{if($2){let $4=String($1),__incipitHtml=window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__($4,$2);if(__incipitHtml!==null&&__incipitHtml!==void 0)return $3.default.createElement("code",{className:$2+" hljs",dangerouslySetInnerHTML:{__html:__incipitHtml}});return $3.default.createElement("code",{className:$2},$1)}let $4=String($1);',
+      );
+    },
+  });
+}
+
+function patchAtMentionCommand(content) {
+  if (AT_MENTION_COMMAND_PATCHED_RE.test(content)) {
+    return [content, `${padLabel('@引用命令参数')}: 已存在`];
+  }
+
+  const legacyMatches = content.match(AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN) || [];
+  if (legacyMatches.length === 1) {
+    return [
+      content.replace(
+        AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN,
+        (match, _subscriptions, emitter, webviews, vscodeApi) =>
+          match.replace(
+            `if(typeof __incipitMention==="string"){${emitter}.fire(__incipitMention);return}`,
+            `if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return}`,
+          ),
+      ),
+      `${padLabel('@引用命令参数')}: 已升级`,
+    ];
+  }
+
+  const matches = content.match(AT_MENTION_COMMAND_PATTERN) || [];
+  if (matches.length !== 1) {
+    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 @引用命令参数 可补丁位置。`);
+  }
+  return [
+    content.replace(AT_MENTION_COMMAND_PATTERN, (match, _subscriptions, emitter, webviews, vscodeApi) =>
+      match.replace('async()=>{', 'async(__incipitMention)=>{') +
+      `if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return}`,
+    ),
+    `${padLabel('@引用命令参数')}: 已写入`,
+  ];
+}
+
+function patchClaudeVisibleCommand(content) {
+  if (CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content)) {
+    return [content, `${padLabel('Claude 可见状态')}: 已存在`];
+  }
+  const matches = content.match(CLAUDE_VISIBLE_COMMAND_PATTERN) || [];
+  if (matches.length !== 1) {
+    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 Claude 可见状态 可补丁位置。`);
+  }
+  return [
+    content.replace(
+      CLAUDE_VISIBLE_COMMAND_PATTERN,
+      (match, subscriptions, _emitter, webviews, vscodeApi) =>
+        match.replace(
+          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("claude-vscode.insertAtMention"`,
+          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.hasVisibleWebview",()=>${webviews}.hasVisibleWebview())),${subscriptions}.push(${vscodeApi}.commands.registerCommand("claude-vscode.insertAtMention"`,
+        ),
+    ),
+    `${padLabel('Claude 可见状态')}: 已写入`,
+  ];
+}
+
+function patchDisableImplicitSelectionSend(content) {
+  // This is not tied to the experimental editor overlay. Official implicit
+  // IDE selection sending conflicts with incipit's explicit visible @file
+  // references, so ordinary composer sends always use includeSelection=false.
+  return patchUniqueReplace(content, {
+    pattern: IMPLICIT_SELECTION_SEND_PATTERN,
+    alreadyPattern: IMPLICIT_SELECTION_SEND_PATCHED_RE,
+    label: '自动选区发送',
+    replace(text) {
+      return text.replace(
+        IMPLICIT_SELECTION_SEND_PATTERN,
+        'let $1=!1;$3($.selection.value,$1,',
       );
     },
   });
@@ -1128,7 +1234,9 @@ function patchWebviewIndex(content, features, theme, language) {
   [updated, markdownStatus] = patchMarkdownChildren(updated);
   let markdownCodeStatus;
   [updated, markdownCodeStatus] = patchMarkdownCodeComponent(updated);
-  const statusLines = [configStatus, markdownStatus, markdownCodeStatus];
+  let implicitSelectionStatus;
+  [updated, implicitSelectionStatus] = patchDisableImplicitSelectionSend(updated);
+  const statusLines = [configStatus, markdownStatus, markdownCodeStatus, implicitSelectionStatus];
 
   // Remove the legacy `acquireVsCodeApi` idempotency wrapper that earlier
   // development builds prepended to this file. Its only consumer has been
@@ -1295,11 +1403,18 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     ? `已写入 ${serifWritten}/${SYSTEM_FONT_FILES.length}`
     : `已存在 (${SYSTEM_FONT_FILES.length} 个)`;
 
+  const workbenchOverlay = applyWorkbenchOverlayForTarget(
+    target,
+    features.editorSelectionOverlay === true,
+    theme,
+  );
+
   const statusLines = [
     ...rootResourceStatuses,
     ...assetStatusLines,
     ...extStatusLines,
     ...webviewStatusLines,
+    `${padLabel('编辑器浮层')}: ${workbenchOverlay.status}`,
     `${padLabel('serif 系统字体')}: ${serifStatus}`,
   ];
 
@@ -1329,6 +1444,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
         written: serifWritten,
         total: SYSTEM_FONT_FILES.length,
       },
+      workbenchOverlay,
       legacyAssetTreesPruned,
     },
     statusLines,

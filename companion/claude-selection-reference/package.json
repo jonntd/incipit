@@ -1,0 +1,50 @@
+{
+  "name": "claude-selection-reference",
+  "displayName": "Incipit: Claude Selection Reference",
+  "description": "Show editor CodeLens actions for referencing a selection or whole file in Claude Code.",
+  "version": "0.0.1",
+  "publisher": "incipit",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:incipitClaudeReference.referenceSelection",
+    "onCommand:incipitClaudeReference.referenceActiveSelection",
+    "onCommand:incipitClaudeReference.referenceActiveFile"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "incipitClaudeReference.referenceSelection",
+        "title": "Incipit: Reference Selection in Claude Code",
+        "icon": "$(references)"
+      },
+      {
+        "command": "incipitClaudeReference.referenceActiveSelection",
+        "title": "Incipit: Reference Active Selection in Claude Code",
+        "icon": "$(references)"
+      },
+      {
+        "command": "incipitClaudeReference.referenceActiveFile",
+        "title": "Incipit: Reference Active File in Claude Code",
+        "icon": "$(file-code)"
+      }
+    ],
+    "configuration": {
+      "title": "Incipit Claude Selection Reference",
+      "properties": {
+        "incipitClaudeReference.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens actions when the active editor has a non-empty selection."
+        }
+      }
+    }
+  }
+}

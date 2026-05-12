@@ -55,6 +55,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
+const zlib = require('zlib');
 const {
   ROOT_WEBVIEW_FILES,
   LOCAL_ASSET_TREES,
@@ -67,6 +69,9 @@ const BACKUP_MANIFEST_NAME = 'manifest.json';
 const HISTORY_PREFIX = '_history-';
 const DEFAULT_BACKUP_NAME = 'latest';
 const OFFICIAL_RESTORE_NAME = 'official';
+const VSIX_DOWNLOAD_TIMEOUT_MS = 60000;
+const VSIX_MAX_BYTES = 220 * 1024 * 1024;
+const MISSING_OFFICIAL_RESTORE_POINT_CODE = 'INCIPIT_MISSING_OFFICIAL_RESTORE_POINT';
 
 const INCIPIT_MARKERS = [
   'incipit',
@@ -78,6 +83,24 @@ const INCIPIT_MARKERS = [
   '__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__',
   'import("./enhance.js")',
 ];
+
+class MissingOfficialRestorePointError extends Error {
+  constructor(target) {
+    super(
+      'Current Claude Code already contains incipit, but no official restore point exists. ' +
+      'Update or reinstall Claude Code in the host editor, or explicitly allow Marketplace VSIX recovery.',
+    );
+    this.name = 'MissingOfficialRestorePointError';
+    this.code = MISSING_OFFICIAL_RESTORE_POINT_CODE;
+    this.extensionDir = target && target.extensionDir;
+    this.version = target && target.version;
+    this.restorePointDir = target ? officialRestorePointDir(target) : null;
+  }
+}
+
+function isMissingOfficialRestorePointError(exc) {
+  return Boolean(exc && exc.code === MISSING_OFFICIAL_RESTORE_POINT_CODE);
+}
 
 // ------------------------------ helpers ------------------------------
 
@@ -597,6 +620,219 @@ function snapshotDirectoryFromSource(logicalName, originalPath, sourcePath, back
   };
 }
 
+function safeReadJson(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    return text.trim() ? JSON.parse(text) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function safeReadText(filePath) {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch (_) { return ''; }
+}
+
+function targetPackageInfo(target) {
+  const pkg = safeReadJson(path.join(target.extensionDir, 'package.json')) || {};
+  return {
+    publisher: typeof pkg.publisher === 'string' && pkg.publisher.trim() ? pkg.publisher.trim() : 'Anthropic',
+    name: typeof pkg.name === 'string' && pkg.name.trim() ? pkg.name.trim() : 'claude-code',
+    version: targetClaudeCodeVersion(target) || pkg.version || 'unknown',
+  };
+}
+
+function targetPlatformForTarget(target) {
+  const manifestText = safeReadText(path.join(target.extensionDir, '.vsixmanifest'));
+  const manifestMatch = manifestText.match(/\bTargetPlatform="([^"]+)"/);
+  if (manifestMatch) return manifestMatch[1];
+  const version = targetClaudeCodeVersion(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const name = path.basename(target.extensionDir || '');
+  const dirMatch = name.match(new RegExp(`^anthropic\\.claude-code-${version}-(.+)$`));
+  return dirMatch ? dirMatch[1] : '';
+}
+
+function marketplaceVsixUrls(target) {
+  const info = targetPackageInfo(target);
+  const platform = targetPlatformForTarget(target);
+  const base =
+    `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${encodeURIComponent(info.publisher)}` +
+    `/vsextensions/${encodeURIComponent(info.name)}/${encodeURIComponent(info.version)}/vspackage`;
+  return platform ? [`${base}?targetPlatform=${encodeURIComponent(platform)}`, base] : [base];
+}
+
+function downloadBuffer(url, redirects = 5) {
+  return new Promise((resolve, reject) => {
+    let req;
+    try {
+      req = https.get(url, { headers: { 'User-Agent': 'incipit' }, timeout: VSIX_DOWNLOAD_TIMEOUT_MS }, response => {
+        const status = response.statusCode || 0;
+        const location = response.headers && response.headers.location;
+        if (status >= 300 && status < 400 && location && redirects > 0) {
+          response.resume();
+          const next = new URL(location, url).toString();
+          downloadBuffer(next, redirects - 1).then(resolve, reject);
+          return;
+        }
+        if (status < 200 || status >= 300) {
+          response.resume();
+          reject(new Error(`download failed with HTTP ${status}`));
+          return;
+        }
+        const chunks = [];
+        let total = 0;
+        response.on('data', chunk => {
+          total += chunk.length;
+          if (total > VSIX_MAX_BYTES) {
+            req.destroy(new Error('download exceeded size limit'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const encoding = String(response.headers && response.headers['content-encoding'] || '').toLowerCase();
+            const data = encoding.includes('gzip') ? zlib.gunzipSync(raw) : raw;
+            if (data.length > VSIX_MAX_BYTES) {
+              reject(new Error('download exceeded size limit'));
+              return;
+            }
+            resolve(data);
+          } catch (exc) {
+            reject(exc);
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy(new Error('download timed out')));
+      req.on('error', reject);
+    } catch (exc) {
+      reject(exc);
+    }
+  });
+}
+
+async function downloadOfficialVsix(target) {
+  const errors = [];
+  for (const url of marketplaceVsixUrls(target)) {
+    try {
+      return { url, bytes: await downloadBuffer(url) };
+    } catch (exc) {
+      errors.push(`${url}: ${exc.message}`);
+    }
+  }
+  throw new Error(`Could not download the official Claude Code VSIX. ${errors.join(' | ')}`);
+}
+
+function extractVsixExtension(vsixBytes, destination) {
+  if (!Buffer.isBuffer(vsixBytes) || vsixBytes.length < 22) {
+    throw new Error('Downloaded VSIX is not a valid zip file.');
+  }
+  const eocd = findZipEocd(vsixBytes);
+  if (eocd < 0) throw new Error('Downloaded VSIX has no zip central directory.');
+  const entryCount = vsixBytes.readUInt16LE(eocd + 10);
+  const centralSize = vsixBytes.readUInt32LE(eocd + 12);
+  const centralOffset = vsixBytes.readUInt32LE(eocd + 16);
+  if (centralOffset + centralSize > vsixBytes.length) {
+    throw new Error('Downloaded VSIX central directory is out of bounds.');
+  }
+
+  fs.mkdirSync(destination, { recursive: true });
+  let offset = centralOffset;
+  for (let i = 0; i < entryCount; i += 1) {
+    if (vsixBytes.readUInt32LE(offset) !== 0x02014b50) {
+      throw new Error('Downloaded VSIX central directory is malformed.');
+    }
+    const method = vsixBytes.readUInt16LE(offset + 10);
+    const compressedSize = vsixBytes.readUInt32LE(offset + 20);
+    const uncompressedSize = vsixBytes.readUInt32LE(offset + 24);
+    const nameLen = vsixBytes.readUInt16LE(offset + 28);
+    const extraLen = vsixBytes.readUInt16LE(offset + 30);
+    const commentLen = vsixBytes.readUInt16LE(offset + 32);
+    const localOffset = vsixBytes.readUInt32LE(offset + 42);
+    const name = vsixBytes.slice(offset + 46, offset + 46 + nameLen).toString('utf8').replace(/\\/g, '/');
+    offset += 46 + nameLen + extraLen + commentLen;
+
+    if (!name.startsWith('extension/') || name.endsWith('/')) continue;
+    const rel = fromManifestRelativePath(name.slice('extension/'.length));
+    if (!rel) continue;
+    const data = readZipEntryData(vsixBytes, localOffset, compressedSize, uncompressedSize, method);
+    const outPath = path.join(destination, rel);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, data);
+  }
+}
+
+function findZipEocd(buf) {
+  const min = Math.max(0, buf.length - 0x10000 - 22);
+  for (let i = buf.length - 22; i >= min; i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054b50) return i;
+  }
+  return -1;
+}
+
+function readZipEntryData(buf, localOffset, compressedSize, uncompressedSize, method) {
+  if (buf.readUInt32LE(localOffset) !== 0x04034b50) {
+    throw new Error('Downloaded VSIX local file header is malformed.');
+  }
+  const nameLen = buf.readUInt16LE(localOffset + 26);
+  const extraLen = buf.readUInt16LE(localOffset + 28);
+  const dataStart = localOffset + 30 + nameLen + extraLen;
+  const dataEnd = dataStart + compressedSize;
+  if (dataEnd > buf.length) throw new Error('Downloaded VSIX entry is out of bounds.');
+  const compressed = buf.slice(dataStart, dataEnd);
+  let data;
+  if (method === 0) data = compressed;
+  else if (method === 8) data = zlib.inflateRawSync(compressed);
+  else throw new Error(`Unsupported VSIX zip compression method ${method}.`);
+  if (uncompressedSize !== 0xffffffff && data.length !== uncompressedSize) {
+    throw new Error('Downloaded VSIX entry failed size verification.');
+  }
+  return data;
+}
+
+function officialRestorePointEntriesFromExtensionRoot(target, extensionRoot, restoreDir) {
+  const webviewDir = webviewDirForTarget(target);
+  const sourceWebviewDir = path.join(extensionRoot, 'webview');
+  const entries = [
+    snapshotFileFromSource('extension.js', target.extensionJsPath, path.join(extensionRoot, 'extension.js'), restoreDir),
+    snapshotFileFromSource('webview/index.js', target.webviewIndexJsPath, path.join(sourceWebviewDir, 'index.js'), restoreDir),
+  ];
+  for (const name of incipitRootWebviewFileNames()) {
+    entries.push(snapshotFileFromSource(
+      `webview/${name}`,
+      path.join(webviewDir, name),
+      path.join(sourceWebviewDir, name),
+      restoreDir,
+    ));
+  }
+  for (const name of incipitWebviewTreeNames()) {
+    entries.push(snapshotDirectoryFromSource(
+      `webview/${name}`,
+      path.join(webviewDir, name),
+      path.join(sourceWebviewDir, name),
+      restoreDir,
+    ));
+  }
+  return entries;
+}
+
+function validateOfficialExtensionPayload(target, extensionRoot) {
+  const expected = targetPackageInfo(target);
+  const pkg = safeReadJson(path.join(extensionRoot, 'package.json')) || {};
+  if (pkg.name !== expected.name || pkg.publisher !== expected.publisher || pkg.version !== expected.version) {
+    throw new Error('Downloaded VSIX does not match the current Claude Code target.');
+  }
+  if (!fs.existsSync(path.join(extensionRoot, 'extension.js')) ||
+      !fs.existsSync(path.join(extensionRoot, 'webview', 'index.js'))) {
+    throw new Error('Downloaded VSIX is missing Claude Code runtime files.');
+  }
+  if (textHasIncipitMarkers(safeReadText(path.join(extensionRoot, 'extension.js'))) ||
+      textHasIncipitMarkers(safeReadText(path.join(extensionRoot, 'webview', 'index.js')))) {
+    throw new Error('Downloaded VSIX unexpectedly contains incipit markers.');
+  }
+}
+
 function createBackup(target, opts = {}) {
   const name = sanitizeBackupName(opts.name);
   const versionDir = path.join(BACKUP_ROOT, String(target.version));
@@ -800,23 +1036,58 @@ function migrateOfficialRestorePointFromLegacy(target) {
   };
 }
 
-function ensureOfficialRestorePoint(target) {
+async function createOfficialRestorePointFromMarketplace(target) {
+  const restoreDir = officialRestorePointDir(target);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'incipit-vsix-'));
+  try {
+    const { url, bytes } = await downloadOfficialVsix(target);
+    const extensionRoot = path.join(tempRoot, 'extension');
+    extractVsixExtension(bytes, extensionRoot);
+    validateOfficialExtensionPayload(target, extensionRoot);
+    if (fs.existsSync(restoreDir)) fs.rmSync(restoreDir, { recursive: true, force: true });
+    fs.mkdirSync(restoreDir, { recursive: true });
+    const entries = officialRestorePointEntriesFromExtensionRoot(target, extensionRoot, restoreDir);
+    const manifest = writeOfficialRestorePoint(target, entries, restoreDir, 'marketplace-vsix');
+    manifest.sourceUrl = url;
+    writeManifest(restoreDir, manifest);
+    return {
+      status: 'downloaded',
+      restorePointDir: restoreDir,
+      manifest,
+      sourceUrl: url,
+    };
+  } finally {
+    try { fs.rmSync(tempRoot, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+async function ensureOfficialRestorePoint(target, options = {}) {
+  const allowMarketplaceDownload = options.allowMarketplaceDownload === true;
   const existing = loadOfficialRestorePoint(target);
   if (existing) return existing;
   const restoreDir = officialRestorePointDir(target);
   if (targetHasIncipitPatch(target)) {
     const migrated = migrateOfficialRestorePointFromLegacy(target);
     if (migrated) return migrated;
-    throw new Error(
-      'Current Claude Code already contains incipit, but no official restore point exists. Reinstall or update Claude Code once, then apply incipit again.',
-    );
+    if (!allowMarketplaceDownload) {
+      throw new MissingOfficialRestorePointError(target);
+    }
+    try {
+      return await createOfficialRestorePointFromMarketplace(target);
+    } catch (exc) {
+      throw new Error(
+        'Current Claude Code already contains incipit, but no official restore point exists. ' +
+        `Tried to recover it from the official Marketplace VSIX and failed: ${exc.message}`,
+      );
+    }
   }
   return createOfficialRestorePointFromCurrent(target, restoreDir);
 }
 
-function restoreOfficialTarget(target) {
+async function restoreOfficialTarget(target) {
   let point = loadOfficialRestorePoint(target);
   if (!point) point = migrateOfficialRestorePointFromLegacy(target);
+  if (!point && targetHasIncipitPatch(target)) point = await createOfficialRestorePointFromMarketplace(target);
   if (!point) {
     if (!targetHasIncipitPatch(target)) {
       return {
@@ -1048,6 +1319,9 @@ function restoreSparseJsonEntry(e) {
 module.exports = {
   BACKUP_ROOT,
   OFFICIAL_RESTORE_ROOT,
+  MISSING_OFFICIAL_RESTORE_POINT_CODE,
+  MissingOfficialRestorePointError,
+  isMissingOfficialRestorePointError,
   DEFAULT_BACKUP_NAME,
   sanitizeBackupName,
   currentBackupDir,

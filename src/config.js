@@ -26,6 +26,7 @@ const RETIRED_FEATURE_KEYS = Object.freeze([
 const DEFAULT_FEATURES = Object.freeze({
   math: true,
   sessionUsage: true,
+  editorSelectionOverlay: false,
 });
 
 // User-adjustable visual knobs. `bodyFontSize` must match one of the
@@ -136,6 +137,9 @@ function getFeatures() {
   return {
     math: typeof raw.math === 'boolean' ? raw.math : DEFAULT_FEATURES.math,
     sessionUsage: typeof raw.sessionUsage === 'boolean' ? raw.sessionUsage : DEFAULT_FEATURES.sessionUsage,
+    editorSelectionOverlay: typeof raw.editorSelectionOverlay === 'boolean'
+      ? raw.editorSelectionOverlay
+      : DEFAULT_FEATURES.editorSelectionOverlay,
   };
 }
 

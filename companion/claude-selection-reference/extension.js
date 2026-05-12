@@ -1,0 +1,247 @@
+'use strict';
+
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const vscode = require('vscode');
+
+const CONFIG_SECTION = 'incipitClaudeReference';
+const COMMAND_REFERENCE_SELECTION = 'incipitClaudeReference.referenceSelection';
+const COMMAND_REFERENCE_ACTIVE_SELECTION = 'incipitClaudeReference.referenceActiveSelection';
+const COMMAND_REFERENCE_ACTIVE_FILE = 'incipitClaudeReference.referenceActiveFile';
+const CLAUDE_EXTENSION_ID = 'anthropic.claude-code';
+const CLAUDE_INSERT_COMMAND = 'claude-vscode.insertAtMention';
+const OVERLAY_SENTINEL_ROOT = path.join(os.homedir(), '.incipit', 'editor-selection-overlay-v1');
+
+const LABEL_SELECTION = '◆ 选中段';
+const LABEL_WHOLE_FILE = '▣ 整文件';
+
+const SKIPPED_SCHEMES = new Set([
+  'comment',
+  'debug',
+  'git',
+  'output',
+  'search-editor',
+  '_claude_fs_left',
+  '_claude_fs_right',
+  '_claude_vscode_fs_left',
+  '_claude_vscode_fs_right'
+]);
+
+function activate(context) {
+  const codeLensEvents = new vscode.EventEmitter();
+  let refreshTimer = null;
+  let overlayCache = { checkedAt: 0, available: false };
+
+  const scheduleRefresh = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      codeLensEvents.fire();
+    }, 35);
+  };
+
+  const provider = {
+    onDidChangeCodeLenses: codeLensEvents.event,
+    provideCodeLenses(document) {
+      if (!getConfig().enabled) return [];
+      if (overlayAvailable()) return [];
+      if (!canReferenceDocument(document)) return [];
+      if (!vscode.extensions.getExtension(CLAUDE_EXTENSION_ID)) return [];
+
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !sameUri(editor.document.uri, document.uri)) return [];
+
+      const selection = getPrimarySelection(editor);
+      if (!selection || selection.isEmpty) return [];
+
+      const range = codeLensRange(document, selection);
+      return [
+        createCodeLens({
+          range,
+          title: LABEL_SELECTION,
+          command: COMMAND_REFERENCE_ACTIVE_SELECTION
+        }),
+        createCodeLens({
+          range,
+          title: LABEL_WHOLE_FILE,
+          command: COMMAND_REFERENCE_ACTIVE_FILE
+        })
+      ];
+    }
+  };
+
+  context.subscriptions.push(
+    codeLensEvents,
+    vscode.languages.registerCodeLensProvider(
+      [{ scheme: 'file' }, { scheme: 'vscode-remote' }],
+      provider
+    ),
+    vscode.commands.registerCommand(COMMAND_REFERENCE_SELECTION, async (payload) => {
+      await referenceMention(payload);
+    }),
+    vscode.commands.registerCommand(COMMAND_REFERENCE_ACTIVE_SELECTION, async () => {
+      await referenceActiveEditor({ wholeFile: false });
+    }),
+    vscode.commands.registerCommand(COMMAND_REFERENCE_ACTIVE_FILE, async () => {
+      await referenceActiveEditor({ wholeFile: true });
+    }),
+    vscode.window.onDidChangeTextEditorSelection(scheduleRefresh),
+    vscode.window.onDidChangeActiveTextEditor(scheduleRefresh),
+    vscode.workspace.onDidChangeTextDocument(scheduleRefresh),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration(CONFIG_SECTION)) scheduleRefresh();
+    }),
+    { dispose: () => refreshTimer && clearTimeout(refreshTimer) }
+  );
+
+  scheduleRefresh();
+
+  function overlayAvailable() {
+    const now = Date.now();
+    if (now - overlayCache.checkedAt < 1000) return overlayCache.available;
+    overlayCache = { checkedAt: now, available: readOverlaySentinel() };
+    return overlayCache.available;
+  }
+}
+
+function deactivate() {}
+
+function getConfig() {
+  const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+  return {
+    enabled: config.get('enabled', true)
+  };
+}
+
+function canReferenceDocument(document) {
+  if (!document || document.isUntitled) return false;
+  if (SKIPPED_SCHEMES.has(document.uri.scheme)) return false;
+  return true;
+}
+
+function getPrimarySelection(editor) {
+  if (!editor) return null;
+  if (editor.selection && !editor.selection.isEmpty) return editor.selection;
+  return (editor.selections || []).find((selection) => selection && !selection.isEmpty) || null;
+}
+
+function codeLensRange(document, selection) {
+  const lastLine = document.lineCount - 1;
+  const line = Math.max(0, Math.min(selection.start.line, lastLine));
+  return new vscode.Range(line, 0, line, 0);
+}
+
+function createCodeLens({ range, title, command }) {
+  return new vscode.CodeLens(range, {
+    command,
+    title,
+    arguments: []
+  });
+}
+
+function buildMention(uri, selection) {
+  const relativePath = relativeMentionPath(uri);
+  if (!relativePath) return null;
+  if (!selection) return `@${relativePath}`;
+
+  const { startLine, endLine } = selectedLineRange(selection);
+  if (startLine === endLine) return `@${relativePath}#${startLine}`;
+  return `@${relativePath}#${startLine}-${endLine}`;
+}
+
+function relativeMentionPath(uri) {
+  if (!uri) return null;
+  const input = uri.scheme === 'file' ? uri.fsPath : uri;
+  const relative = vscode.workspace.asRelativePath(input, false);
+  if (!relative || typeof relative !== 'string') return null;
+  return relative.replace(/\\/g, '/');
+}
+
+function selectedLineRange(selection) {
+  let start = selection.start;
+  let end = selection.end;
+
+  if (end.character === 0 && end.line > start.line) {
+    end = end.translate(-1, 0);
+  }
+
+  return {
+    startLine: start.line + 1,
+    endLine: end.line + 1
+  };
+}
+
+async function referenceMention(payload) {
+  const mention = payload && typeof payload.mention === 'string' ? payload.mention : null;
+  if (!mention) {
+    vscode.window.showWarningMessage('No Claude Code reference was available for this selection.');
+    return;
+  }
+
+  if (!vscode.extensions.getExtension(CLAUDE_EXTENSION_ID)) {
+    vscode.window.showWarningMessage('Claude Code for VS Code is not installed.');
+    return;
+  }
+
+  try {
+    await vscode.commands.executeCommand(CLAUDE_INSERT_COMMAND, mention);
+  } catch (error) {
+    vscode.window.showWarningMessage(
+      'Could not insert the reference in Claude Code. Run incipit apply, reload VS Code, and try again.'
+    );
+    throw error;
+  }
+}
+
+async function referenceActiveEditor(options = {}) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !canReferenceDocument(editor.document)) {
+    vscode.window.showWarningMessage('No editor file was available for Claude Code reference.');
+    return;
+  }
+  const selection = options.wholeFile ? null : getPrimarySelection(editor);
+  if (!options.wholeFile && (!selection || selection.isEmpty)) {
+    vscode.window.showWarningMessage('No editor selection was available for Claude Code reference.');
+    return;
+  }
+  const mention = buildMention(editor.document.uri, selection);
+  await referenceMention({ mention });
+}
+
+function readOverlaySentinel() {
+  const appRoot = vscode.env && typeof vscode.env.appRoot === 'string' ? vscode.env.appRoot : '';
+  if (!appRoot) return false;
+  const hostKey = hostKeyForAppRoot(appRoot);
+  const sentinelPath = path.join(OVERLAY_SENTINEL_ROOT, `${hostKey}.json`);
+  try {
+    const text = fs.readFileSync(sentinelPath, 'utf8');
+    const data = JSON.parse(text);
+    return data && data.active === true && data.hostKey === hostKey;
+  } catch (_) {
+    return false;
+  }
+}
+
+function hostKeyForAppRoot(appRoot) {
+  return crypto.createHash('sha256').update(canonicalPath(appRoot)).digest('hex').slice(0, 20);
+}
+
+function canonicalPath(input) {
+  const resolved = path.resolve(input);
+  let real = resolved;
+  try {
+    real = fs.realpathSync.native ? fs.realpathSync.native(resolved) : fs.realpathSync(resolved);
+  } catch (_) {}
+  return process.platform === 'win32' ? real.toLowerCase() : real;
+}
+
+function sameUri(left, right) {
+  return left && right && left.toString() === right.toString();
+}
+
+module.exports = {
+  activate,
+  deactivate
+};

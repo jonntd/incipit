@@ -2692,6 +2692,16 @@ pre code {
 [data-incipit-input-footer] [class*="addButtonContainer"] {
   flex-shrink: 0 !important;
 }
+/* The editor companion inserts explicit visible @file references, so Claude
+   Code's own current-selection footer pill would duplicate both UI and send
+   context. This host affordance is disabled unconditionally, independent of
+   the experimental editor overlay toggle. Hide only the direct footer
+   selection pair; keep add, slash, cache/context, permission, and send
+   controls visible. */
+[data-incipit-input-footer] > [class*="divider"],
+[data-incipit-input-footer] > [class*="footerButton"] {
+  display: none !important;
+}
 /* Permission button's natural min content is SVG 26 + padding-right 8
    = 34px under border-box. Lock that as the floor so the icon
    stays fully inside the click target even when the label is
