@@ -16,8 +16,8 @@ const OVERLAY_SENTINEL_ROOT = path.join(os.homedir(), '.incipit', 'editor-select
 const HOST_IDENTITY_ROOT = path.join(os.homedir(), '.incipit', 'editor-hosts-v1');
 const INCIPIT_CONFIG_PATH = path.join(os.homedir(), '.incipit', 'config.json');
 
-const LABEL_SELECTION = '◆ 选中段';
-const LABEL_WHOLE_FILE = '▣ 整文件';
+const LABEL_SELECTION = '◆ Selection';
+const LABEL_WHOLE_FILE = '▣ File';
 
 const SKIPPED_SCHEMES = new Set([
   'comment',

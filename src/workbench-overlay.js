@@ -608,14 +608,14 @@ ${PATCH_START}
       frame.className = 'incipit-overlay-frame';
       frame.appendChild(createButton(
         COMMAND_SELECTION,
-        '引用选中段',
-        '选中段',
+        'Reference selection',
+        'Selection',
         ['M8 1.8 14.2 8 8 14.2 1.8 8Z', 'M5.5 8h5'],
       ));
       frame.appendChild(createButton(
         COMMAND_FILE,
-        '引用整个文件',
-        '整文件',
+        'Reference file',
+        'File',
         ['M4.2 2.2h5.2l2.4 2.4v9.2H4.2Z', 'M9.4 2.2v2.4h2.4', 'M6.2 8h3.6M6.2 10.5h3.6'],
       ));
       root.appendChild(frame);
