@@ -6,7 +6,7 @@
 
 ---
 
-incipit redesigns Claude Code's entire VS Code frontend — body typography, math rendering, tool-call folding, diff, local history editing — in a literary style, with engineering surfaces folded into the same visual language. It does not touch model requests, authentication, tool schema, or the CLI spawn protocol; every byte sent to the server is identical before and after installation.
+incipit redesigns Claude Code's entire VS Code frontend — body typography, math rendering, tool-call folding, diff, local history editing, context, and project activity views — in a literary style, with engineering surfaces folded into the same visual language. It does not touch model requests, authentication, tool schema, or the CLI spawn protocol; every byte sent to the server is identical before and after installation.
 
 Run it once and reload VS Code — no extra dependencies. Each time Claude Code updates and overwrites the frontend files, run it again. incipit keeps a lightweight official restore point per target/version, so you can return the patched extension to stock Claude Code at any time.
 
@@ -77,7 +77,7 @@ A literary-style interface — warm-black background, cream-toned serif type, co
   <img src="docs/screenshots/panel.png" width="420" alt="incipit chat panel as a whole: warm-black background, cream serif body, bottom status line" />
 </p>
 
-Typography is the interface itself: math rendered, tables in booktabs style, code-block syntax colors muted, tool calls collapsed to a single line, the expanded layer using deep red and deep green for diffs, and character-level differences traced inline in muted accents.
+math rendered, tables in booktabs style, code-block syntax colors muted, tool calls collapsed to a single line, the expanded layer using deep red and deep green for diffs, and character-level differences traced inline in muted accents.
 
 Engineering surfaces fold into the same literary style — tool calls, diffs, and the status line share the body's typeface, hue, and emphasis.
 
@@ -96,6 +96,24 @@ A persistent status line above the input box shows the current context size and 
 </p>
 
 The data comes from Claude Code's local JSONL transcripts. **No network calls, no model requests.**
+
+The detail view also charts cache-hit history over time. You can inspect how cache read, cache write, fresh input, and output shift across recent requests, or select a time range to see only that range's accumulated traffic.
+
+<p align="center">
+  <img src="docs/screenshots/cache-history.png" width="420" alt="incipit cache-hit history: current cache, context, hit-rate chart, selected time range, and cache read / cache write / output / fresh input totals" />
+</p>
+
+---
+
+## Project activity
+
+incipit summarizes edit activity from local Claude Code transcripts into a project-level view. The current project shows added and removed lines; the global view shows recorded projects, conversation count, tool edits, active days, and a heatmap of editing density over time.
+
+<p align="center">
+  <img src="docs/screenshots/edit-activity.png" width="420" alt="incipit project activity view: current project added and removed lines, global Claude Code conversation statistics, and edit activity heatmap" />
+</p>
+
+These statistics also read local transcript files only. They do not upload project content or enter the model context.
 
 ---
 

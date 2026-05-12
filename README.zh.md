@@ -4,7 +4,7 @@
 
 ---
 
-incipit 把 Claude Code 在 VS Code 里的整套前端——正文排版、数学渲染、tool call 折叠、diff、本地历史的编辑——按文学风格重新设计，工程信息也归并到统一的视觉语言。没有更改，侵入任何模型请求、鉴权、tool schema、CLI spawn 协议；装它前后，服务端那一侧看到的字节完全相同。
+incipit 把 Claude Code 在 VS Code 里的整套前端——正文排版、数学渲染、tool call 折叠、diff、本地历史的编辑、上下文与项目活动视图——按文学风格重新设计，工程信息也归并到统一的视觉语言。没有更改，侵入任何模型请求、鉴权、tool schema、CLI spawn 协议；装它前后，服务端那一侧看到的字节完全相同。
 
 跑一次，重载 VS Code 即可，不需要额外依赖。每次 Claude Code 升级覆盖前端文件后，重跑一次。incipit 会按目标/版本保留一个轻量官方恢复点，随时可以把已打补丁的扩展恢复回官方 Claude Code。
 
@@ -75,7 +75,7 @@ npm uninstall -g incipit
   <img src="docs/screenshots/panel.png" width="420" alt="incipit 聊天面板整体外观：暖黑底色、米色衬线正文、底部状态行" />
 </p>
 
-排版本身是界面在做的事：数学渲染，表格呈现booktabs，代码块的语法色被压低，工具调用收成一行，展开层用暗红暗绿做 diff，字符级差异再以淡彩在行内细描。
+数学渲染，表格呈现booktabs，代码块的语法色被压低，工具调用收成一行，展开层用暗红暗绿做 diff，字符级差异再以淡彩在行内细描。
 
 工程信息归并为统一的文学风格——工具调用、diff、状态行的字体、色相、强调方式都与正文风格一致。
 
@@ -94,6 +94,24 @@ npm uninstall -g incipit
 </p>
 
 数据来自 Claude Code 本地的 JSONL 转录，**不经由任何网络，不调用任何模型请求。**
+
+缓存详情还会按时间画出命中率曲线。你可以看见最近一段时间里 cache read / cache write / fresh input / output 的比例变化，也可以拖选一段时间范围，只看那段请求的累计读写量。
+
+<p align="center">
+  <img src="docs/screenshots/cache-history.png" width="420" alt="incipit 缓存命中历史：当前 cache、context、命中率曲线、选中时间范围和 cache read / cache write / output / fresh input 统计" />
+</p>
+
+---
+
+## 项目活动
+
+incipit 会把本地 Claude Code 转录里的编辑活动汇总成项目视角。当前项目显示新增 / 删除行数；全局视图显示已记录项目、会话数量、工具编辑次数和活跃天数，并用热力图呈现一段时间内的编辑密度。
+
+<p align="center">
+  <img src="docs/screenshots/edit-activity.png" width="420" alt="incipit 项目活动视图：当前项目增删行数、全局 Claude Code 对话统计和编辑活动热力图" />
+</p>
+
+这些统计同样只读取本地转录文件，不上传项目内容，也不参与模型上下文。
 
 ---
 
