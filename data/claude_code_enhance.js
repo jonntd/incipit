@@ -65,6 +65,44 @@ import {
       .catch(e => warn('enhance_typography.js import failed:', e));
   }
 
+  function installRenderTimeCodeHighlighter() {
+    if (typeof window.__INCIPIT_HIGHLIGHT_CODE_HTML__ === 'function') return;
+    const cache = new Map();
+    const MAX_CACHE_ENTRIES = 160;
+
+    function remember(key, value) {
+      if (cache.size >= MAX_CACHE_ENTRIES) {
+        const first = cache.keys().next().value;
+        if (first !== undefined) cache.delete(first);
+      }
+      cache.set(key, value);
+      return value;
+    }
+
+    window.__INCIPIT_HIGHLIGHT_CODE_HTML__ = (rawCode, className) => {
+      const hljs = window.hljs;
+      if (!hljs || typeof hljs.highlight !== 'function') return null;
+
+      const code = String(rawCode ?? '');
+      const classes = String(className || '');
+      const key = classes + '\u0000' + code;
+      if (cache.has(key)) return cache.get(key);
+
+      const match = /\blanguage-([A-Za-z0-9_+.-]+)\b/.exec(classes);
+      const language = match && match[1];
+      try {
+        const result = language && (!hljs.getLanguage || hljs.getLanguage(language))
+          ? hljs.highlight(code, { language, ignoreIllegals: true })
+          : hljs.highlightAuto(code);
+        return remember(key, result && typeof result.value === 'string' ? result.value : null);
+      } catch (e) {
+        warn('render-time code highlight failed:', e);
+        return remember(key, null);
+      }
+    };
+    loadTypography('react-code-render-preload');
+  }
+
   let heavyLoadStarted = false;
   function loadHeavy(reason) {
     if (heavyLoadStarted) return;
@@ -102,6 +140,7 @@ import {
     applyBodyBoldFlag();
     startHostProbe();
     injectStyles();
+    installRenderTimeCodeHighlighter();
     markCriticalReady();
     scheduleDeferredModules();
   }

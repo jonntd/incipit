@@ -114,6 +114,10 @@ const MARKDOWN_LEGACY_CHILDREN_RE =
   /([A-Za-z_$][\w$]*)=window\.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__\?window\.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__\(\$\.children\|\|""\):\(\$\.children\|\|""\)/g;
 const MARKDOWN_ASSIGN_PATCHED_RE =
   /if\(typeof [A-Za-z_$][\w$]*==="string"\)\{if\(window\.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__\)[A-Za-z_$][\w$]*=window\.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__\([A-Za-z_$][\w$]*\);[A-Za-z_$][\w$]*\.value=[A-Za-z_$][\w$]*;\}else [A-Za-z_$][\w$]*\("Unexpected value `"\+[A-Za-z_$][\w$]*\+"` for `children` prop, expected `string`"\)/;
+const MARKDOWN_CODE_COMPONENT_PATTERN =
+  /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\},\1\);let ([A-Za-z_$][\w$]*)=String\(\1\);/g;
+const MARKDOWN_CODE_COMPONENT_PATCHED_RE =
+  /code:\(\{children:[A-Za-z_$][\w$]*,className:[A-Za-z_$][\w$]*\}\)=>\{if\([A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\},[A-Za-z_$][\w$]*\)\}let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\);/;
 
 const ENHANCE_SCRIPT_TAG_RE =
   /<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>/g;
@@ -950,6 +954,20 @@ function patchMarkdownChildren(content) {
   });
 }
 
+function patchMarkdownCodeComponent(content) {
+  return patchUniqueReplace(content, {
+    pattern: MARKDOWN_CODE_COMPONENT_PATTERN,
+    alreadyPattern: MARKDOWN_CODE_COMPONENT_PATCHED_RE,
+    label: 'markdown 代码渲染',
+    replace(text) {
+      return text.replace(
+        MARKDOWN_CODE_COMPONENT_PATTERN,
+        'code:({children:$1,className:$2})=>{if($2){let $4=String($1),__incipitHtml=window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__($4,$2);if(__incipitHtml!==null&&__incipitHtml!==void 0)return $3.default.createElement("code",{className:$2+" hljs",dangerouslySetInnerHTML:{__html:__incipitHtml}});return $3.default.createElement("code",{className:$2},$1)}let $4=String($1);',
+      );
+    },
+  });
+}
+
 function patchWebviewConfig(content, features, theme, language) {
   const preamble = buildWebviewConfigPreamble(features, theme, language);
   const hadPreamble = WEBVIEW_CONFIG_RE.test(content);
@@ -1108,7 +1126,9 @@ function patchWebviewIndex(content, features, theme, language) {
   let [updated, configStatus] = patchWebviewConfig(content, features, theme, language);
   let markdownStatus;
   [updated, markdownStatus] = patchMarkdownChildren(updated);
-  const statusLines = [configStatus, markdownStatus];
+  let markdownCodeStatus;
+  [updated, markdownCodeStatus] = patchMarkdownCodeComponent(updated);
+  const statusLines = [configStatus, markdownStatus, markdownCodeStatus];
 
   // Remove the legacy `acquireVsCodeApi` idempotency wrapper that earlier
   // development builds prepended to this file. Its only consumer has been
