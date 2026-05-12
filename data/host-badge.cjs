@@ -139,6 +139,16 @@ function handleEditActivityIdentityUpdate(comm, state, message) {
   const includeProject = message.includeProject === true;
   if (!sessionId) {
     state.commIdentities.delete(comm);
+    if (includeProject) {
+      sendEditActivityPayload(
+        comm,
+        editActivityEnvelope(
+          emptyEditActivityPayload(null, null),
+          buildProjectEditActivityResponse(state, null, comm, null)
+        )
+      );
+      return;
+    }
     sendEditActivityPayload(comm, emptyEditActivityPayload(null, null));
     return;
   }
@@ -152,6 +162,16 @@ function handleEditActivityIdentityUpdate(comm, state, message) {
   const identity = { sessionId, cwd, target };
   state.commIdentities.set(comm, identity);
   if (!target) {
+    if (includeProject) {
+      sendEditActivityPayload(
+        comm,
+        editActivityEnvelope(
+          emptyEditActivityPayload(sessionId, null),
+          buildProjectEditActivityResponse(state, null, comm, sessionId)
+        )
+      );
+      return;
+    }
     sendEditActivityPayload(comm, emptyEditActivityPayload(sessionId, null));
     return;
   }
