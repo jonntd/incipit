@@ -1,5 +1,5 @@
 import { ATTR, SEL, closestByAttr } from './host_probe.js';
-import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
+import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from './enhance_shared.js';
 
 /**
  * Heavy interaction module for the patched Claude Code UI.
@@ -851,11 +851,18 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
 
   function getActiveSessionId() {
     const conn = locateConnection();
-    if (!conn) return null;
-    try {
-      const v = conn.activeSessionId.value;
-      return typeof v === 'string' && v ? v : null;
-    } catch (_) { return null; }
+    if (conn) {
+      try {
+        const v = conn.activeSessionId.value;
+        if (typeof v === 'string' && v) return v;
+      } catch (_) {}
+    }
+    // Editing/rerun still goes through the host-side JSONL guard, which
+    // verifies both sessionId and message uuid before writing. If the React
+    // connection shape drifts or a long-running webview loses that pointer,
+    // the official persisted webview state is a safer recovery path than
+    // falling back to newest-mtime guessing.
+    return getActiveClaudeSessionId({ allowStaleState: true });
   }
 
   // ============================================================
@@ -2698,9 +2705,10 @@ import { CFG, assetURL, log, warn, whenDOMReady } from './enhance_shared.js';
     state.cancelBtn.dataset.incipitInflight = '1';
     let payload;
     try {
+      const liveIdentity = transcriptRecordIdentity(liveTranscriptRecord(uuid, state.record)) || state.identity || {};
       const requestPayload = blocksSpec
-        ? { uuid, blocks: blocksSpec, ...(state.identity || {}) }
-        : { uuid, text, ...(state.identity || {}) };
+        ? { uuid, blocks: blocksSpec, ...liveIdentity }
+        : { uuid, text, ...liveIdentity };
       payload = await requestTranscriptMutation(op, requestPayload);
     } catch (error) {
       if (state.saveBtn) state.saveBtn.removeAttribute('data-incipit-inflight');

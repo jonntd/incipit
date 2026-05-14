@@ -136,6 +136,10 @@ const IMPLICIT_SELECTION_SEND_PATTERN =
   /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)&&![A-Za-z_$][\w$]*;([A-Za-z_$][\w$]*)\(\$\.selection\.value,\1,/g;
 const IMPLICIT_SELECTION_SEND_PATCHED_RE =
   /let [A-Za-z_$][\w$]*=!1;[A-Za-z_$][\w$]*\(\$\.selection\.value,[A-Za-z_$][\w$]*,/;
+const STREAM_UNHANDLED_CASE_PATTERN =
+  /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{throw Error\(\3\?\?`Unhandled case: \$\{\2\}`\)\}/g;
+const STREAM_UNHANDLED_CASE_PATCHED_RE =
+  /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{try\{var __incipitCase=[\s\S]{0,500}ignored unknown Claude stream case/;
 
 const ENHANCE_SCRIPT_TAG_RE =
   /<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>/g;
@@ -153,6 +157,10 @@ const BADGE_REQUIRE_PANEL_RE =
 const BADGE_COMM_ATTACH_PATTERN = /this\.webview=[A-Za-z_$][\w$]*;/g;
 const BADGE_COMM_ATTACH_PATCHED_RE =
   /this\.webview=[A-Za-z_$][\w$]*;require\("\.\/webview\/host-badge\.cjs"\)\.attachComm\(this\);/;
+const INCIPIT_MESSAGE_GUARD_PATTERN =
+  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{this\.output\.info\(`Received message from webview: \$\{JSON\.stringify\(\1\)\}`\),([A-Za-z_$][\w$]*)\?\.fromClient\(\1\)\},null,this\.disposables\)/g;
+const INCIPIT_MESSAGE_GUARD_PATCHED_RE =
+  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{if\(\1&&\1\.__incipit===true\)return;this\.output\.info\(`Received message from webview: \$\{JSON\.stringify\(\1\)\}`\),[A-Za-z_$][\w$]*\?\.fromClient\(\1\)\},null,this\.disposables\)/g;
 
 // Give the host's Monaco diff editor an incipit-owned theme, font, and gutter.
 // Claude Code 2.1.x hard-codes both inline and expanded Edit diff editors to
@@ -860,6 +868,20 @@ function patchExtensionJs(content) {
   });
   statusLines.push(statusBadge);
 
+  const guardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATCHED_RE) || []).length;
+  const unguardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATTERN) || []).length;
+  if (unguardedMessages > 0) {
+    updated = updated.replace(
+      INCIPIT_MESSAGE_GUARD_PATTERN,
+      (match, message) => match.replace(`=>{this.output.info`, `=>{if(${message}&&${message}.__incipit===true)return;this.output.info`),
+    );
+    statusLines.push(`${padLabel('私有消息过滤')}: 已写入 (${unguardedMessages})`);
+  } else if (guardedMessages > 0) {
+    statusLines.push(`${padLabel('私有消息过滤')}: 已存在 (${guardedMessages})`);
+  } else {
+    throw new Error(`Claude Code 扩展结构已变化,未找到 私有消息过滤 的可补丁位置。`);
+  }
+
   let statusAtMention;
   [updated, statusAtMention] = patchAtMentionCommand(updated);
   statusLines.push(statusAtMention);
@@ -1075,6 +1097,21 @@ function patchDisableImplicitSelectionSend(content) {
   });
 }
 
+function patchStreamUnhandledCase(content) {
+  return patchUniqueReplace(content, {
+    pattern: STREAM_UNHANDLED_CASE_PATTERN,
+    alreadyPattern: STREAM_UNHANDLED_CASE_PATCHED_RE,
+    label: '未知流事件保护',
+    replace(text) {
+      return text.replace(
+        STREAM_UNHANDLED_CASE_PATTERN,
+        (_match, name, value, reason) =>
+          `function ${name}(${value},${reason}){try{var __incipitCase=${value}&&typeof ${value}==="object"?{type:${value}.type||null,deltaType:${value}.delta&&${value}.delta.type||null,keys:Object.keys(${value}).slice(0,12),deltaKeys:${value}.delta&&typeof ${value}.delta==="object"?Object.keys(${value}.delta).slice(0,12):[]}:${value};console.warn("[incipit] ignored unknown Claude stream case",__incipitCase,${reason})}catch(_){}}`,
+      );
+    },
+  });
+}
+
 function patchWebviewConfig(content, features, theme, language) {
   const preamble = buildWebviewConfigPreamble(features, theme, language);
   const hadPreamble = WEBVIEW_CONFIG_RE.test(content);
@@ -1237,7 +1274,15 @@ function patchWebviewIndex(content, features, theme, language) {
   [updated, markdownCodeStatus] = patchMarkdownCodeComponent(updated);
   let implicitSelectionStatus;
   [updated, implicitSelectionStatus] = patchDisableImplicitSelectionSend(updated);
-  const statusLines = [configStatus, markdownStatus, markdownCodeStatus, implicitSelectionStatus];
+  let streamUnhandledStatus;
+  [updated, streamUnhandledStatus] = patchStreamUnhandledCase(updated);
+  const statusLines = [
+    configStatus,
+    markdownStatus,
+    markdownCodeStatus,
+    implicitSelectionStatus,
+    streamUnhandledStatus,
+  ];
 
   // Remove the legacy `acquireVsCodeApi` idempotency wrapper that earlier
   // development builds prepended to this file. Its only consumer has been

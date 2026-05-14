@@ -51,6 +51,11 @@ export function reactFiberForElement(el) {
 let cachedClaudeConnection = null;
 let lastClaudeConnectionMissAt = 0;
 
+function normalizeSessionId(value) {
+  if (typeof value !== 'string' || !value) return null;
+  return /^[A-Za-z0-9-]+$/.test(value) ? value : null;
+}
+
 function isClaudeConnectionLike(obj) {
   if (!obj || typeof obj !== 'object') return false;
   const a = obj.activeSessionId;
@@ -119,15 +124,41 @@ export function locateClaudeConnection() {
   return null;
 }
 
-export function getActiveClaudeSessionId() {
-  const conn = locateClaudeConnection();
-  if (!conn) return null;
+function getVsCodeApi() {
   try {
-    const v = conn.activeSessionId.value;
-    return typeof v === 'string' && v ? v : null;
-  } catch (_) {
+    if (typeof globalThis.__incipitGetVsCodeApi === 'function') {
+      return globalThis.__incipitGetVsCodeApi();
+    }
+    if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+  } catch (_) {}
+  return null;
+}
+
+function getVsCodeStateSessionId(options = {}) {
+  const api = getVsCodeApi();
+  if (!api || typeof api.getState !== 'function') return null;
+  let state = null;
+  try { state = api.getState(); } catch (_) { return null; }
+  if (!state || typeof state !== 'object') return null;
+  const id = normalizeSessionId(state.sessionID) || normalizeSessionId(state.sessionId);
+  if (!id) return null;
+  if (!options.allowStaleState &&
+      Number.isFinite(state.sessionUpdatedAt) &&
+      Date.now() - state.sessionUpdatedAt > 10 * 60 * 1000) {
     return null;
   }
+  return id;
+}
+
+export function getActiveClaudeSessionId(options = {}) {
+  const conn = locateClaudeConnection();
+  if (conn) {
+    try {
+      const v = normalizeSessionId(conn.activeSessionId.value);
+      if (v) return v;
+    } catch (_) {}
+  }
+  return getVsCodeStateSessionId(options);
 }
 
 export function pageNonce() {
