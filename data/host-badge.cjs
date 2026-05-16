@@ -330,6 +330,10 @@ function resolveConversationMutation(state, message) {
     return rollbackTruncateFromUser(state, target, uuid, message);
   }
 
+  if (op === 'peek_truncate_state') {
+    return peekTruncateState(state, target, uuid, message);
+  }
+
   if (op === 'get_message') {
     const transcript = readTranscript(target);
     const rows = transcript.rowsByUuid.get(uuid);
@@ -512,6 +516,72 @@ function rollbackTruncateFromUser(state, target, uuid, message) {
     rolledBack: true,
     filePath: target,
     reloadRecommended: true,
+  };
+}
+
+// Read-only quiescence probe used by the rerun teardown serializer.
+//
+// After `truncate_from_user` writes the cut JSONL, incipit must NOT spawn
+// the resume CLI until the *previous* (just-interrupted) CLI has fully
+// stopped writing — otherwise two live streams append to the same file
+// and the host's root stream-assembler throws
+// `Mismatched content block type content_block_delta thinking`.
+//
+// The truncate registered a rollback entry holding the exact post-cut
+// text length + sha256. Here we compare the current on-disk file to that
+// fingerprint WITHOUT consuming the token or writing anything:
+//   - `advanced:false`  → file is byte-identical to the cut text: no
+//                          other writer (old CLI / task-notification
+//                          background append) has touched it. Safe to
+//                          resend once this has held stable for a window.
+//   - `advanced:true`   → something appended after the cut (stale CLI
+//                          still flushing, or a host-injected
+//                          task-notification continuation). The caller
+//                          must fail safe (roll back / abort) instead of
+//                          starting a second concurrent stream.
+// `hasToken:false` means the rollback token expired; the caller then
+// falls back to busy + stat-stability only.
+function peekTruncateState(state, target, uuid, message) {
+  pruneTruncateRollbacks(state, Date.now());
+  const token = typeof message.rollbackToken === 'string' ? message.rollbackToken : '';
+  const entry = token && state.truncateRollbacks && state.truncateRollbacks.get(token);
+  let sizeBytes = null;
+  let mtimeMs = null;
+  try {
+    const st = fs.statSync(target);
+    sizeBytes = st.size;
+    mtimeMs = st.mtimeMs;
+  } catch (_) {}
+  if (!entry) {
+    return {
+      ok: true,
+      op: 'peek_truncate_state',
+      uuid,
+      hasToken: false,
+      advanced: null,
+      sizeBytes,
+      mtimeMs,
+      filePath: target,
+    };
+  }
+  if (entry.target !== target || entry.uuid !== uuid || entry.sessionId !== message.sessionId) {
+    throw new Error('Peek rollback token does not match this transcript');
+  }
+  let advanced = true;
+  try {
+    advanced = !matchesRollbackAfterText(fs.readFileSync(target, 'utf8'), entry);
+  } catch (_) {
+    advanced = true;
+  }
+  return {
+    ok: true,
+    op: 'peek_truncate_state',
+    uuid,
+    hasToken: true,
+    advanced,
+    sizeBytes,
+    mtimeMs,
+    filePath: target,
   };
 }
 
@@ -2678,4 +2748,13 @@ module.exports.__test = {
   payloadHistoryBuckets,
   totalContextTokens,
   HISTORY_MAX_BUCKETS,
+  // Rerun teardown serializer invariants (tests/rerun-handoff.test.js):
+  // exercised offline against a temp JSONL, never invoked by the
+  // published path through this object.
+  readTranscript,
+  serializeTranscript,
+  atomicWriteTranscript,
+  applyTruncateFromUser,
+  registerTruncateRollback,
+  peekTruncateState,
 };

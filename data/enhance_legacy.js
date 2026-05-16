@@ -1422,10 +1422,68 @@ import {
   let transcriptActionSettleTimer = null;
   let transcriptActionBurstToken = 0;
 
+  // ---- Turn-handoff serialization (interrupt → edit → rerun safety) ----
+  //
+  // Root cause of the "Mismatched content block type content_block_delta
+  // thinking" + send/stop flicker + editable action row appearing
+  // mid-stream: incipit used to resend immediately after truncate while
+  // the just-interrupted CLI was still flushing, so two live streams fed
+  // the host's single root stream-assembler. The host `busy` boolean
+  // flips false on interrupt *before* the old process actually drains,
+  // so it must not be trusted as the only gate.
+  //
+  // These knobs drive a bounded "quiesce, then hand off" wait: the old
+  // turn must be genuinely settled (busy stable-false + the truncated
+  // JSONL not advanced by any writer + interrupt cooldown elapsed + no
+  // dangerous tail) before the fresh send is allowed.
+  const TURN_HANDOFF_TIMEOUT_MS = 8000;
+  const TURN_HANDOFF_QUIET_MS = 700;
+  const TURN_HANDOFF_POLL_MS = 120;
+  const CHANNEL_INTERRUPT_COOLDOWN_MS = 600;
+  // Post-truncate confirmation is short: the heavy waiting already
+  // happened pre-truncate, so this only guards the rare race of a writer
+  // appending right around the cut instant.
+  const CUT_CONFIRM_TIMEOUT_MS = 1800;
+  // Fix 4: the action-row settle scan must see busy continuously false
+  // for this long before it mints rows, so a transient send→stop→send
+  // oscillation no longer churns the editable footer / send icon.
+  const BUSY_UI_STABLE_MS = 420;
+  let lastChannelInterruptAt = 0;
+  let historyHandoffInFlight = false;
+  let busyFalseStableSince = 0;
+
   function nowMs() {
     return (typeof performance !== 'undefined' && performance.now)
       ? performance.now()
       : Date.now();
+  }
+
+  // Every place that tears down the live Claude CLI channel funnels its
+  // `conn.interruptClaude(...)` call through here so the rerun preflight
+  // can enforce a cooldown: an interrupt issued microseconds ago has not
+  // drained the old streaming process yet.
+  function noteChannelInterrupt() {
+    lastChannelInterruptAt = nowMs();
+  }
+
+  function sinceLastChannelInterrupt() {
+    return lastChannelInterruptAt ? nowMs() - lastChannelInterruptAt : Infinity;
+  }
+
+  // The rerun/edit hand-off latch. While set, a second edit/rerun is
+  // refused (serialize — overlapping hand-offs are how two live streams
+  // get created) and `[data-incipit-handoff]` on <html> greys out every
+  // transcript action row via CSS so the buttons visibly read as
+  // unavailable instead of looking live but silently no-op'ing.
+  function setHandoffLatch(on) {
+    historyHandoffInFlight = !!on;
+    try {
+      const el = document.documentElement;
+      if (el) {
+        if (on) el.setAttribute('data-incipit-handoff', '1');
+        else el.removeAttribute('data-incipit-handoff');
+      }
+    } catch (_) {}
   }
 
   function noteTranscriptActionMutation() {
@@ -1439,10 +1497,24 @@ import {
     transcriptActionSettleTimer = setTimeout(runTranscriptActionSettleScan, wait);
   }
 
+  // Fix 4 — busy→UI hysteresis. The action-row settle scan must observe
+  // `busy` continuously false for BUSY_UI_STABLE_MS before it mints
+  // rows. During an interrupt→edit→rerun hand-off (and ordinary
+  // send→stop transitions) `busy` can flap several times in a few tens
+  // of ms; without this, each flap re-mints the editable action row and
+  // re-flips the send/stop icon, which is the visible flicker the user
+  // reported. A still-streaming reply never trips this because busy
+  // stays true.
+  function busyHysteresisReady() {
+    if (conversationIsBusy()) { busyFalseStableSince = 0; return false; }
+    if (busyFalseStableSince === 0) busyFalseStableSince = nowMs();
+    return (nowMs() - busyFalseStableSince) >= BUSY_UI_STABLE_MS;
+  }
+
   function runTranscriptActionSettleScan() {
     transcriptActionSettleTimer = null;
 
-    if (conversationIsBusy()) {
+    if (!busyHysteresisReady()) {
       scheduleTranscriptActionSettleScan(TRANSCRIPT_ACTION_BUSY_POLL_MS);
       return;
     }
@@ -1477,7 +1549,7 @@ import {
 
     const tick = () => {
       if (token !== transcriptActionBurstToken) return;
-      if (conversationIsBusy()) {
+      if (!busyHysteresisReady()) {
         scheduleTranscriptActionSettleScan(TRANSCRIPT_ACTION_BUSY_POLL_MS);
         return;
       }
@@ -1492,10 +1564,10 @@ import {
 
     requestAnimationFrame(tick);
     setTimeout(() => {
-      if (token === transcriptActionBurstToken && !conversationIsBusy()) scanOnce();
+      if (token === transcriptActionBurstToken && busyHysteresisReady()) scanOnce();
     }, 650);
     setTimeout(() => {
-      if (token === transcriptActionBurstToken && !conversationIsBusy()) scanOnce();
+      if (token === transcriptActionBurstToken && busyHysteresisReady()) scanOnce();
     }, 1500);
   }
 
@@ -1772,6 +1844,17 @@ import {
     return sawSend ? 'send' : null;
   }
 
+  // NOTE: a turn interrupted mid-thinking persists a degenerate
+  // `thinking` block (signature present, empty text). We deliberately do
+  // NOT fold that into `transcriptBlockIsPartial`: this predicate feeds
+  // `activeSessionHasPartialTail()` → `conversationIsBusy()` → the whole
+  // action-row / edit / fork / streaming-disable system. The interrupted
+  // record stays in `messages.value` until the rerun truncates it, so
+  // treating it as "partial" would wedge incipit into a permanent
+  // pseudo-busy state. The interrupt→rerun safety lives in the rerun
+  // hand-off serializer instead (busy-stable + interrupt cooldown +
+  // post-cut JSONL-not-advanced peek), which keys off real liveness
+  // signals that actually clear on their own.
   function transcriptBlockIsPartial(block) {
     if (!block || typeof block !== 'object') return false;
     if (block.partial === true) return true;
@@ -1840,6 +1923,120 @@ import {
     const partialTail = activeSessionHasPartialTail();
     if (!partialTail) return false;
     return true;
+  }
+
+  // "Is the OLD streaming process actually stopped?" — the pre-truncate
+  // gate for the rerun hand-off. It checks only liveness signals that
+  // clear on their own once the interrupted CLI drains:
+  //   • busy  — host SessionState still streaming, or DOM stop icon
+  //   • interrupt-cooldown — we issued interruptClaude too recently for
+  //     the process to have torn down yet
+  // It deliberately does NOT consult `activeSessionHasPartialTail()`:
+  // the interrupted-thinking record we are about to truncate is *itself*
+  // a "partial tail", so waiting for it to vanish here would never
+  // succeed (only the truncate removes it) — that was the cause of the
+  // 8s stall + bubble-vanish-then-revert regression. The post-cut peek
+  // (a real foreign-write signal) covers the residual-flush case.
+  function activeSessionTailUnsafeReason() {
+    if (conversationIsBusy()) return 'busy';
+    if (sinceLastChannelInterrupt() < CHANNEL_INTERRUPT_COOLDOWN_MS) return 'interrupt-cooldown';
+    return null;
+  }
+
+  // ---- Phase 1: quiesce the old stream BEFORE touching the JSONL ----
+  //
+  // Called while the user bubble is still visible and nothing has been
+  // mutated yet. We actively interrupt the live channel, then wait until
+  // the old streaming process is genuinely stopped (busy stable-false +
+  // interrupt cooldown elapsed) so the upcoming truncate + resume does
+  // not race a still-flushing stream. Because this runs pre-truncate, a
+  // timeout aborts cleanly with the conversation completely untouched —
+  // no vanished bubble, no rollback needed.
+  //
+  // Resolves { ok:true } | { ok:false, reason:'timeout' }.
+  async function quiesceOldStream() {
+    // Kick the old turn toward a clean stop up front.
+    try {
+      const s0 = locateActiveSessionState();
+      const c0 = locateConnection();
+      const ch0 = s0 && s0.claudeChannelId;
+      if (ch0 && c0 && typeof c0.interruptClaude === 'function') {
+        c0.interruptClaude(ch0);
+        noteChannelInterrupt();
+      }
+    } catch (_) {}
+
+    const deadline = nowMs() + TURN_HANDOFF_TIMEOUT_MS;
+    let quietSince = 0;
+    let reinterrupts = 0;
+    while (true) {
+      const unsafe = activeSessionTailUnsafeReason();
+      if (!unsafe) {
+        if (quietSince === 0) quietSince = nowMs();
+        if (nowMs() - quietSince >= TURN_HANDOFF_QUIET_MS) return { ok: true };
+      } else {
+        quietSince = 0;
+        if (unsafe === 'busy' && reinterrupts < 4) {
+          reinterrupts++;
+          try {
+            const s = locateActiveSessionState();
+            const c = locateConnection();
+            const ch = s && s.claudeChannelId;
+            if (ch && c && typeof c.interruptClaude === 'function') {
+              c.interruptClaude(ch);
+              noteChannelInterrupt();
+            }
+          } catch (_) {}
+        }
+      }
+      if (nowMs() >= deadline) return { ok: false, reason: 'timeout' };
+      await new Promise(r => setTimeout(r, TURN_HANDOFF_POLL_MS));
+    }
+  }
+
+  // ---- Phase 2: confirm the cut transcript is not being appended ----
+  //
+  // Runs right after `truncate_from_user`. Phase 1 already proved the old
+  // stream stopped, so this is a short guard against the rare race where
+  // a writer (a residual CLI flush, or a host-injected task-notification
+  // continuation) appended around the cut instant. The `peek` op is
+  // read-only and does NOT consume the rollback token.
+  //
+  // Resolves:
+  //   { ok:true }                       → safe to send
+  //   { ok:false, reason:'advanced' }   → foreign write after the cut;
+  //                                        caller MUST roll back + abort
+  //   { ok:false, reason:'timeout' }    → never confirmed quiet in budget
+  async function confirmCutQuiescent(opts) {
+    const o = opts || {};
+    const deadline = nowMs() + CUT_CONFIRM_TIMEOUT_MS;
+    while (true) {
+      let advanced = false;
+      let checked = false;
+      if (o.rollbackToken && o.identity && o.uuid) {
+        try {
+          const peek = await requestTranscriptMutation('peek_truncate_state', {
+            uuid: o.uuid,
+            rollbackToken: o.rollbackToken,
+            ...o.identity,
+          }, { allowBusy: true });
+          if (peek && peek.hasToken === true) {
+            checked = true;
+            if (peek.advanced === true) advanced = true;
+          }
+        } catch (_) { /* transient peek failure → retry within budget */ }
+      }
+      if (advanced) return { ok: false, reason: 'advanced' };
+      // Quiet once the cut reads un-advanced and we are not busy. If the
+      // token expired (checked stays false) fall back to the busy gate
+      // only — phase 1 already established the stream had stopped.
+      if (!conversationIsBusy() && (checked || !o.rollbackToken ||
+          sinceLastChannelInterrupt() >= CHANNEL_INTERRUPT_COOLDOWN_MS)) {
+        return { ok: true };
+      }
+      if (nowMs() >= deadline) return { ok: false, reason: 'timeout' };
+      await new Promise(r => setTimeout(r, TURN_HANDOFF_POLL_MS));
+    }
   }
 
   function showTranscriptToast(text, kind = '') {
@@ -1914,6 +2111,7 @@ import {
       const oldChannelId = session.claudeChannelId;
       if (oldChannelId && conn && typeof conn.interruptClaude === 'function') {
         try { conn.interruptClaude(oldChannelId); } catch (_) {}
+        noteChannelInterrupt();
       }
       try { session.claudeChannelId = null; } catch (_) {}
       // Also clear loadingPromise so a future loadFromServer (e.g. on
@@ -1954,6 +2152,7 @@ import {
       const oldChannelId = session.claudeChannelId;
       if (oldChannelId && conn && typeof conn.interruptClaude === 'function') {
         try { conn.interruptClaude(oldChannelId); } catch (_) {}
+        noteChannelInterrupt();
       }
       try { session.claudeChannelId = null; } catch (_) {}
       try { session.loadingPromise = undefined; } catch (_) {}
@@ -1999,7 +2198,17 @@ import {
     // appears to revert.
     record = liveTranscriptRecord(record.uuid, record);
     if (record.isSynthetic || transcriptHasToolResult(record)) return;
-    if (conversationIsBusy()) return;
+    // Serialize: never let a second edit/rerun handoff overlap one that
+    // is still tearing down + resending — overlapping handoffs are
+    // exactly how two live streams get created. We deliberately do NOT
+    // early-return on `conversationIsBusy()` anymore: a turn the user
+    // just interrupted reports busy=false while still draining, and
+    // refusing here is also not what the user wants. The old turn is
+    // actively quiesced after the truncate instead.
+    if (historyHandoffInFlight) {
+      showTranscriptToast('A rerun is already in progress; let it finish first', 'warn');
+      return;
+    }
 
     // Build the rerun payload from the saved record's blocks. Routes
     // through the host's own send pipeline (`session.send` →
@@ -2060,6 +2269,30 @@ import {
     // (slice + mass unmount of the user bubble + every following
     // assistant/tool message + its diff islands and fold animations).
     if (button) button.dataset.incipitInflight = '1';
+    // Latch the critical section: held from here until the fresh send is
+    // dispatched (or aborted/rolled back). While set, a second rerun is
+    // refused and every action row is greyed via `[data-incipit-handoff]`
+    // so the buttons read as unavailable instead of looking live.
+    setHandoffLatch(true);
+
+    // Phase 1 — quiesce the old stream BEFORE mutating anything. The
+    // bubble is still on screen; if the just-interrupted reply does not
+    // stop in the budget we abort with the conversation completely
+    // untouched (no vanished bubble, no rollback). This is the fix for
+    // the "click rerun → bubble disappears → 8s nothing → reverts"
+    // regression: we no longer cut the JSONL before the old turn is
+    // confirmed stopped.
+    const q1 = await quiesceOldStream();
+    if (!q1.ok) {
+      setHandoffLatch(false);
+      if (button) button.removeAttribute('data-incipit-inflight');
+      showTranscriptToast(
+        'The previous reply has not finished stopping yet — nothing was changed. ' +
+        'Wait for it to settle, then rerun again.',
+        'error',
+      );
+      return;
+    }
 
     let payload;
     try {
@@ -2068,11 +2301,13 @@ import {
         ...liveIdentity,
       });
     } catch (error) {
+      setHandoffLatch(false);
       if (button) button.removeAttribute('data-incipit-inflight');
       showTranscriptToast(error && error.message ? error.message : String(error), 'error');
       return;
     }
     if (!payload || payload.ok === false) {
+      setHandoffLatch(false);
       if (button) button.removeAttribute('data-incipit-inflight');
       showTranscriptToast((payload && payload.error) || 'Rerun failed', 'error');
       return;
@@ -2104,9 +2339,50 @@ import {
       const oldChannelId = session.claudeChannelId;
       if (oldChannelId && conn && typeof conn.interruptClaude === 'function') {
         try { conn.interruptClaude(oldChannelId); } catch (_) {}
+        noteChannelInterrupt();
       }
       try { session.claudeChannelId = null; } catch (_) {}
       try { session.loadingPromise = undefined; } catch (_) {}
+    }
+
+    // ---- Phase 2: confirm the cut is not being appended ----
+    //
+    // Phase 1 already proved the old stream stopped. This is the short
+    // guard against a writer (residual CLI flush, or a host-injected
+    // task-notification continuation) appending around the cut instant.
+    // If it did, fail safe: roll the cut back, restore the live message
+    // list, and never start a second concurrent stream.
+    const confirmed = await confirmCutQuiescent({
+      rollbackToken: payload && payload.rollbackToken,
+      identity: liveIdentity,
+      uuid: record.uuid,
+    });
+    if (!confirmed.ok) {
+      let rolled = null;
+      if (payload && payload.rollbackToken) {
+        try {
+          rolled = await requestTranscriptMutation('rollback_truncate_from_user', {
+            uuid: record.uuid,
+            rollbackToken: payload.rollbackToken,
+            ...liveIdentity,
+          }, { allowBusy: true });
+        } catch (_) {}
+      }
+      if (rolled && rolled.rolledBack && preRerunMessages &&
+          session.messages && Array.isArray(session.messages.value)) {
+        try { session.messages.value = preRerunMessages; } catch (_) {}
+      }
+      setHandoffLatch(false);
+      if (button) button.removeAttribute('data-incipit-inflight');
+      const why = confirmed.reason === 'advanced'
+        ? 'a background task or the interrupted reply appended after the cut'
+        : 'the previous turn did not finish stopping in time';
+      showTranscriptToast(
+        'Rerun was held back because ' + why +
+        '. Local history was restored — wait for the current reply to finish, then rerun again.',
+        'error',
+      );
+      return;
     }
 
     // Pre-poke `session.selection.value` to the saved IDE ref so
@@ -2166,6 +2442,7 @@ import {
           session.lastSentSelection = originalLastSentSelection;
         } catch (_) {}
       }
+      setHandoffLatch(false);
       if (button) button.removeAttribute('data-incipit-inflight');
     }
   }

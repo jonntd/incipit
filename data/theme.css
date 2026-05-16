@@ -3434,6 +3434,17 @@ pre code {
 .incipit-transcript-action-row {
   user-select: none;
 }
+/* Hand-off in flight: a rerun/edit is tearing down the old stream and
+   resending. Every action row across the transcript is greyed and made
+   inert so the buttons visibly read as unavailable instead of looking
+   live but silently no-op'ing. Wins over the assistant-row hover-reveal
+   (`:hover { opacity:1; pointer-events:auto }`) via :root + !important. */
+:root[data-incipit-handoff] .incipit-transcript-action-row,
+:root[data-incipit-handoff] .incipit-assistant-action-row,
+:root[data-incipit-handoff] [data-incipit-message]:hover > .incipit-assistant-action-row {
+  opacity: 0.4 !important;
+  pointer-events: none !important;
+}
 /* Rerun (reprise arrow): terra orange in live state — this is the one
    destructive-ish action in the row, the colour signals weight. */
 .incipit-transcript-action-rerun {
