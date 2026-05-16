@@ -1146,23 +1146,26 @@ function setupCacheBadge() {
     if (!popupEl || !popupAnchor) return;
     var r = popupAnchor.getBoundingClientRect();
     var vw = window.innerWidth;
+    var vh = window.innerHeight;
     var margin = 8;
     // Clamp the rendered border-box, not just max-width. CSS uses
     // border-box too, so padding cannot push the popup outside the viewport.
     var safeWidth = Math.min(560, Math.max(220, vw - margin * 2));
     popupEl.style.width = safeWidth + 'px';
     popupEl.style.maxWidth = safeWidth + 'px';
+    // Read both metrics together, then write left+bottom together. The
+    // old read→write→read→write order forced two synchronous layouts
+    // for every scroll event while the popup was open.
     var w = popupEl.offsetWidth;
+    var h = popupEl.offsetHeight;
     var left = Math.round(r.left);
     if (left + w > vw - margin) left = vw - margin - w;
     if (left < margin) left = margin;
-    popupEl.style.left = left + 'px';
-    var vh = window.innerHeight;
-    var h = popupEl.offsetHeight;
     var bottom = Math.round(vh - r.top + 6);
     var maxBottom = Math.max(margin, vh - h - margin);
     if (bottom > maxBottom) bottom = maxBottom;
     if (bottom < margin) bottom = margin;
+    popupEl.style.left = left + 'px';
     popupEl.style.bottom = bottom + 'px';
   }
   function openPopup(anchor) {
@@ -1238,8 +1241,21 @@ function setupCacheBadge() {
   document.addEventListener('keydown', function(ev) {
     if (ev.key === 'Escape' && isOpen()) closePopup();
   }, true);
-  window.addEventListener('resize', function() { if (isOpen()) positionPopup(); });
-  window.addEventListener('scroll', function() { if (isOpen()) positionPopup(); }, true);
+  // Coalesce reposition to one run per frame and keep the listeners
+  // passive — scroll fires continuously (incl. middle-click autoscroll)
+  // and `positionPopup` does layout reads+writes, so the raw per-event
+  // version thrashed layout whenever the popup was open.
+  var repositionScheduled = false;
+  function scheduleReposition() {
+    if (repositionScheduled) return;
+    repositionScheduled = true;
+    requestAnimationFrame(function() {
+      repositionScheduled = false;
+      if (isOpen()) positionPopup();
+    });
+  }
+  window.addEventListener('resize', scheduleReposition, { passive: true });
+  window.addEventListener('scroll', scheduleReposition, { capture: true, passive: true });
 
   // `inputFooter` can remount under React, so keep a small observer to
   // reinsert the badge. The observer is coalesced to at most one
@@ -1824,8 +1840,18 @@ function setupEditActivityHeader() {
   document.addEventListener('keydown', function(ev) {
     if (ev.key === 'Escape' && isActivityOpen()) closeActivityPopup();
   }, true);
-  window.addEventListener('resize', function() { if (isActivityOpen()) positionActivityPopup(); });
-  window.addEventListener('scroll', function() { if (isActivityOpen()) positionActivityPopup(); }, true);
+  // Same coalescing rationale as the cache popup above.
+  var activityRepositionScheduled = false;
+  function scheduleActivityReposition() {
+    if (activityRepositionScheduled) return;
+    activityRepositionScheduled = true;
+    requestAnimationFrame(function() {
+      activityRepositionScheduled = false;
+      if (isActivityOpen()) positionActivityPopup();
+    });
+  }
+  window.addEventListener('resize', scheduleActivityReposition, { passive: true });
+  window.addEventListener('scroll', scheduleActivityReposition, { capture: true, passive: true });
 
   var ensureScheduled = false;
   function scheduleEnsureHeaderChip() {

@@ -140,6 +140,10 @@ export function initThinking() {
   const mightContainThinking = (node) => {
     if (!node || node.nodeType !== 1) return false;
     if (node.tagName === 'DETAILS') return true;
+    // A node with no element children cannot contain a descendant
+    // <details>. Streaming appends leaf text/inline spans into the prose
+    // root constantly; skip the querySelector for that dominant case.
+    if (!node.firstElementChild) return false;
     return typeof node.querySelector === 'function' && node.querySelector('details') !== null;
   };
   const thinkingObserver = new MutationObserver((mutations) => {

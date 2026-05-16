@@ -4683,57 +4683,60 @@ pre code {
 /* ============================================================
    Scrollbars — native Chromium scrollbars + Monaco virtual thumbs.
 
-   Claude Code uses both systems:
-   - the main chat list, input box, popups, permission panes, code
-     blocks, attachments, and session lists are plain overflow
-     containers painted by Chromium (`::-webkit-scrollbar`);
-   - Monaco editor widgets use real DOM virtual scrollbars
-     (`.monaco-scrollable-element > .scrollbar > .slider`).
+   ROOT-CAUSE NOTE (do NOT "restore" the pretty webkit scrollbar):
+   We used to recolor every plain overflow container with a custom
+   `::-webkit-scrollbar` (rounded pill thumb, transparent-border
+   padding, distinct hover/active shades). Chromium paints any
+   element that matches a custom `::-webkit-scrollbar` with a
+   NON-composited, main-thread, per-frame-repainted scrollbar. The
+   main chat list (`messagesContainer_`) is a plain DOM overflow
+   scroller, so it inherited that path. Normal wheel scrolling moves
+   in big discrete steps and hides the cost, but middle-click
+   autoscroll feeds continuous sub-pixel deltas every refresh frame
+   — the main-thread scrollbar repaint desyncs from the content
+   scroll and shows as visible juddering ("一抖一抖"). The unpatched
+   host does not custom-paint this scroller, so it stays smooth;
+   the jitter was 100% ours.
 
-   The previous rule only covered Monaco, so most visible sliders
-   kept the host/default style. Keep this as a pure CSS fix: no
-   host_probe, no new anchors, and no JS observer.
+   Fix: drop the global `::-webkit-scrollbar` block entirely and
+   recolor via the standard `scrollbar-width` / `scrollbar-color`
+   properties. Standard scrollbars stay on Chromium's COMPOSITED
+   native path (no per-frame main-thread repaint) while still being
+   thin, terracotta-grey, transparent-track — our refined look, NOT
+   the host default. We lose only pure decoration (pill radius,
+   inner padding, distinct hover/active shades): an accepted trade
+   for smooth middle-click autoscroll.
+
+   Monaco widgets use real DOM `.slider` divs (composited, transform
+   based) — recolored separately below, unaffected by this.
+
+   Keep this a pure CSS fix: no host_probe, no new anchors, no JS
+   observer. Do NOT reintroduce any `*::-webkit-scrollbar*` rule.
    ============================================================ */
 :root {
   --incipit-scrollbar-thumb: #3c3c3c;
   --incipit-scrollbar-thumb-hover: #5a5a5a;
   --incipit-scrollbar-thumb-active: #6a6a6a;
   --incipit-scrollbar-track: transparent;
-  --incipit-scrollbar-size: 10px;
 }
 
 * {
+  scrollbar-width: thin !important;
   scrollbar-color: var(--incipit-scrollbar-thumb) var(--incipit-scrollbar-track) !important;
 }
 
-*::-webkit-scrollbar {
-  width: var(--incipit-scrollbar-size) !important;
-  height: var(--incipit-scrollbar-size) !important;
-}
-
-*::-webkit-scrollbar-track {
-  background: var(--incipit-scrollbar-track) !important;
-}
-
-*::-webkit-scrollbar-thumb {
-  background-color: var(--incipit-scrollbar-thumb) !important;
-  background-clip: padding-box !important;
-  border: 2px solid transparent !important;
-  border-radius: 999px !important;
-  min-height: 24px !important;
-  min-width: 24px !important;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background-color: var(--incipit-scrollbar-thumb-hover) !important;
-}
-
-*::-webkit-scrollbar-thumb:active {
-  background-color: var(--incipit-scrollbar-thumb-active) !important;
-}
-
-*::-webkit-scrollbar-corner {
-  background: transparent !important;
+/* Main conversation scroller is the one the user looks at and
+   middle-click-autoscrolls all day, so give it the more substantial
+   `auto` width instead of `thin`. The standard `scrollbar-width`
+   property only exposes thin | auto | none — there is no numeric
+   width without going back to the non-composited `::-webkit-scrollbar`
+   path (the autoscroll-jitter root cause, see the note above), so
+   `auto` is the deliberate "a bit thicker, still composited" choice.
+   Still recolored terracotta-grey / transparent-track — NOT the host
+   default scrollbar. */
+[data-incipit-messages-container],
+[class*="messagesContainer_"] {
+  scrollbar-width: auto !important;
 }
 
 .monaco-scrollable-element > .scrollbar > .slider {

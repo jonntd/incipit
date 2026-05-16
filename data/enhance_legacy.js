@@ -4221,6 +4221,21 @@ import {
     });
   }
 
+  // Cheap "does this subtree carry an Ask permission panel" test —
+  // `matches` then a scoped `querySelector`, mirroring `nodeTouchesDiff`.
+  // For streamed prose nodes the subtree is tiny and this returns null
+  // fast; the point is to avoid the ancestor-walk-to-<body> below.
+  function nodeTouchesAsk(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.matches?.(ASK_PERMISSION_CONTAINER_SELECTOR)) return true;
+    return node.querySelector?.(ASK_PERMISSION_CONTAINER_SELECTOR) != null;
+  }
+
+  // Is a permission panel currently mounted anywhere? Recomputed only
+  // when a mutation actually adds/removes an Ask subtree (rare), so the
+  // streaming hot path never pays the `document.querySelector`.
+  let askActive = false;
+
   function enqueueAskRequestRoots(root, includeDescendants = true) {
     if (!root || root.nodeType !== 1) return;
     if (isAskRequestContainer(root)) enqueueAskRequestContainer(root);
@@ -4238,15 +4253,42 @@ import {
   }
 
   function setupAskRequestRefinement() {
-    if (document.body) enqueueAskRequestRoots(document.body);
+    if (document.body) {
+      enqueueAskRequestRoots(document.body);
+      askActive = !!document.querySelector(ASK_PERMISSION_CONTAINER_SELECTOR);
+    }
+    // PERF: this body-subtree observer fires for every token batch during
+    // AI streaming. The old code ran `enqueueAskRequestRoots(m.target,
+    // false)` — i.e. `closestAskRequestContainer()`, an ancestor walk to
+    // <body> that is always null mid-stream — plus a `querySelector` for
+    // EVERY such mutation, for an Ask panel that is present a fraction of
+    // the time. Gate it on actual panel presence (same idiom as the
+    // diff-sidebar `liveDiffEditors` gate): an Ask panel is a
+    // self-contained subtree the host mounts/unmounts wholesale, never
+    // nested under the streamed assistant prose. When no panel is
+    // present and this mutation neither added nor removed one, skip with
+    // zero `closest()`/`enqueue` work. Behaviour is unchanged whenever a
+    // panel exists or appears/disappears.
     const mo = new MutationObserver(muts => {
       for (let i = 0; i < muts.length; i++) {
         const m = muts[i];
-        if (m.type === 'childList') {
-          enqueueAskRequestRoots(m.target, false);
-          for (const node of m.addedNodes) enqueueAskRequestRoots(node);
-        } else if (m.type === 'attributes') {
-          enqueueAskRequestRoots(m.target, false);
+        if (m.type !== 'childList') continue;
+        let structural = false; // an Ask subtree was added or removed
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1 && nodeTouchesAsk(node)) { structural = true; break; }
+        }
+        if (!structural) {
+          for (const node of m.removedNodes) {
+            if (node.nodeType === 1 && nodeTouchesAsk(node)) { structural = true; break; }
+          }
+        }
+        if (structural) {
+          askActive = !!document.querySelector(ASK_PERMISSION_CONTAINER_SELECTOR);
+        }
+        if (!askActive && !structural) continue;
+        enqueueAskRequestRoots(m.target, false);
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1) enqueueAskRequestRoots(node);
         }
       }
     });

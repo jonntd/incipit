@@ -2482,14 +2482,29 @@ async function finishWithUpdateNotice(code, updatePromise) {
   return code;
 }
 
-// Spawns `npm install -g incipit@latest`, pipes stdio straight to the
-// terminal so the user sees npm's own progress output, and resolves with
-// the exit code. `shell: true` lets Windows `npm.cmd` and Unix `npm`
-// resolve through the system shell without platform-specific forks.
-function runNpmUpdate() {
+// Spawns the global upgrade, pipes stdio straight to the terminal so the
+// user sees npm's own progress output, and resolves with the exit code.
+// `shell: true` lets Windows `npm.cmd` and Unix `npm` resolve through the
+// system shell without platform-specific forks.
+//
+// Pin to the EXACT version the update check discovered, not `@latest`.
+// `checkForUpdate()` reads `https://registry.npmjs.org/incipit/latest`
+// over HTTP (always fresh), but `npm install -g incipit@latest` resolves
+// the `latest` dist-tag through npm's local metadata cache, which lags
+// right after a publish. The two disagreeing produced an infinite
+// "upgrade available → upgrade installs the old version → still
+// available" loop. Installing `incipit@<exact-version>` forces npm to
+// fetch that specific version (failing loudly if it truly can't) instead
+// of silently reinstalling the cached old one, and `--prefer-online`
+// revalidates stale cached metadata. Fall back to `@latest` only if the
+// discovered version string is missing/malformed.
+function runNpmUpdate(targetVersion) {
+  const safe = typeof targetVersion === 'string' &&
+    /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(targetVersion);
+  const spec = safe ? `incipit@${targetVersion}` : 'incipit@latest';
   return new Promise(resolve => {
     try {
-      const child = spawn('npm install -g incipit@latest', {
+      const child = spawn(`npm install -g ${spec} --prefer-online`, {
         stdio: 'inherit',
         shell: true,
       });
@@ -2528,7 +2543,7 @@ async function handleUpdatePrompt(info) {
   console.log();
   console.log('  ' + color(t('update.upgrading'), Ansi.CYAN));
   console.log();
-  const code = await runNpmUpdate();
+  const code = await runNpmUpdate(info && info.latest);
   console.log();
   if (code === 0) {
     console.log('  ' + color(t('update.upgrade_succeeded'), Ansi.GREEN));
