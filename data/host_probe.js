@@ -105,11 +105,61 @@ const STATIC_PROBES = Object.freeze([
   ['[class*="messageInput"][contenteditable]', ATTR.inputEditor],
 ]);
 
+const CSS_ALWAYS_WARMUP_MS = 5000;
+
+const CSS_CAPABILITIES = Object.freeze([
+  { attr: ATTR.markdownRoot, name: 'runtime.cssClass.markdownRoot', presence: 'always', selectors: ['[class*="root_"]'], featureOwner: 'markdown' },
+  { attr: ATTR.messagesContainer, name: 'runtime.cssClass.messagesContainer', presence: 'always', selectors: ['[class*="messagesContainer_"]'], featureOwner: 'messages' },
+  { attr: ATTR.inputContainer, name: 'runtime.cssClass.inputContainer', presence: 'always', selectors: ['fieldset[class*="inputContainer"]'], featureOwner: 'composer' },
+  { attr: ATTR.inputFooter, name: 'runtime.cssClass.inputFooter', presence: 'always', selectors: ['[class*="inputFooter"]'], featureOwner: 'composer' },
+  { attr: ATTR.inputEditor, name: 'runtime.cssClass.inputEditor', presence: 'always', selectors: ['[aria-multiline="true"][contenteditable]', '[aria-multiline="true"][role="textbox"]', '[class*="messageInput"][contenteditable]'], featureOwner: 'composer' },
+  { attr: ATTR.sendButton, name: 'runtime.cssClass.sendButton', presence: 'always', selectors: ['[class*="sendButton"]'], featureOwner: 'composer' },
+
+  { attr: ATTR.message, name: 'runtime.cssClass.message', presence: 'afterSeen', selectors: ['[class*="timelineMessage"]'], featureOwner: 'messages' },
+  { attr: ATTR.userMessageContainer, name: 'runtime.cssClass.userMessageContainer', presence: 'afterSeen', selectors: ['[class*="userMessageContainer"]'], featureOwner: 'user_bubble' },
+  { attr: ATTR.userBubble, name: 'runtime.cssClass.userBubble', presence: 'afterSeen', selectors: ['[class*="userMessage_"]'], featureOwner: 'user_bubble' },
+  { attr: ATTR.userContent, name: 'runtime.cssClass.userContent', presence: 'afterSeen', selectors: ['[class*="expandableContainer"] [class*="content_"]'], featureOwner: 'user_bubble' },
+  { attr: ATTR.thinking, name: 'runtime.cssClass.thinking', presence: 'afterSeen', selectors: ['details[class*="thinking"]'], featureOwner: 'thinking' },
+  { attr: ATTR.thinkingSummary, name: 'runtime.cssClass.thinkingSummary', presence: 'afterSeen', selectors: ['summary[class*="thinkingSummary"]'], featureOwner: 'thinking' },
+  { attr: ATTR.thinkingContent, name: 'runtime.cssClass.thinkingContent', presence: 'afterSeen', selectors: ['[class*="thinkingContent"]'], featureOwner: 'thinking' },
+  { attr: ATTR.thinkingToggle, name: 'runtime.cssClass.thinkingToggle', presence: 'afterSeen', selectors: ['[class*="thinkingToggle"]'], featureOwner: 'thinking' },
+  { attr: ATTR.toolUse, name: 'runtime.cssClass.toolUse', presence: 'afterSeen', selectors: ['[class*="toolUse_"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolBody, name: 'runtime.cssClass.toolBody', presence: 'afterSeen', selectors: ['[class*="toolBody_"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolArgs, name: 'runtime.cssClass.toolArgs', presence: 'afterSeen', selectors: ['[class*="toolArgs"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolCommand, name: 'runtime.cssClass.toolCommand', presence: 'afterSeen', selectors: ['[class*="toolCommand"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolName, name: 'runtime.cssClass.toolName', presence: 'afterSeen', selectors: ['[class*="toolName"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolPath, name: 'runtime.cssClass.toolPath', presence: 'afterSeen', selectors: ['[class*="filePath"]', '[class*="toolPath"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolSecondary, name: 'runtime.cssClass.toolSecondary', presence: 'afterSeen', selectors: ['[class*="secondaryLine_"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.toolSummary, name: 'runtime.cssClass.toolSummary', presence: 'afterSeen', selectors: ['[class*="toolSummary"]'], featureOwner: 'tool_use' },
+  { attr: ATTR.spinnerRow, name: 'runtime.cssClass.spinnerRow', presence: 'afterSeen', selectors: ['[class*="spinnerRow"]'], featureOwner: 'streaming' },
+  { attr: ATTR.spinnerContainer, name: 'runtime.cssClass.spinnerContainer', presence: 'afterSeen', selectors: ['[class*="spinnerRow"] [class*="container_"]'], featureOwner: 'streaming' },
+  { attr: ATTR.spinnerIcon, name: 'runtime.cssClass.spinnerIcon', presence: 'afterSeen', selectors: ['[class*="spinnerRow"] [class*="icon_"]'], featureOwner: 'streaming' },
+  { attr: ATTR.usageLabel, name: 'runtime.cssClass.usageLabel', presence: 'afterSeen', selectors: ['[class*="usageLabel"]'], featureOwner: 'session_usage' },
+  { attr: ATTR.effortLabel, name: 'runtime.cssClass.effortLabel', presence: 'afterSeen', selectors: ['[class*="effortLabel"]'], featureOwner: 'effort' },
+  { attr: ATTR.footerButtonLabel, name: 'runtime.cssClass.footerButtonLabel', presence: 'afterSeen', selectors: ['[class*="footerButton"] span'], featureOwner: 'footer' },
+  { attr: ATTR.showMore, name: 'runtime.cssClass.showMore', presence: 'afterSeen', selectors: ['[class*="collapseButton"]', '[class*="buttonContainer"]', '[class*="showMore"]'], featureOwner: 'message_controls' },
+
+  { attr: ATTR.dropdown, name: 'runtime.cssClass.dropdown', presence: 'whileVisible', selectors: ['[class*="dropdown"]', '[class*="dropdown_"]'], featureOwner: 'command_menu' },
+  { attr: ATTR.commandList, name: 'runtime.cssClass.commandList', presence: 'whileVisible', selectors: ['[class*="commandList"]'], ownerRoot: '[class*="dropdown"], [class*="dropdown_"]', featureOwner: 'command_menu' },
+  { attr: ATTR.commandItem, name: 'runtime.cssClass.commandItem', presence: 'whileVisible', selectors: ['[class*="commandItem"]'], ownerRoot: '[class*="commandList"]', featureOwner: 'command_menu' },
+  { attr: ATTR.commandLabel, name: 'runtime.cssClass.commandLabel', presence: 'whileVisible', selectors: ['[class*="commandLabel"]'], ownerRoot: '[class*="commandItem"]', featureOwner: 'command_menu' },
+  { attr: ATTR.menuPopup, name: 'runtime.cssClass.menuPopup', presence: 'whileVisible', selectors: ['[class*="menuPopup"]'], featureOwner: 'menu' },
+  { attr: ATTR.menuItem, name: 'runtime.cssClass.menuItem', presence: 'whileVisible', selectors: ['[class*="menuItem_"]'], ownerRoot: '[class*="menuPopup"]', featureOwner: 'menu' },
+  { attr: ATTR.menuItemLabel, name: 'runtime.cssClass.menuItemLabel', presence: 'whileVisible', selectors: ['[class*="menuItemLabel"]'], ownerRoot: '[class*="menuItem_"]', featureOwner: 'menu' },
+]);
+
+const CSS_CAPABILITY_BY_ATTR = new Map(CSS_CAPABILITIES.map(def => [def.attr, def]));
+
 let observer = null;
 let fullRescanScheduled = false;
 let localizedRescanScheduled = false;
 let isComposing = false;
 let compositionListenersAttached = false;
+let cssCapabilityRuntimeStarted = false;
+let cssWarmupTimer = 0;
+let cssVisibleCheckScheduled = false;
+let cssVisibilityListenerAttached = false;
+const cssCapabilityStatus = new Map();
 
 const SIBLING_REGION_SELECTOR = [
   '[class*="inputFooter"]',
@@ -183,6 +233,7 @@ function scheduleSiblingRescan() {
     for (const el of users) if (el.isConnected) syncUserMessageNodes(el);
     for (const el of sends) if (el.isConnected) syncSendButtons(el);
     for (const el of efforts) if (el.isConnected) syncEffortLabels(el);
+    scheduleVisibleCssCapabilityCheck();
   });
 }
 
@@ -199,10 +250,135 @@ function attachCompositionListeners() {
   }, true);
 }
 
+function reportCssCapability(def, status, reason, detail = null) {
+  if (!def || !def.name) return;
+  const payload = {
+    layer: 'cssClass',
+    presence: def.presence,
+    reason,
+    featureOwner: def.featureOwner || null,
+    selectors: def.selectors,
+    ownerRoot: def.ownerRoot || null,
+    ...(detail && typeof detail === 'object' ? detail : {}),
+  };
+  const key = `${def.name}:${status}:${JSON.stringify(payload)}`;
+  if (cssCapabilityStatus.get(def.name) === key) return;
+  cssCapabilityStatus.set(def.name, key);
+  try {
+    const health = globalThis.__incipitHealth;
+    if (health && typeof health.set === 'function') {
+      health.set('capability.' + def.name, status, payload);
+    }
+  } catch (_) {}
+}
+
+function noteCssCapability(attr, element = null) {
+  const def = CSS_CAPABILITY_BY_ATTR.get(attr);
+  if (!def) return;
+  reportCssCapability(def, 'ok', 'seen', {
+    attr,
+    tagName: element && element.tagName ? String(element.tagName).toLowerCase() : null,
+  });
+}
+
+function selectorExists(selectors) {
+  for (const selector of selectors || []) {
+    try {
+      if (document.querySelector(selector)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+function elementHasSelector(owner, selectors) {
+  if (!owner) return false;
+  for (const selector of selectors || []) {
+    try {
+      if (owner.matches?.(selector) || owner.querySelector?.(selector)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+function isVisibleElement(element) {
+  if (!element || element.nodeType !== 1 || element.hidden) return false;
+  const style = typeof getComputedStyle === 'function' ? getComputedStyle(element) : null;
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+  return !!(
+    element.offsetWidth ||
+    element.offsetHeight ||
+    (element.getClientRects && element.getClientRects().length)
+  );
+}
+
+function runAlwaysCssCapabilityCheck(reason, degradedOnMiss) {
+  for (const def of CSS_CAPABILITIES) {
+    if (def.presence !== 'always') continue;
+    if (selectorExists(def.selectors)) {
+      reportCssCapability(def, 'ok', reason || 'seen');
+    } else {
+      reportCssCapability(def, degradedOnMiss ? 'degraded' : 'pending', degradedOnMiss ? 'cssMiss' : 'warmup');
+    }
+  }
+}
+
+function runVisibleCssCapabilityCheck() {
+  cssVisibleCheckScheduled = false;
+  for (const def of CSS_CAPABILITIES) {
+    if (def.presence !== 'whileVisible' || !def.ownerRoot) continue;
+    let owner = null;
+    try { owner = document.querySelector(def.ownerRoot); } catch (_) { owner = null; }
+    if (!isVisibleElement(owner)) continue;
+    if (elementHasSelector(owner, def.selectors)) {
+      reportCssCapability(def, 'ok', 'ownerVisible', { ownerRoot: def.ownerRoot });
+    } else {
+      reportCssCapability(def, 'degraded', 'cssMiss', { ownerRoot: def.ownerRoot });
+    }
+  }
+}
+
+function scheduleVisibleCssCapabilityCheck() {
+  if (cssVisibleCheckScheduled) return;
+  cssVisibleCheckScheduled = true;
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(runVisibleCssCapabilityCheck);
+  else setTimeout(runVisibleCssCapabilityCheck, 0);
+}
+
+function handleCssVisibilityChange() {
+  if (document.visibilityState !== 'hidden') {
+    runAlwaysCssCapabilityCheck('visible', true);
+    scheduleVisibleCssCapabilityCheck();
+  }
+}
+
+function startCssCapabilityRuntime() {
+  if (cssCapabilityRuntimeStarted) return;
+  cssCapabilityRuntimeStarted = true;
+  runAlwaysCssCapabilityCheck('startup', false);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      runAlwaysCssCapabilityCheck('domContentLoaded', false);
+      scheduleVisibleCssCapabilityCheck();
+    }, { once: true });
+  } else {
+    runAlwaysCssCapabilityCheck('domReady', false);
+  }
+  cssWarmupTimer = setTimeout(() => {
+    cssWarmupTimer = 0;
+    runAlwaysCssCapabilityCheck('warmup', true);
+    scheduleVisibleCssCapabilityCheck();
+  }, CSS_ALWAYS_WARMUP_MS);
+  if (!cssVisibilityListenerAttached) {
+    cssVisibilityListenerAttached = true;
+    document.addEventListener('visibilitychange', handleCssVisibilityChange);
+  }
+}
+
 export function startHostProbe() {
   if (observer) return observer;
   if (!document.body) return null;
   attachCompositionListeners();
+  startCssCapabilityRuntime();
   tagHostTree(document.body);
   observer = new MutationObserver(handleMutations);
   observer.observe(document.body, {
@@ -216,8 +392,11 @@ export function startHostProbe() {
 
 export function stopHostProbe() {
   if (observer) { observer.disconnect(); observer = null; }
+  if (cssWarmupTimer) { clearTimeout(cssWarmupTimer); cssWarmupTimer = 0; }
   fullRescanScheduled = false;
   localizedRescanScheduled = false;
+  cssVisibleCheckScheduled = false;
+  cssCapabilityRuntimeStarted = false;
   clearDirtyRegions();
 }
 
@@ -236,6 +415,7 @@ export function tagHostTree(root) {
   syncEffortLabels(root);
   syncTransientControls(root);
   syncSpinnerNodes(root);
+  scheduleVisibleCssCapabilityCheck();
 }
 
 export function closestByAttr(node, attr) {
@@ -290,8 +470,12 @@ function handleMutations(mutations) {
 
 function ensureAttr(el, attr, value = '') {
   if (!el || el.nodeType !== 1) return;
-  if (el.getAttribute(attr) === value) return;
+  if (el.getAttribute(attr) === value) {
+    noteCssCapability(attr, el);
+    return;
+  }
   el.setAttribute(attr, value);
+  noteCssCapability(attr, el);
 }
 
 function tagStaticSelectors(root) {
@@ -322,8 +506,11 @@ function syncUserMessageNodes(root) {
     const interrupted = container.querySelector('[class*="interruptedMessage"]');
     if (interrupted) ensureAttr(interrupted, ATTR.interruptedMessage);
     container.querySelectorAll('[class*="userMessage_"]').forEach(node => tagUserBubble(node));
-    container.querySelectorAll('[class*="content_"]').forEach(node => {
-      ensureAttr(node, ATTR.userContent);
+    container.querySelectorAll(`[${ATTR.userContent}]`).forEach(node => {
+      if (!isUserTextContentNode(node)) node.removeAttribute(ATTR.userContent);
+    });
+    container.querySelectorAll('[class*="expandableContainer"] [class*="content_"]').forEach(node => {
+      if (isUserTextContentNode(node)) ensureAttr(node, ATTR.userContent);
     });
     container.querySelectorAll('[class*="expandableContainer"]').forEach(node => {
       ensureAttr(node, ATTR.userExpandable);
@@ -411,7 +598,22 @@ function tagUserBubble(node) {
   const classes = typeof node.className === 'string' ? node.className : '';
   if (!classes.includes('userMessage_')) return;
   if (classes.includes('Container') || classes.includes('Attachments')) return;
-  node.setAttribute(ATTR.userBubble, '');
+  ensureAttr(node, ATTR.userBubble);
+}
+
+function isUserTextContentNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  const classes = typeof node.className === 'string' ? node.className : '';
+  if (!classes.includes('content_')) return false;
+  if (node.closest(`[${ATTR.userAttachments}], [class*="Attachments"]`)) return false;
+  const bubble = node.closest(`[${ATTR.userBubble}], [class*="userMessage_"]`);
+  if (!bubble) return false;
+  const bubbleClasses = typeof bubble.className === 'string' ? bubble.className : '';
+  if (bubbleClasses.includes('Container') || bubbleClasses.includes('Attachments')) return false;
+  const expandable = node.closest('[class*="expandableContainer"]');
+  if (!expandable || !bubble.contains(expandable)) return false;
+  const wrapper = node.closest('[class*="contentWrapper_"]');
+  return !!(wrapper && expandable.contains(wrapper));
 }
 
 function resolveSendState(button) {

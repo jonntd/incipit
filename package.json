@@ -11,13 +11,17 @@
     "src/",
     "companion/",
     "data/",
+    "tests/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "start": "node bin/cli.js",
     "apply": "node bin/cli.js apply",
-    "restore": "node bin/cli.js restore"
+    "restore": "node bin/cli.js restore",
+    "test": "node tests/patch-contracts.test.js && node tests/cache-history-buckets.test.js",
+    "test:contracts": "node tests/patch-contracts.test.js",
+    "test:cache-history": "node tests/cache-history-buckets.test.js"
   },
   "engines": {
     "node": ">=16"

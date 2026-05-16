@@ -1,6 +1,15 @@
 import { SEL } from './host_probe.js';
 import { renderMathInSegment as rewriteMathInSegment } from './math_rewriter.js';
-import { CFG, assetURL, loadCSS, loadJS, log, warn } from './enhance_shared.js';
+import { CFG, assetURL, loadCSS, loadJS, log, reportHealth, warn } from './enhance_shared.js';
+import {
+  bumpPerfCounter,
+  conversationIsBusy as kernelConversationIsBusy,
+  hasStreamDirty,
+  markStreamDirty,
+  scheduleIdleTask,
+  subscribe,
+  takeStreamDirtyRoots,
+} from './runtime_kernel.js';
 
 /**
  * Typography, math DOM rendering, CJK punctuation, and code highlighting.
@@ -15,6 +24,7 @@ const legacyHooks = {
   conversationIsBusy: null,
   noteTranscriptActionMutation: null,
   scanAndAddCopyButtons: null,
+  sweepStreamingDisableState: null,
 };
 
 function hook(name) {
@@ -26,12 +36,15 @@ function hook(name) {
 }
 
 function conversationIsBusy() {
-  const fn = hook('conversationIsBusy');
-  if (!fn) return domConversationLooksBusy();
-  try { return !!fn(); }
-  catch (e) {
-    warn('conversationIsBusy hook failed:', e);
-    return domConversationLooksBusy();
+  try { return !!kernelConversationIsBusy(); }
+  catch (_) {
+    const fn = hook('conversationIsBusy');
+    if (!fn) return domConversationLooksBusy();
+    try { return !!fn(); }
+    catch (e) {
+      warn('conversationIsBusy hook failed:', e);
+      return domConversationLooksBusy();
+    }
   }
 }
 
@@ -57,6 +70,13 @@ function scanAndAddCopyButtons(root, options = {}) {
   catch (e) { warn('copy/action scan hook failed:', e); }
 }
 
+function sweepStreamingDisableState() {
+  const fn = hook('sweepStreamingDisableState');
+  if (!fn) return;
+  try { fn(); }
+  catch (e) { warn('busy-state sweep hook failed:', e); }
+}
+
 export function configureTypographyHooks(hooks = {}) {
   for (const key of Object.keys(legacyHooks)) {
     if (typeof hooks[key] === 'function') legacyHooks[key] = hooks[key];
@@ -70,6 +90,7 @@ const assets = (() => {
   return {
     katex() {
       if (!katexPromise) {
+        reportHealth('asset.katex', 'loading');
         katexPromise = Promise.all([
           loadCSS(assetURL('katex/katex.min.css')),
           loadJS(assetURL('katex/katex.min.js')),
@@ -78,12 +99,18 @@ const assets = (() => {
             throw new Error('KaTeX loaded but window.katex missing');
           }
           log('KaTeX ready');
-        }).catch(e => { warn('KaTeX load failed:', e); throw e; });
+          reportHealth('asset.katex', 'ok');
+        }).catch(e => {
+          reportHealth('asset.katex', 'error', { message: e && e.message ? e.message : String(e) });
+          warn('KaTeX load failed:', e);
+          throw e;
+        });
       }
       return katexPromise;
     },
     hljs() {
       if (!hljsPromise) {
+        reportHealth('asset.hljs', 'loading');
         const themeFile = CFG.palette === 'warm-white'
           ? 'hljs/styles/vs.min.css'
           : 'hljs/styles/vs2015.min.css';
@@ -95,7 +122,12 @@ const assets = (() => {
             throw new Error('hljs loaded but window.hljs missing');
           }
           log('highlight.js ready (' + themeFile + ')');
-        }).catch(e => { warn('hljs load failed:', e); throw e; });
+          reportHealth('asset.hljs', 'ok', { themeFile });
+        }).catch(e => {
+          reportHealth('asset.hljs', 'error', { message: e && e.message ? e.message : String(e) });
+          warn('hljs load failed:', e);
+          throw e;
+        });
       }
       return hljsPromise;
     },
@@ -480,10 +512,30 @@ const deferredSegments = new Set();
 // and only childList mutations push their added Elements here for
 // localized hljs / copy-button passes.
 const pendingRoots = new Set();
-let deferredCodeHighlightUntilIdle = false;
+const deferredCodeRoots = new Set();
 let rafId = null;
 let deferredSegmentsTimer = 0;
+let attachedMessagesRoot = null;
 const STREAMING_TYPOGRAPHY_RECHECK_MS = 240;
+const FLUSH_SEGMENT_BUDGET_MS = 5;
+const FLUSH_ROOT_BUDGET_MS = 5;
+const FLUSH_SEGMENT_MIN = 12;
+const FLUSH_ROOT_MIN = 4;
+
+function timeNow() {
+  return (typeof performance !== 'undefined' && performance.now)
+    ? performance.now()
+    : Date.now();
+}
+
+function shouldYield(start, processed, minCount, budgetMs) {
+  if (processed < minCount) return false;
+  return timeNow() - start >= budgetMs;
+}
+
+function firstSetValue(set) {
+  return set && set.size ? set.values().next().value : undefined;
+}
 
 function closestSegment(node) {
   let el = node;
@@ -586,6 +638,55 @@ function scheduleDeferredSegmentsFlush() {
   }, STREAMING_TYPOGRAPHY_RECHECK_MS);
 }
 
+function enqueueKernelDirtyTypographyRoots() {
+  if (conversationIsBusy()) return false;
+  const roots = takeStreamDirtyRoots('typography');
+  if (!roots.length) return false;
+  for (const root of roots) {
+    if (!root || root.isConnected === false) continue;
+    enqueueNode(root, { deferTypography: false });
+    pendingRoots.add(root);
+  }
+  bumpPerfCounter('typography.dirtyRootsFlushed', roots.length);
+  schedule();
+  return true;
+}
+
+// Cheap structural test for the streaming childList fast path. We let new
+// user bubbles and new markdown roots through to the normal mint pipeline
+// because they carry user-visible UI (action rows, copy buttons, code
+// blocks) that should appear within the same tick. Token-level inserts
+// (the bulk of streaming mutations) just mark the latest markdown root
+// dirty so the settled pass repolishes once.
+function isStreamingMountWorthScanning(node) {
+  if (!node || node.nodeType !== 1) return false;
+  const cls = typeof node.className === 'string' ? node.className : '';
+  return cls.indexOf('userMessage_') !== -1 || cls.indexOf('root_') !== -1;
+}
+
+function rootForCodeBlock(block) {
+  if (!block || !block.closest) return block || null;
+  return block.closest(SEL.markdownRoot) || block.closest('pre') || block;
+}
+
+function rememberDeferredCodeBlock(block) {
+  const root = rootForCodeBlock(block);
+  if (!root) return;
+  deferredCodeRoots.add(root);
+  markStreamDirty('codeHighlight', root);
+  bumpPerfCounter('codeHighlight.deferred', 1);
+}
+
+function scheduleDeferredRuntimeFlush(reason = 'deferred') {
+  scheduleIdleTask('typography.deferredFlush', () => {
+    try { flushDeferredCodeHighlights(); }
+    catch (e) { warn('deferred typography flush failed:', e); }
+  }, {
+    delay: reason === 'streamSettled' ? 80 : STREAMING_TYPOGRAPHY_RECHECK_MS,
+    timeout: 1200,
+  });
+}
+
 function schedule() {
   if (rafId !== null) return;
   rafId = requestAnimationFrame(flush);
@@ -594,60 +695,92 @@ function schedule() {
 function flush() {
   rafId = null;
   if (pendingSegments.size) {
-    const segs = Array.from(pendingSegments);
-    pendingSegments.clear();
-    for (const seg of segs) {
-      if (!seg.isConnected) continue;
+    const start = timeNow();
+    let processed = 0;
+    while (pendingSegments.size) {
+      const seg = firstSetValue(pendingSegments);
+      pendingSegments.delete(seg);
+      if (!seg || !seg.isConnected) continue;
       try { processSegment(seg); }
       catch (e) { warn('processSegment failed:', e); }
+      processed++;
+      if (shouldYield(start, processed, FLUSH_SEGMENT_MIN, FLUSH_SEGMENT_BUDGET_MS)) break;
     }
   }
   // Localized hljs + copy-button passes — only roots that grew on this tick.
   // Mounted-but-already-scanned content is left alone (`:not(.hljs)` keeps
   // hljs idempotent; `addUserCopyButton` and `classifyUserBubble` are too).
   if (pendingRoots.size) {
-    const roots = Array.from(pendingRoots);
-    pendingRoots.clear();
+    const start = timeNow();
+    let processed = 0;
+    let swept = false;
     const hljsReady = typeof window.hljs !== 'undefined';
-    for (const root of roots) {
+    while (pendingRoots.size) {
+      const root = firstSetValue(pendingRoots);
+      pendingRoots.delete(root);
       if (!root || (root.isConnected === false)) continue;
       if (hljsReady) {
         try { enqueueCodeHighlight(root); } catch (e) { warn('highlight queue failed:', e); }
       }
-      try { scanAndAddCopyButtons(root, { assistantActions: false }); } catch (e) { warn('copy-btn failed:', e); }
+      try {
+        scanAndAddCopyButtons(root, {
+          assistantActions: false,
+          sweepBusyState: false,
+        });
+        swept = true;
+      } catch (e) { warn('copy-btn failed:', e); }
+      processed++;
+      if (shouldYield(start, processed, FLUSH_ROOT_MIN, FLUSH_ROOT_BUDGET_MS)) break;
     }
+    if (swept) sweepStreamingDisableState();
   }
-  if (deferredCodeHighlightUntilIdle && typeof window.hljs !== 'undefined') {
-    let busy = false;
-    try { busy = conversationIsBusy(); } catch (_) { busy = false; }
-    if (!busy && document.body) {
-      deferredCodeHighlightUntilIdle = false;
-      enqueueCodeHighlight(document.body);
-    }
-  }
+  if (pendingSegments.size || pendingRoots.size) schedule();
+  else if (hasDeferredCodeHighlights()) flushDeferredCodeHighlights();
 }
 
 function handleMutations(mutations) {
   let dirty = false;
+  let workQueued = false;
+  // One busy read per batch; downstream paths reuse this value rather than
+  // re-querying the kernel/fiber for every mutation record.
   let busy = false;
   try { busy = conversationIsBusy(); } catch (_) { busy = false; }
   for (const m of mutations) {
     if (m.type === 'characterData') {
+      const hasMath = nodeContainsMathPlaceholder(m.target);
+      if (busy && !hasMath) {
+        // True streaming O(1): no closestSegment, no markStreamDirty (which
+        // itself calls closest), no enqueue. The settled pass repolishes
+        // CJK punctuation, code highlighting, and copy buttons in one go;
+        // noteTranscriptActionMutation below is the only side effect.
+        dirty = true;
+        continue;
+      }
       const seg = closestSegment(m.target);
       if (seg) {
-        // During streaming, plain prose grows token-by-token. CJK punctuation
-        // wrapping would otherwise rescan the whole paragraph on every text
-        // mutation. Math placeholders stay eager so raw CCREMATH tokens do
-        // not leak into the visible stream; everything else is polished once
-        // the turn is idle.
-        queueSegment(seg, busy && !nodeContainsMathPlaceholder(m.target));
+        queueSegment(seg, false);
         dirty = true;
+        workQueued = true;
       }
     } else if (m.type === 'childList') {
       for (const node of m.addedNodes) {
-        enqueueNode(node, {
-          deferTypography: busy && !nodeContainsMathPlaceholder(node),
-        });
+        const hasMath = nodeContainsMathPlaceholder(node);
+        if (busy && !hasMath) {
+          // Structural mounts (new user bubble, new markdown root) go
+          // through the normal mint path so their copy buttons / action
+          // rows appear in the same tick. Everything else (token-level
+          // assistant inserts) only marks the nearest markdown root dirty
+          // — settled flush replays it.
+          if (isStreamingMountWorthScanning(node)) {
+            pendingRoots.add(node);
+            workQueued = true;
+          } else {
+            markStreamDirty('typography', node);
+          }
+          dirty = true;
+          continue;
+        }
+        enqueueNode(node, { deferTypography: false });
         // Element-only — text nodes never match hljs/userBubble selectors.
         // For streaming markdown, also rescan the nearest markdown root.
         // Regular assistant code highlighting itself stays deferred while
@@ -657,15 +790,13 @@ function handleMutations(mutations) {
         if (node.nodeType === 1) pendingRoots.add(node);
         const markdownRoot = el && el.closest && el.closest(SEL.markdownRoot);
         if (markdownRoot) pendingRoots.add(markdownRoot);
+        workQueued = true;
       }
-      // Ignore removed nodes because they are already gone.
       if (m.addedNodes.length) dirty = true;
     }
   }
-  if (dirty || pendingSegments.size || pendingRoots.size) {
-    if (dirty) noteTranscriptActionMutation();
-    schedule();
-  }
+  if (dirty) noteTranscriptActionMutation();
+  if (workQueued || pendingSegments.size || pendingRoots.size) schedule();
 }
 
 // Chromium bug workaround: a MutationObserver with `characterData: true`
@@ -690,6 +821,7 @@ function setupObserver() {
     if (!root || root === attachedRoot) return;
     if (contentObs) contentObs.disconnect();
     attachedRoot = root;
+    attachedMessagesRoot = root;
     contentObs = new MutationObserver(handleMutations);
     contentObs.observe(root, {
       childList: true,
@@ -721,16 +853,20 @@ function setupObserver() {
   });
   finder.observe(document.body, { childList: true, subtree: true });
 
-  enqueueInitialSegments();
-  schedule();
+  if (!initial) {
+    enqueueInitialSegments(document.body);
+    schedule();
+  }
 }
 
 // Initial scan:
 //   1. enqueue every element matched by `SEG_SELECTOR`
 //   2. walk text nodes containing `$` or `\` and use `closestSegment`
 //      as a fallback
-function enqueueInitialSegments() {
-  for (const s of document.querySelectorAll(SEG_SELECTOR)) {
+function enqueueInitialSegments(root = document.body) {
+  const scope = root || document.body;
+  if (!scope) return;
+  for (const s of scope.querySelectorAll(SEG_SELECTOR)) {
     // `querySelectorAll` bypasses `closestSegment`, so filter editor and
     // diff nodes explicitly here.
     if (s.isContentEditable) continue;
@@ -739,7 +875,7 @@ function enqueueInitialSegments() {
   }
 
   const walker = document.createTreeWalker(
-    document.body,
+    scope,
     NodeFilter.SHOW_TEXT,
     {
       acceptNode(node) {
@@ -874,7 +1010,7 @@ function shouldDeferRegularCodeHighlight(block, busy) {
 function highlightOneCodeBlock(block, options = {}) {
   const isDiffIsland = isIncipitDiffCodeBlock(block);
   if (!isDiffIsland && shouldDeferRegularCodeHighlight(block, options.busy === true)) {
-    deferredCodeHighlightUntilIdle = true;
+    rememberDeferredCodeBlock(block);
     // Deliberately avoid even a diagnostic data-attr here. During streaming
     // this `<code>` node is React-owned; any mutation by us can be reverted by
     // the next host commit and contribute to the visible code-block twitch.
@@ -985,17 +1121,45 @@ function runCodeHighlightChunk() {
 
 export function flushDeferredCodeHighlights() {
   const flushedTypography = flushDeferredSegmentsIfReady();
-  if (!deferredCodeHighlightUntilIdle || typeof window.hljs === 'undefined' || !document.body) {
-    return flushedTypography;
+  const flushedDirtyTypography = enqueueKernelDirtyTypographyRoots();
+  if (typeof window.hljs === 'undefined') {
+    if (deferredCodeRoots.size || hasStreamDirty('codeHighlight')) {
+      scheduleDeferredRuntimeFlush();
+    }
+    return flushedTypography || flushedDirtyTypography;
   }
-  if (conversationIsBusy()) return flushedTypography;
-  deferredCodeHighlightUntilIdle = false;
-  enqueueCodeHighlight(document.body);
-  return true;
+  if (conversationIsBusy()) {
+    if (deferredCodeRoots.size || hasStreamDirty('codeHighlight')) {
+      scheduleDeferredRuntimeFlush();
+    }
+    return flushedTypography || flushedDirtyTypography;
+  }
+
+  const roots = [];
+  for (const root of deferredCodeRoots) roots.push(root);
+  deferredCodeRoots.clear();
+  for (const root of takeStreamDirtyRoots('codeHighlight')) roots.push(root);
+  if (!roots.length) return flushedTypography || flushedDirtyTypography;
+
+  let queued = 0;
+  const seen = new Set();
+  for (const root of roots) {
+    if (!root || root.isConnected === false || seen.has(root)) continue;
+    seen.add(root);
+    enqueueCodeHighlight(root);
+    queued++;
+  }
+  if (queued) bumpPerfCounter('codeHighlight.deferredRootsFlushed', queued);
+  return flushedTypography || flushedDirtyTypography || queued > 0;
 }
 
 export function hasDeferredCodeHighlights() {
-  return deferredCodeHighlightUntilIdle === true || deferredSegments.size > 0;
+  return (
+    deferredCodeRoots.size > 0 ||
+    deferredSegments.size > 0 ||
+    hasStreamDirty('typography') ||
+    hasStreamDirty('codeHighlight')
+  );
 }
 
 export function scanCopyButtons(root, options = {}) {
@@ -1007,18 +1171,25 @@ let typographyStarted = false;
 export function initTypography(hooks = {}) {
   configureTypographyHooks(hooks);
   exposeTypographyApi();
-  if (typographyStarted) return globalThis.__incipitTypography;
+  if (typographyStarted) {
+    reportHealth('typography', 'ok', { alreadyStarted: true });
+    return globalThis.__incipitTypography;
+  }
   typographyStarted = true;
+  reportHealth('typography', 'starting');
+  subscribe('streamSettled', () => scheduleDeferredRuntimeFlush('streamSettled'));
   setupObserver();
 
   assets.hljs().then(() => {
-    // Once hljs lands, sweep what's already on the page. Mutations after
-    // this point feed pendingRoots per-subtree. The sweep is chunked so a
-    // long transcript cannot monopolize the boot frame.
-    if (document.body) pendingRoots.add(document.body);
-    schedule();
+    // Once hljs lands, queue only the transcript code blocks. User/action
+    // controls were already seeded by the messages-root pass; putting
+    // document.body back into pendingRoots here caused a second full
+    // copy/action sweep on long transcripts during open.
+    const root = attachedMessagesRoot || document.querySelector(MESSAGES_ROOT_SELECTOR) || document.body;
+    if (root) enqueueCodeHighlight(root);
   }).catch(() => { /* Already warned. */ });
 
+  reportHealth('typography', 'ok');
   return globalThis.__incipitTypography;
 }
 

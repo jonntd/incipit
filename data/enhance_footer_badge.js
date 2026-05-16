@@ -1,5 +1,9 @@
 import { CFG, getActiveClaudeSessionId } from './enhance_shared.js';
 import { SEL } from './host_probe.js';
+import {
+  getHostState as kernelGetHostState,
+  subscribe as subscribeRuntime,
+} from './runtime_kernel.js';
 
 // ============================================================
 // Shared active-session identity heartbeat.
@@ -11,6 +15,14 @@ var identityPublishers = [];
 var identityBridgeInstalled = false;
 var identityBridgeScheduled = false;
 var identityBridgeForce = false;
+
+function currentSessionId() {
+  try {
+    var state = kernelGetHostState();
+    if (state && typeof state.sessionId === 'string' && state.sessionId) return state.sessionId;
+  } catch (_) {}
+  return getActiveClaudeSessionId();
+}
 
 function registerIdentityPublisher(publisher) {
   if (typeof publisher !== 'function') return;
@@ -37,9 +49,16 @@ function scheduleIdentityHeartbeat(force) {
 function ensureIdentityBridge() {
   if (identityBridgeInstalled) return;
   identityBridgeInstalled = true;
+  // sessionChanged is the only kernel signal we need: it forces a fresh
+  // identity heartbeat when the user switches conversations. Subscribing
+  // to messagesChanged too added one wakeup per signal commit during
+  // streaming without ever altering the identity payload.
+  try {
+    subscribeRuntime('sessionChanged', function() { scheduleIdentityHeartbeat(true); });
+  } catch (_) {}
   setTimeout(function() { scheduleIdentityHeartbeat(true); }, 450);
   setTimeout(function() { scheduleIdentityHeartbeat(true); }, 1800);
-  setInterval(function() { scheduleIdentityHeartbeat(false); }, 2400);
+  setInterval(function() { scheduleIdentityHeartbeat(false); }, 15000);
   window.addEventListener('focus', function() { scheduleIdentityHeartbeat(true); });
   document.addEventListener('visibilitychange', function() {
     if (!document.hidden) scheduleIdentityHeartbeat(true);
@@ -225,7 +244,7 @@ function setupCacheBadge() {
     identityPublishScheduled = false;
     var api = getIncipitVsCodeApi();
     if (!api || typeof api.postMessage !== 'function') return;
-    var sessionId = getActiveClaudeSessionId();
+    var sessionId = currentSessionId();
     var key = sessionId || '';
     if (!force && !includeHistory && key === lastIdentityKey) return;
     var identityChanged = key !== lastIdentityKey;
@@ -447,6 +466,43 @@ function setupCacheBadge() {
     el.addEventListener('click', function(ev) { ev.stopPropagation(); });
     return el;
   }
+  // The host transports cache history as bounded aggregate buckets
+  // (see host-badge.cjs payloadHistoryBuckets): each carries EXACT
+  // partial sums for the real requests it spans plus min/max/last hit
+  // for a peak-preserving redraw. A `c === 1` bucket is one request.
+  // `latest.recent` (fallback) is still the old per-request shape
+  // (`{ts,ctx,hit,input,cw,cr,output}`), so map both: a per-request
+  // entry is just a 1-count bucket whose lo/hi/sumHit equal its hit.
+  function normalizeHistoryRow(r) {
+    var hit = clamp(Number.isFinite(r.hit) ? r.hit : 0, 0, 1);
+    var isBucket = Number.isFinite(r.c);
+    var count = isBucket ? Math.max(1, r.c | 0) : 1;
+    var ts = r.ts || '';
+    return {
+      count: count,
+      ts: ts,
+      ts0: r.t0 || ts,
+      hit: hit,
+      ctx: Number.isFinite(r.ctx) ? r.ctx : 0,
+      lo: clamp(Number.isFinite(r.lo) ? r.lo : hit, 0, 1),
+      loCtx: Number.isFinite(r.loC) ? r.loC : (Number.isFinite(r.ctx) ? r.ctx : 0),
+      loTs: r.loT || ts,
+      hi: clamp(Number.isFinite(r.hi) ? r.hi : hit, 0, 1),
+      fresh: isBucket
+        ? (Number.isFinite(r.f) ? r.f : 0)
+        : (Number.isFinite(r.input) ? r.input : 0),
+      write: isBucket
+        ? (Number.isFinite(r.w) ? r.w : 0)
+        : (Number.isFinite(r.cw) ? r.cw : (Number.isFinite(r.write) ? r.write : 0)),
+      read: isBucket
+        ? (Number.isFinite(r.r) ? r.r : 0)
+        : (Number.isFinite(r.cr) ? r.cr : (Number.isFinite(r.read) ? r.read : 0)),
+      output: isBucket
+        ? (Number.isFinite(r.o) ? r.o : 0)
+        : (Number.isFinite(r.output) ? r.output : 0),
+      sumHit: isBucket ? (Number.isFinite(r.hs) ? r.hs : hit) : hit,
+    };
+  }
   function cacheHistoryRows() {
     var rows = latest && Array.isArray(latest.history) ? latest.history : null;
     if (!rows || !rows.length) rows = latest && Array.isArray(latest.recent) ? latest.recent : [];
@@ -454,17 +510,7 @@ function setupCacheBadge() {
       .filter(function(r) {
         return r && Number.isFinite(r.hit) && r.hit >= 0;
       })
-      .map(function(r) {
-        return {
-          ts: r.ts || '',
-          ctx: Number.isFinite(r.ctx) ? r.ctx : 0,
-          hit: clamp(r.hit, 0, 1),
-          input: Number.isFinite(r.input) ? r.input : 0,
-          write: Number.isFinite(r.cw) ? r.cw : (Number.isFinite(r.write) ? r.write : 0),
-          read: Number.isFinite(r.cr) ? r.cr : (Number.isFinite(r.read) ? r.read : 0),
-          output: Number.isFinite(r.output) ? r.output : 0,
-        };
-      });
+      .map(normalizeHistoryRow);
   }
   function sameBadgePayloadIdentity(a, b) {
     if (!a || !b) return false;
@@ -565,10 +611,14 @@ function setupCacheBadge() {
       positionPopup();
     });
   }
+  // Rows are aggregate buckets, so totals are Σ of per-bucket EXACT
+  // partial sums, request count is Σ count (not rows.length), and the
+  // mean is Σ sumHit / Σ count (request-weighted, not bucket-weighted).
+  // For 1-count buckets this is identical to the old per-request math.
   function summarizeHistoryRows(rows) {
     rows = rows || [];
     var out = {
-      requests: rows.length,
+      requests: 0,
       fresh: 0,
       write: 0,
       read: 0,
@@ -578,7 +628,7 @@ function setupCacheBadge() {
       meanHit: NaN,
       minHit: NaN,
       durationMs: 0,
-      firstTs: rows.length ? rows[0].ts : '',
+      firstTs: rows.length ? rows[0].ts0 : '',
       lastTs: rows.length ? rows[rows.length - 1].ts : '',
     };
     if (!rows.length) return out;
@@ -586,15 +636,16 @@ function setupCacheBadge() {
     var minHit = 1;
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
-      out.fresh += r.input || 0;
+      out.requests += r.count || 0;
+      out.fresh += r.fresh || 0;
       out.write += r.write || 0;
       out.read += r.read || 0;
       out.output += r.output || 0;
-      out.totalContext += r.ctx || 0;
-      hitSum += r.hit || 0;
-      minHit = Math.min(minHit, r.hit || 0);
+      hitSum += r.sumHit || 0;
+      minHit = Math.min(minHit, r.lo);
     }
-    out.meanHit = hitSum / rows.length;
+    out.totalContext = out.fresh + out.write + out.read;
+    out.meanHit = out.requests > 0 ? hitSum / out.requests : NaN;
     out.minHit = minHit;
     var first = Date.parse(out.firstTs);
     var last = Date.parse(out.lastTs);
@@ -603,9 +654,9 @@ function setupCacheBadge() {
   }
   function rangeTimeLabel(rows) {
     if (!rows || !rows.length) return '—';
-    var first = rows[0].ts;
+    var first = rows[0].ts0 || rows[0].ts;
     var last = rows[rows.length - 1].ts;
-    if (rows.length === 1) return fmtChartTime(first, first, last);
+    if (rows.length === 1 && first === last) return fmtChartTime(first, first, last);
     return fmtChartTime(first, first, last) + ' - ' + fmtChartTime(last, first, last);
   }
   function sampledLinePoints(points, maxBuckets) {
@@ -678,12 +729,20 @@ function setupCacheBadge() {
     var range = normalizeHitRange(fullRows.length);
     var rows = visibleHistoryRows(fullRows);
     selectedHitRows = rows;
-    var hits = rows.map(function(r) { return r.hit; });
-    var minHit = Math.min.apply(null, hits);
-    var maxHit = Math.max.apply(null, hits);
-    var sum = hits.reduce(function(a, b) { return a + b; }, 0);
-    var mean = hits.length ? sum / hits.length : 0;
-    var latestHit = hits[hits.length - 1];
+    // Bucket-aware: the visible envelope is min(lo)/max(hi) over the
+    // covered buckets, the mean is Σ sumHit / Σ count (request-weighted,
+    // exact), and `lowRowIndex` is the bucket holding the global low.
+    var minHit = 1, maxHit = 0, hitSum = 0, reqCount = 0, lowRowIndex = 0;
+    for (var si = 0; si < rows.length; si++) {
+      var sr = rows[si];
+      if (sr.lo < minHit) { minHit = sr.lo; lowRowIndex = si; }
+      if (sr.hi > maxHit) maxHit = sr.hi;
+      hitSum += sr.sumHit || 0;
+      reqCount += sr.count || 0;
+    }
+    if (!rows.length) { minHit = 0; maxHit = 0; }
+    var mean = reqCount > 0 ? hitSum / reqCount : 0;
+    var latestHit = rows.length ? rows[rows.length - 1].hit : 0;
 
     var spread = maxHit - minHit;
     var pad = Math.max(0.02, spread * 0.3);
@@ -707,24 +766,54 @@ function setupCacheBadge() {
     function yAt(hit) {
       return padT + ((domainMax - hit) / Math.max(0.001, domainMax - domainMin)) * plotH;
     }
+    // One logical point per bucket drives hover indexing + markers.
     var points = rows.map(function(r, i) {
       var xNorm = denom ? i / denom : 0;
-      return { index: i, xNorm: xNorm, x: xAt(i), y: yAt(r.hit), hit: r.hit, ctx: r.ctx, ts: r.ts };
+      return { index: i, xNorm: xNorm, x: xAt(i), y: yAt(r.hit), hit: r.hit, ctx: r.ctx, ts: r.ts, count: r.count };
     });
-    var path = pathFromPoints(sampledLinePoints(points, Math.max(120, Math.floor(plotW))));
-    var minIndex = hits.indexOf(minHit);
-    var lowPoint = points[minIndex];
+    // Peak-preserving polyline. A 1-request bucket stays a single
+    // vertex (identical to the old per-request line). A multi-request
+    // bucket expands to lo→hi→last across its cell so deep cache-miss
+    // crashes survive the host-side bucketing.
+    var pathVertices = [];
+    var cellW = plotW / Math.max(1, denom);
+    var vIdx = 0;
+    for (var pvi = 0; pvi < rows.length; pvi++) {
+      var pvr = rows[pvi];
+      var pcx = xAt(pvi);
+      if (pvr.count <= 1 || (pvr.lo === pvr.hi && pvr.hi === pvr.hit)) {
+        pathVertices.push({ index: vIdx++, xNorm: (pcx - padL) / plotW, x: pcx, y: yAt(pvr.hit) });
+        continue;
+      }
+      var pxa = clamp(pcx - cellW * 0.35, padL, padL + plotW);
+      var pxc = clamp(pcx + cellW * 0.35, padL, padL + plotW);
+      pathVertices.push({ index: vIdx++, xNorm: (pxa - padL) / plotW, x: pxa, y: yAt(pvr.lo) });
+      pathVertices.push({ index: vIdx++, xNorm: (pcx - padL) / plotW, x: pcx, y: yAt(pvr.hi) });
+      pathVertices.push({ index: vIdx++, xNorm: (pxc - padL) / plotW, x: pxc, y: yAt(pvr.hit) });
+    }
+    var path = pathFromPoints(sampledLinePoints(pathVertices, Math.max(120, Math.floor(plotW))));
+    var lowRow = rows[lowRowIndex];
+    var lowPoint = (lowRow && points[lowRowIndex]) ? {
+      x: points[lowRowIndex].x,
+      y: yAt(lowRow.lo),
+      hit: lowRow.lo,
+      ctx: lowRow.loCtx,
+      ts: lowRow.loTs,
+    } : null;
     var latestPoint = points[points.length - 1];
     var mid = (domainMin + domainMax) / 2;
     var newestTs = rows[rows.length - 1] && rows[rows.length - 1].ts;
-    var oldestTs = rows[0] && rows[0].ts;
+    var oldestTs = rows[0] && (rows[0].ts0 || rows[0].ts);
     var markers = '';
     if (lowPoint) {
       markers += '<circle class="cceHitPoint cceHitPointLow" cx="' + svgNumber(lowPoint.x) + '" cy="' + svgNumber(lowPoint.y) + '" r="3.4">' +
         '<title>Lowest · ' + fmtPct(lowPoint.hit) + ' · ' + fmtTokens(lowPoint.ctx) + ' · ' + fmtChartTime(lowPoint.ts, oldestTs, newestTs) + '</title>' +
       '</circle>';
     }
-    if (latestPoint && latestPoint !== lowPoint) {
+    var latestIsLow = !!(lowPoint && latestPoint &&
+      Math.abs(lowPoint.x - latestPoint.x) < 0.01 &&
+      Math.abs(lowPoint.y - latestPoint.y) < 0.01);
+    if (latestPoint && !latestIsLow) {
       markers += '<circle class="cceHitPoint cceHitPointLatest" cx="' + svgNumber(latestPoint.x) + '" cy="' + svgNumber(latestPoint.y) + '" r="3">' +
         '<title>Latest · ' + fmtPct(latestPoint.hit) + ' · ' + fmtTokens(latestPoint.ctx) + ' · ' + fmtChartTime(latestPoint.ts, oldestTs, newestTs) + '</title>' +
       '</circle>';
@@ -740,9 +829,12 @@ function setupCacheBadge() {
     var oldestLabel = fmtChartTime(oldestTs, oldestTs, newestTs);
     var midTimeLabel = fmtChartTime(midTs, oldestTs, newestTs);
     var newestLabel = fmtChartTime(newestTs, oldestTs, newestTs);
-    var fullHits = fullRows.map(function(r) { return r.hit; });
-    var fullMinHit = Math.min.apply(null, fullHits);
-    var fullMaxHit = Math.max.apply(null, fullHits);
+    var fullMinHit = 1, fullMaxHit = 0;
+    for (var fri = 0; fri < fullRows.length; fri++) {
+      if (fullRows[fri].lo < fullMinHit) fullMinHit = fullRows[fri].lo;
+      if (fullRows[fri].hi > fullMaxHit) fullMaxHit = fullRows[fri].hi;
+    }
+    if (!fullRows.length) { fullMinHit = 0; fullMaxHit = 0; }
     var overviewPad = Math.max(0.02, (fullMaxHit - fullMinHit) * 0.25);
     var overviewMin = clamp(fullMinHit - overviewPad, 0, 1);
     var overviewMax = clamp(fullMaxHit + overviewPad, 0, 1);
@@ -761,15 +853,21 @@ function setupCacheBadge() {
     function rangeYAt(hit) {
       return rangePadT + ((overviewMax - hit) / Math.max(0.001, overviewMax - overviewMin)) * rangePlotH;
     }
-    var overviewPoints = fullRows.map(function(r, i) {
-      var xNorm = i / fullDenom;
-      return {
-        index: i,
-        xNorm: xNorm,
-        x: padL + xNorm * plotW,
-        y: rangeYAt(r.hit),
-      };
-    });
+    // Same peak-preserving expansion for the brush mini-chart so its
+    // crash dips match the main line.
+    var overviewPoints = [];
+    var oIdx = 0;
+    for (var ori = 0; ori < fullRows.length; ori++) {
+      var orw = fullRows[ori];
+      var oxN = ori / fullDenom;
+      var ox = padL + oxN * plotW;
+      if (orw.count <= 1 || orw.lo === orw.hi) {
+        overviewPoints.push({ index: oIdx++, xNorm: oxN, x: ox, y: rangeYAt(orw.hit) });
+      } else {
+        overviewPoints.push({ index: oIdx++, xNorm: oxN, x: ox, y: rangeYAt(orw.lo) });
+        overviewPoints.push({ index: oIdx++, xNorm: oxN, x: ox, y: rangeYAt(orw.hi) });
+      }
+    }
     var overviewPath = pathFromPoints(sampledLinePoints(overviewPoints, 180));
     var selX1 = padL + range.start * plotW;
     var selX2 = padL + range.end * plotW;
@@ -1118,7 +1216,7 @@ function setupCacheBadge() {
   window.addEventListener('message', function(ev) {
     var d = ev && ev.data;
     if (!d || d.__cceBadge !== true || !d.payload) return;
-    var current = getActiveClaudeSessionId();
+    var current = currentSessionId();
     if (current && d.payload.sessionId && d.payload.sessionId !== current) return;
     var hasFullHistory = Array.isArray(d.payload.history);
     latest = mergeRetainedHistory(d.payload);
@@ -1214,7 +1312,7 @@ function setupEditActivityHeader() {
     identityPublishScheduled = false;
     var api = getIncipitVsCodeApi();
     if (!api || typeof api.postMessage !== 'function') return;
-    var sessionId = getActiveClaudeSessionId();
+    var sessionId = currentSessionId();
     var key = sessionId || '';
     if (!force && !includeProject && key === lastIdentityKey) return;
     var identityChanged = key !== lastIdentityKey;
@@ -1354,7 +1452,7 @@ function setupEditActivityHeader() {
 
   function renderActivityChip(chip) {
     if (!chip) return;
-    var sessionId = getActiveClaudeSessionId();
+    var sessionId = currentSessionId();
     chip.hidden = !sessionId && !latest;
     var T = totals();
     var added = '+' + fmtCount(T.added);
@@ -1698,7 +1796,7 @@ function setupEditActivityHeader() {
   window.addEventListener('message', function(ev) {
     var d = ev && ev.data;
     if (!d || d.__incipitEditActivity !== true || !d.payload) return;
-    var current = getActiveClaudeSessionId();
+    var current = currentSessionId();
     if (current && d.payload.sessionId && d.payload.sessionId !== current) return;
     var popupChanged = false;
     var hadProjectBefore = !!projectLatest;

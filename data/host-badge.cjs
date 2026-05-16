@@ -7,7 +7,15 @@ const crypto = require('crypto');
 const { StringDecoder } = require('string_decoder');
 
 const GLOBAL_KEY = '__cceBadge';
+// `POLL_INTERVAL_MS` matches the 0.1.10 cadence. We layer event-driven
+// `schedulePoll(WRITE_POLL_DEBOUNCE_MS)` on top via wrappers around
+// `fs.appendFile`/`writeFile` callbacks and `createWriteStream`'s
+// `finish`/`close`/`end` events, so most writes get a faster refresh
+// than the interval — but the interval itself stays at 1.5s because the
+// JSONL stream Claude Code opens generally never `finish`/`close` for
+// the life of a session, leaving us with only the interval as a backstop.
 const POLL_INTERVAL_MS = 1500;
+const WRITE_POLL_DEBOUNCE_MS = 120;
 const JSONL_SUFFIX = '.jsonl';
 const USAGE_CACHE_SCHEMA_VERSION = 1;
 const USAGE_CACHE_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-usage-cache-v1');
@@ -24,6 +32,19 @@ const GLOBAL_INDEX_SCAN_MIN_INTERVAL_MS = 60000;
 // the original transcript text in memory until send succeeds or fails.
 const TRUNCATE_ROLLBACK_TTL_MS = 6 * 60 * 1000;
 const TRUNCATE_ROLLBACK_MAX = 3;
+// Cache-hit history is transported as a BOUNDED array of aggregate
+// buckets, never one entry per request. `parser.order.map(...)` is
+// O(requests) bytes re-serialized over postMessage every turn the cache
+// popup is open; on a long-lived npm-published session that grows
+// without limit (50k requests ≈ 6MB per refresh). Buckets keep the wire
+// + retained cost constant regardless of session length. Each bucket
+// carries EXACT partial sums of the real requests it spans, so summing
+// any contiguous run of buckets reproduces the exact totals/mean/min the
+// full array would have — only the brush *selection granularity*
+// coarsens (a bucket can't be split); the numbers never become
+// estimates. When requests <= HISTORY_MAX_BUCKETS every bucket is
+// exactly one request, i.e. byte-for-byte the old per-request behaviour.
+const HISTORY_MAX_BUCKETS = 1500;
 
 function attachComm(comm) {
   const state = getOrCreateState();
@@ -50,6 +71,9 @@ function createState() {
     commIdentities: new Map(),
     targetCache: new Map(),
     parsers: new Map(),
+    timer: null,
+    pollTimer: null,
+    tick: null,
     editProjectIndexes: new Map(),
     editProjectJobs: new Map(),
     editProjectScanAt: new Map(),
@@ -995,6 +1019,10 @@ function stopPolling(state) {
     clearInterval(state.timer);
     state.timer = null;
   }
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
   state.started = false;
 }
 
@@ -1002,7 +1030,7 @@ function startPolling(state) {
   if (state.started) return;
   state.started = true;
   patchFs(state);
-  state.tick = () => poll(state);
+  state.tick = () => schedulePoll(state, 0);
   state.tick();
   state.timer = setInterval(state.tick, POLL_INTERVAL_MS);
 }
@@ -1021,17 +1049,57 @@ function patchFs(state) {
 function wrapFsMethod(name, state, root) {
   const original = fs[name];
   if (typeof original !== 'function') return;
+  if (name === 'createWriteStream') {
+    fs[name] = function wrappedCreateWriteStream(filePath) {
+      const tracked = trackSessionFile(state, root, filePath);
+      const stream = original.apply(fs, arguments);
+      if (tracked) attachWriteStreamPoll(state, stream);
+      return stream;
+    };
+    return;
+  }
   fs[name] = function wrapped(filePath) {
-    trackSessionFile(state, root, filePath);
-    return original.apply(fs, arguments);
+    const tracked = trackSessionFile(state, root, filePath);
+    if (!tracked) return original.apply(fs, arguments);
+
+    const args = Array.prototype.slice.call(arguments);
+    let scheduled = false;
+    const scheduleOnce = () => {
+      if (scheduled) return;
+      scheduled = true;
+      schedulePoll(state, WRITE_POLL_DEBOUNCE_MS);
+    };
+    const lastIndex = args.length - 1;
+    const isSync = name.endsWith('Sync');
+    let callbackWrapped = false;
+    if (!isSync && typeof args[lastIndex] === 'function') {
+      const callback = args[lastIndex];
+      callbackWrapped = true;
+      args[lastIndex] = function wrappedCallback() {
+        try {
+          return callback.apply(this, arguments);
+        } finally {
+          scheduleOnce();
+        }
+      };
+    }
+
+    const result = original.apply(fs, args);
+    if (isSync || !callbackWrapped) {
+      if (result && typeof result.then === 'function') result.finally(scheduleOnce);
+      else scheduleOnce();
+    }
+    return result;
   };
 }
 
 function trackSessionFile(state, root, filePath) {
-  if (!isSessionFilePath(root, filePath)) return;
-  if (state.ourFile === filePath) return;
-  state.ourFile = filePath;
-  state.log(`ourFile=${filePath}`);
+  if (!isSessionFilePath(root, filePath)) return false;
+  if (state.ourFile !== filePath) {
+    state.ourFile = filePath;
+    state.log(`ourFile=${filePath}`);
+  }
+  return true;
 }
 
 function isSessionFilePath(root, filePath) {
@@ -1040,6 +1108,41 @@ function isSessionFilePath(root, filePath) {
     filePath.startsWith(root) &&
     filePath.toLowerCase().endsWith(JSONL_SUFFIX)
   );
+}
+
+function attachWriteStreamPoll(state, stream) {
+  if (!stream || stream.__incipitPollWrapped) return;
+  stream.__incipitPollWrapped = true;
+  // Event subscriptions only — we deliberately do NOT override
+  // `stream.write` / `stream.end`. Overwriting those methods changes the
+  // object identity of host APIs and risked surprises in downstream code
+  // that holds references to the original prototypes. `finish` fires
+  // after the writable side has drained, `close` after the underlying fd
+  // is released, and `end` is the user-side finalize entry; together
+  // they cover the only moments at which a new poll is actually useful.
+  const schedule = () => schedulePoll(state, WRITE_POLL_DEBOUNCE_MS);
+  if (typeof stream.once === 'function') {
+    try { stream.once('finish', schedule); } catch (_) {}
+    try { stream.once('close', schedule); } catch (_) {}
+    try { stream.once('end', schedule); } catch (_) {}
+  }
+}
+
+function schedulePoll(state, delay) {
+  if (!state || !state.started) return;
+  const wait = Math.max(0, Number(delay) || 0);
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+  if (wait === 0) {
+    poll(state);
+    return;
+  }
+  state.pollTimer = setTimeout(() => {
+    state.pollTimer = null;
+    poll(state);
+  }, wait);
 }
 
 function poll(state) {
@@ -1850,6 +1953,59 @@ function payloadHistoryEntry(parser, id) {
   };
 }
 
+// Aggregate `parser.order` into <= HISTORY_MAX_BUCKETS contiguous,
+// non-overlapping buckets that together cover every request exactly
+// once (so Σ bucket sums == global sums, exactly). Each bucket also
+// keeps min/max/last hit + the lowest point's ctx/ts so the webview can
+// redraw a peak-preserving line and the low/latest markers without the
+// raw per-request stream. `c === 1` buckets are single requests.
+function payloadHistoryBuckets(parser) {
+  const ids = parser.order;
+  const n = ids.length;
+  if (!n) return [];
+  const k = Math.min(HISTORY_MAX_BUCKETS, n);
+  const out = [];
+  for (let b = 0; b < k; b++) {
+    const start = Math.floor((b * n) / k);
+    const end = Math.floor(((b + 1) * n) / k); // exclusive
+    let cnt = 0, f = 0, w = 0, r = 0, o = 0, hs = 0;
+    let lo = Infinity, hi = -Infinity, loCtx = 0, loTs = '';
+    let lastHit = 0, lastCtx = 0, lastTs = '', firstTs = '';
+    for (let i = start; i < end; i++) {
+      const rec = parser.byRequest.get(ids[i]);
+      if (!rec) continue;
+      const u = rec.usage;
+      const ctx = totalContextTokens(u);
+      const hit = ctx > 0 ? (u.cache_read_input_tokens || 0) / ctx : 0;
+      if (!firstTs) firstTs = rec.ts || '';
+      cnt += 1;
+      f += u.input_tokens || 0;
+      w += u.cache_creation_input_tokens || 0;
+      r += u.cache_read_input_tokens || 0;
+      o += u.output_tokens || 0;
+      hs += hit;
+      if (hit < lo) { lo = hit; loCtx = ctx; loTs = rec.ts || ''; }
+      if (hit > hi) hi = hit;
+      lastHit = hit; lastCtx = ctx; lastTs = rec.ts || '';
+    }
+    if (!cnt) continue;
+    out.push({
+      c: cnt,
+      ts: lastTs,
+      t0: firstTs,
+      hit: lastHit,
+      ctx: lastCtx,
+      lo: lo === Infinity ? lastHit : lo,
+      loC: loCtx,
+      loT: loTs || lastTs,
+      hi: hi === -Infinity ? lastHit : hi,
+      f, w, r, o,
+      hs,
+    });
+  }
+  return out;
+}
+
 function buildPayload(parser, includeHistory) {
   if (!parser.order.length) return null;
   const lastId = parser.latestUsageId && parser.byRequest.has(parser.latestUsageId)
@@ -1887,7 +2043,7 @@ function buildPayload(parser, includeHistory) {
     recent,
     totals,
   };
-  if (includeHistory) payload.history = parser.order.map(id => payloadHistoryEntry(parser, id));
+  if (includeHistory) payload.history = payloadHistoryBuckets(parser);
   return payload;
 }
 
@@ -2511,3 +2667,15 @@ function projectsRoot() {
 }
 
 module.exports = { attachComm };
+
+// Pure helpers exposed only for the offline equivalence test
+// (tests/cache-history-buckets.test.js). No runtime behaviour change:
+// these are referenced, not invoked, by the published code path.
+module.exports.__test = {
+  createParser,
+  processUsageEntry,
+  payloadHistoryEntry,
+  payloadHistoryBuckets,
+  totalContextTokens,
+  HISTORY_MAX_BUCKETS,
+};

@@ -2129,6 +2129,18 @@ pre code {
   padding: 7px 14px !important;
   text-align: left;
   vertical-align: top;
+  /* In the narrow centred reading column an unbreakable inline-code token
+     (e.g. `json:"host_port,omitempty"`) would otherwise blow up this cell's
+     min-content width; with table-layout:auto that starves the remaining
+     columns down to ~1 CJK glyph each (one-character-per-line vertical
+     wrap) and overflows the column so the last header is clipped.
+     `overflow-wrap:anywhere` is what actually shrinks the intrinsic
+     min-content size (plain `break-word` does not), so keep `anywhere`
+     here, not `break-word`. Both props are inherited, so inline <code>
+     inside the cell breaks too without a separate rule. Keep
+     table-layout:auto so normal tables keep natural column proportions. */
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
 }
 [data-incipit-markdown-root] table thead th,
 [data-incipit-message] table thead th {
@@ -3202,9 +3214,14 @@ pre code {
   vertical-align: top !important;
   padding: 9px 13px !important;
 }
-[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] {
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content],
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"] {
   max-width: none !important;
   width: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
 }
 
 /* Normalize list selection colors across menus and dropdowns. */
@@ -3265,20 +3282,32 @@ pre code {
 /* Measuring, short, and expanded states should not be clipped. */
 [data-incipit-user-bubble][data-claude-length="measuring"] [data-incipit-user-expandable],
 [data-incipit-user-bubble][data-claude-length="measuring"] [data-incipit-user-content],
+[data-incipit-user-bubble][data-claude-length="measuring"] [class*="expandableContainer"] [class*="content_"],
+[data-incipit-user-bubble][data-claude-length="measuring"] [class*="contentWrapper_"],
 [data-incipit-user-bubble][data-claude-length="short"] [data-incipit-user-expandable],
 [data-incipit-user-bubble][data-claude-length="short"] [data-incipit-user-content],
+[data-incipit-user-bubble][data-claude-length="short"] [class*="expandableContainer"] [class*="content_"],
+[data-incipit-user-bubble][data-claude-length="short"] [class*="contentWrapper_"],
 [data-incipit-user-bubble][data-claude-length="long"][data-claude-expanded="1"] [data-incipit-user-expandable],
-[data-incipit-user-bubble][data-claude-length="long"][data-claude-expanded="1"] [data-incipit-user-content] {
+[data-incipit-user-bubble][data-claude-length="long"][data-claude-expanded="1"] [data-incipit-user-content],
+[data-incipit-user-bubble][data-claude-length="long"][data-claude-expanded="1"] [class*="expandableContainer"] [class*="content_"],
+[data-incipit-user-bubble][data-claude-length="long"][data-claude-expanded="1"] [class*="contentWrapper_"] {
   max-height: none !important;
   overflow: visible !important;
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
 }
 /* Remove the host clip first so the custom clip can take over. */
-[data-incipit-user-bubble][data-claude-length="long"] [data-incipit-user-expandable] {
+[data-incipit-user-bubble][data-claude-length="long"] [data-incipit-user-expandable],
+[data-incipit-user-bubble][data-claude-length="long"] [class*="contentWrapper_"] {
   max-height: none !important;
   overflow: visible !important;
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
 }
 /* Collapsed long messages clip the inner content to about 20 lines. */
-[data-incipit-user-bubble][data-claude-length="long"]:not([data-claude-expanded="1"]) [data-incipit-user-content] {
+[data-incipit-user-bubble][data-claude-length="long"]:not([data-claude-expanded="1"]) [data-incipit-user-content],
+[data-incipit-user-bubble][data-claude-length="long"]:not([data-claude-expanded="1"]) [class*="expandableContainer"] [class*="content_"] {
   max-height: 600px !important;
   overflow: hidden !important;
 }

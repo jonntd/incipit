@@ -122,6 +122,7 @@ const APPLY_TREE_NAME_WIDTH = 26;
 const WEBVIEW_FILE_DESC_KEYS = Object.freeze({
   'enhance.js':              'apply.report.desc.enhance_js',
   'enhance_shared.js':       'apply.report.desc.enhance_shared_js',
+  'runtime_kernel.js':       'apply.report.desc.runtime_kernel_js',
   'enhance_footer_badge.js': 'apply.report.desc.enhance_footer_badge_js',
   'enhance_thinking.js':     'apply.report.desc.enhance_thinking_js',
   'enhance_typography.js':   'apply.report.desc.enhance_typography_js',
@@ -359,6 +360,13 @@ function printApplyReport({ target, restorePoint, result }) {
   console.log();
 
   console.log(formatApplyConfigInline(result.features, result.theme));
+  const warnings = collectApplyWarnings(result && result.report ? result.report : {});
+  if (warnings.length) {
+    console.log(color(t('apply.report.warnings_heading'), Ansi.YELLOW));
+    for (const warning of warnings) {
+      console.log(color(`  - ${warning}`, Ansi.YELLOW));
+    }
+  }
   console.log(color(formatApplyChangeSummary(result), Ansi.GREY));
   console.log();
 
@@ -467,6 +475,32 @@ function formatApplyChangeSummary(result) {
   const current = Math.max(0, total - changed);
   if (current === 0) return t('apply.report.summary_changed_no_current', { updated: changed });
   return t('apply.report.summary_changed', { updated: changed, current });
+}
+
+function collectApplyWarnings(report) {
+  const sources = [
+    report && report.extensionJs && report.extensionJs.statusLines,
+    report && report.webviewIndex && report.webviewIndex.statusLines,
+  ];
+  const out = [];
+  const hasSpecificDegradation = sources.some(lines =>
+    Array.isArray(lines) && lines.some(line => /降级|degraded/i.test(String(line || '')) && !/契约|contract/i.test(String(line || ''))),
+  );
+  const hasStreamingCodeDegradation = sources.some(lines =>
+    Array.isArray(lines) && lines.some(line => /流式代码高亮|streaming code/i.test(String(line || '')) && /降级|degraded/i.test(String(line || ''))),
+  );
+  for (const lines of sources) {
+    if (!Array.isArray(lines)) continue;
+    for (const line of lines) {
+      if (!line) continue;
+      const text = String(line).trim();
+      if (!/降级|degraded/i.test(text)) continue;
+      if (hasSpecificDegradation && /契约|contract/i.test(text)) continue;
+      if (hasStreamingCodeDegradation && /markdown 代码渲染|markdown code/i.test(text)) continue;
+      if (!out.includes(text)) out.push(text);
+    }
+  }
+  return out;
 }
 
 function countApplyReportEntries(report) {

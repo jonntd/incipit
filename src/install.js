@@ -12,8 +12,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const cp = require('child_process');
+const crypto = require('crypto');
 
 const { HOST_BADGE_COMM_ATTACH } = require('./badge-iife');
+const {
+  buildInstallManifestPreamble,
+  patchContract,
+} = require('./patch-contract');
 
 // ============================================================
 // constants
@@ -40,6 +45,8 @@ const THEME_TARGET_NAME = 'theme.css';
 const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'claude_code_enhance.js'), ENHANCE_TARGET_NAME],
   [path.join('data', 'enhance_shared.js'),      'enhance_shared.js'],
+  [path.join('data', 'runtime_kernel.js'),      'runtime_kernel.js'],
+  [path.join('data', 'capability.js'),          'capability.js'],
   [path.join('data', 'enhance_footer_badge.js'), 'enhance_footer_badge.js'],
   [path.join('data', 'enhance_thinking.js'),    'enhance_thinking.js'],
   [path.join('data', 'enhance_typography.js'),  'enhance_typography.js'],
@@ -60,7 +67,7 @@ const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
 // Sync the whole subtree so math, highlighting, and fonts work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain'];
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy'];
 // Asset subtrees we used to ship but no longer need. `apply` wipes these on
 // sight so upgrades never leave dead bytes behind in the host webview folder.
 const LEGACY_ASSET_TREES = ['mathjax'];
@@ -71,6 +78,30 @@ const SYSTEM_FONT_FILES = [
   ['IBMPlexSerif-Regular.ttf',  'ibm-plex-serif', 'IBM Plex Serif Regular (TrueType)'],
   ['IBMPlexSerif-SemiBold.ttf', 'ibm-plex-serif', 'IBM Plex Serif SemiBold (TrueType)'],
 ];
+
+const HOST_CONTACT_ROUTE_SCHEMA = 1;
+const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
+  {
+    version: '2.1.121',
+    extensionSha256: 'c980466139fdcd080ac152dc4ee7788ea952269a257d4a998128abe28537baa7',
+    webviewSha256: '3d31890fdaf6652321c364a5487dcc06cf562f8a01075205c5f94adf8142598c',
+  },
+  {
+    version: '2.1.138',
+    extensionSha256: '2eb0e3330338ab8bf4e5da55a0735af8381d11f027475c96ab75f8145b24cd3e',
+    webviewSha256: '355bc0126b0996b520cc59b1cadff20e6d28398130710822d5c9cfe88004da4e',
+  },
+  {
+    version: '2.1.141',
+    extensionSha256: '23f19a6044439e67c5f2532c3fd02bb63397ee7835040a51ba114474367abd1e',
+    webviewSha256: 'd756d1d369cfb41ad0ec620506c7c7e11b2fbf4528516b62e0375a5e658e3b13',
+  },
+  {
+    version: '2.1.142',
+    extensionSha256: '3a56333fa3b4741d745ec73eee24bf265136e7515be5af6856c238d09553c5c7',
+    webviewSha256: '2727800f6031127b5a19990ff06d0e808e059db3a34eb71d796c8c7e9b721594',
+  },
+]);
 
 function sanitizeFontFamilyValue(raw) {
   if (typeof raw !== 'string') return null;
@@ -121,7 +152,9 @@ const MARKDOWN_ASSIGN_PATCHED_RE =
 const MARKDOWN_CODE_COMPONENT_PATTERN =
   /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\},\1\);let ([A-Za-z_$][\w$]*)=String\(\1\);/g;
 const MARKDOWN_CODE_COMPONENT_PATCHED_RE =
-  /code:\(\{children:[A-Za-z_$][\w$]*,className:[A-Za-z_$][\w$]*\}\)=>\{if\([A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\},[A-Za-z_$][\w$]*\)\}let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\);/;
+  /code:\(\{children:[A-Za-z_$][\w$]*,className:[A-Za-z_$][\w$]*\}\)=>\{let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\),__incipitHtml;if\([A-Za-z_$][\w$]*\)\{__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\},[A-Za-z_$][\w$]*\)\}if\([A-Za-z_$][\w$]*\.indexOf\("\\n"\)!==-1\)\{__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,""\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:"hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\)\}/;
+const MARKDOWN_CODE_COMPONENT_V1_PATCHED_PATTERN =
+  /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)\{let ([A-Za-z_$][\w$]*)=String\(\1\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\(\3,\2\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return \4\.default\.createElement\("code",\{className:\2\},\1\)\}let \3=String\(\1\);/g;
 const AT_MENTION_COMMAND_PATTERN =
   /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention",async\(\)=>\{(?=let [A-Za-z_$][\w$]*=\4\.window\.activeTextEditor;[\s\S]{0,700}?\2\.fire\()/g;
 const AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN =
@@ -140,6 +173,14 @@ const STREAM_UNHANDLED_CASE_PATTERN =
   /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{throw Error\(\3\?\?`Unhandled case: \$\{\2\}`\)\}/g;
 const STREAM_UNHANDLED_CASE_PATCHED_RE =
   /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{try\{var __incipitCase=[\s\S]{0,500}ignored unknown Claude stream case/;
+const STREAM_DELTA_SWITCH_PATTERN =
+  /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.delta;switch\([A-Za-z_$][\w$]*\.type\)\{/g;
+const HOST_STATE_BRIDGE_PATTERN =
+  /(j4\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\}/g;
+const HOST_STATE_BRIDGE_PATCHED_RE =
+  /,j4\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)\}isOffline/;
+const HOST_STATE_BRIDGE_BROKEN_RE =
+  /(j4\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\},j4\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)(?=isOffline)/g;
 
 const ENHANCE_SCRIPT_TAG_RE =
   /<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>/g;
@@ -177,6 +218,8 @@ const INCIPIT_MESSAGE_GUARD_PATCHED_RE =
 // bundle shape changes.
 const WEBVIEW_CONFIG_RE =
   /^\/\/ incipit webview config \(generated at apply; do not edit\)\r?\n[\s\S]*?\r?\n\r?\n/;
+const INSTALL_MANIFEST_RE =
+  /globalThis\.__incipitInstallManifest = Object\.freeze\([\s\S]*?\);\r?\n/;
 const MONACO_DIFF_LIGHT_THEME = 'incipit-github-light';
 const MONACO_DIFF_DARK_THEME = 'incipit-github-dark';
 const MONACO_DIFF_THEME_FALLBACK_EXPR =
@@ -601,7 +644,28 @@ function buildEnhancePreamble(features, theme, language) {
          `globalThis.__incipitConfig = Object.freeze(${json});\n\n`;
 }
 
-function buildWebviewConfigPreamble(features, theme, language) {
+function buildHostStateBridgePreamble() {
+  return [
+    'globalThis.__incipitPublishHostState=function(session,reason){try{',
+    'if(!session)return;',
+    'var read=function(sig){try{return sig&&typeof sig==="object"&&"value"in sig?sig.value:void 0}catch(_){return void 0}};',
+    'var messages=read(session.messages);',
+    'var sessionId=read(session.sessionId)||null;',
+    'var busy=read(session.busy)===true;',
+    'var pendingInput=read(session.pendingInput)===true;',
+    'var cwd=read(session.cwd)||null;',
+    'var summary=read(session.summary)||null;',
+    'var next={source:"semantic-bridge",reason:reason||"signal",sessionId:sessionId,sessionID:sessionId,busy:busy,pendingInput:pendingInput,cwd:cwd,summary:summary,messagesVersion:Array.isArray(messages)?messages.length:0,updatedAt:Date.now()};',
+    'var prev=globalThis.__incipitHostState;',
+    'globalThis.__incipitHostState=next;',
+    'if(!prev||prev.sessionId!==next.sessionId||prev.busy!==next.busy||prev.messagesVersion!==next.messagesVersion||prev.cwd!==next.cwd){',
+    'try{window.dispatchEvent(new CustomEvent("incipit:hostState",{detail:next}))}catch(_){}',
+    '}',
+    '}catch(_){}};\n',
+  ].join('');
+}
+
+function buildWebviewConfigPreamble(features, theme, language, installContracts = []) {
   // Unlike enhance.js, the host bundle can create Monaco diff editors before
   // our dynamic import has finished. Put the same config at the top of
   // webview/index.js so the patched `createDiffEditor({ theme: ... })` sees
@@ -612,8 +676,10 @@ function buildWebviewConfigPreamble(features, theme, language) {
   const diffThemes = JSON.stringify(MONACO_DIFF_THEMES);
   return '// incipit webview config (generated at apply; do not edit)\n' +
          `globalThis.__incipitConfig = Object.freeze(${json});\n` +
+         buildInstallManifestPreamble(installContracts) +
          `globalThis.__incipitMonacoDiffThemes = Object.freeze(${diffThemes});\n` +
          '(function(){try{var raw=globalThis.acquireVsCodeApi;if(typeof raw==="function"&&!globalThis.__incipitGetVsCodeApi){var cached=null;globalThis.__incipitGetVsCodeApi=function(){if(cached)return cached;cached=raw();return cached;};globalThis.acquireVsCodeApi=function(){return globalThis.__incipitGetVsCodeApi();};}}catch(_){}})();\n' +
+         buildHostStateBridgePreamble() +
          'globalThis.__incipitEnsureMonacoDiffTheme = function(monaco){try{if(!monaco||typeof monaco.defineTheme!=="function")return false;if(globalThis.__incipitMonacoDiffThemesReady)return true;var themes=globalThis.__incipitMonacoDiffThemes||{};for(var name in themes)if(Object.prototype.hasOwnProperty.call(themes,name))monaco.defineTheme(name,themes[name]);globalThis.__incipitMonacoDiffThemesReady=true;if(!globalThis.__incipitMonacoDiffFontsReady&&typeof document!=="undefined"&&document.fonts&&document.fonts.ready){globalThis.__incipitMonacoDiffFontsReady=true;document.fonts.ready.then(function(){try{if(monaco&&typeof monaco.remeasureFonts==="function")monaco.remeasureFonts();}catch(_){}});}return true;}catch(e){try{console.warn("[incipit] Monaco diff theme setup failed",e);}catch(_){}return false;}};\n' +
          `globalThis.__incipitPickMonacoDiffTheme = function(monaco){var light=globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette==="warm-white";var ok=globalThis.__incipitEnsureMonacoDiffTheme&&globalThis.__incipitEnsureMonacoDiffTheme(monaco);return ok?(light?"${MONACO_DIFF_LIGHT_THEME}":"${MONACO_DIFF_DARK_THEME}"):(light?"vs":"vs-dark");};\n\n`;
 }
@@ -807,9 +873,338 @@ function patchUniqueReplace(content, { pattern, alreadyPattern, label, replace }
   return [updated, `${padLabel(label)}: 已写入`];
 }
 
+function requirePatchContract(ok, label, detail = '') {
+  if (ok) return;
+  const suffix = detail ? ` (${detail})` : '';
+  throw new Error(`Claude Code 扩展补丁契约失败: ${label}${suffix}`);
+}
+
+function requireHighRiskContract(contract, label) {
+  if (!contract || contract.status === 'patched' || contract.status === 'preExisting' || contract.status === 'upstreamSafe') {
+    return;
+  }
+  const reason = contract.contractReason || contract.anchorReason || contract.status || 'unknown';
+  throw new Error(`Claude Code 扩展高风险接触面契约失败: ${label} (${reason})`);
+}
+
+function pushInstallContract(contracts, name, line, detail = null) {
+  if (!Array.isArray(contracts)) return line;
+  const extra = detail && typeof detail === 'object' ? detail : {};
+  const payload = {
+    name,
+    line,
+  };
+  if (Object.keys(extra).length) payload.detail = extra;
+  contracts.push(patchContract(payload));
+  return line;
+}
+
+function installContractFromAssessment(name, line, assessment) {
+  return patchContract({
+    name,
+    line,
+    status: assessment.status,
+    priority: assessment.priority || 'normal',
+    anchorReason: assessment.anchorReason,
+    contractReason: assessment.contractReason,
+    fingerprint: assessment.fingerprint,
+    detail: assessment.detail || null,
+  });
+}
+
+function sha256Text(text) {
+  return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
+
+function shortSha(sha) {
+  return String(sha || '').slice(0, 16);
+}
+
+function testRegexOnce(regex, text) {
+  regex.lastIndex = 0;
+  const ok = regex.test(text);
+  regex.lastIndex = 0;
+  return ok;
+}
+
+function hostRouteLooksAlreadyPatched(extensionText, webviewText) {
+  const extensionPatched = (
+    testRegexOnce(STYLE_CSP_PATCHED_RE, extensionText) ||
+    testRegexOnce(SCRIPT_CSP_PATCHED_RE, extensionText) ||
+    testRegexOnce(FONT_CSP_PATCHED_RE, extensionText) ||
+    testRegexOnce(BADGE_COMM_ATTACH_PATCHED_RE, extensionText) ||
+    testRegexOnce(INCIPIT_MESSAGE_GUARD_PATCHED_RE, extensionText)
+  );
+  const webviewPatched = (
+    testRegexOnce(WEBVIEW_CONFIG_RE, webviewText) ||
+    testRegexOnce(INSTALL_MANIFEST_RE, webviewText) ||
+    testRegexOnce(DYNAMIC_IMPORT_RE, webviewText) ||
+    testRegexOnce(STREAM_UNHANDLED_CASE_PATCHED_RE, webviewText) ||
+    testRegexOnce(HOST_STATE_BRIDGE_PATCHED_RE, webviewText)
+  );
+  return extensionPatched || webviewPatched;
+}
+
+function buildHostRouteContract(target, extensionText, webviewText) {
+  const version = String(target && target.version || 'unknown');
+  const extensionSha256 = sha256Text(extensionText);
+  const webviewSha256 = sha256Text(webviewText);
+  const route = HOST_CONTACT_ROUTE_CATALOG.find(item =>
+    item.version === version &&
+    item.extensionSha256 === extensionSha256 &&
+    item.webviewSha256 === webviewSha256
+  );
+  const alreadyPatched = !route && hostRouteLooksAlreadyPatched(extensionText, webviewText);
+  return patchContract({
+    name: 'install.hostRoute',
+    status: route ? 'patched' : (alreadyPatched ? 'preExisting' : 'degraded'),
+    priority: 'normal',
+    anchorReason: route
+      ? 'known-version-content'
+      : (alreadyPatched ? 'already-patched-content' : 'unknown-version-or-content'),
+    contractReason: 'semantic-contracts-required',
+    fingerprint: {
+      schema: HOST_CONTACT_ROUTE_SCHEMA,
+      version,
+      extensionSha256: shortSha(extensionSha256),
+      webviewSha256: shortSha(webviewSha256),
+      knownRoutes: HOST_CONTACT_ROUTE_CATALOG.length,
+      alreadyPatched,
+    },
+  });
+}
+
+function renderHostRouteStatus(contract) {
+  const status = contract && contract.status;
+  let text = 'ok';
+  if (status === 'preExisting') text = '已存在';
+  else if (status === 'degraded') text = '降级 (未知版本/内容指纹)';
+  else if (status === 'failed') text = '失败';
+  return `${padLabel('宿主版本路由')}: ${text}`;
+}
+
+function stripWebviewGeneratedPreamble(content) {
+  return String(content || '')
+    .replace(WEBVIEW_CONFIG_RE, '')
+    .replace(INSTALL_MANIFEST_RE, '');
+}
+
+function literalCount(content, needle) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = 0;
+  while (true) {
+    index = content.indexOf(needle, index);
+    if (index < 0) return count;
+    count++;
+    index += needle.length;
+  }
+}
+
+function findMatchingBrace(source, openIndex) {
+  if (openIndex < 0 || source[openIndex] !== '{') return -1;
+  let depth = 0;
+  let quote = null;
+  for (let i = openIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (quote) {
+      if (ch === '\\') {
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const end = source.indexOf('\n', i + 2);
+      if (end < 0) return -1;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end < 0) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+    } else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function extractSwitchBody(content, switchIndex) {
+  if (switchIndex < 0) return null;
+  const open = content.indexOf('{', switchIndex);
+  const close = findMatchingBrace(content, open);
+  if (open < 0 || close < 0) return null;
+  return content.slice(open + 1, close);
+}
+
+function hasTopLevelDefaultCase(switchBody) {
+  if (!switchBody) return false;
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < switchBody.length; i += 1) {
+    const ch = switchBody[i];
+    const next = switchBody[i + 1];
+    if (quote) {
+      if (ch === '\\') {
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const end = switchBody.indexOf('\n', i + 2);
+      if (end < 0) return false;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = switchBody.indexOf('*/', i + 2);
+      if (end < 0) return false;
+      i = end + 1;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0 && switchBody.startsWith('default:', i)) return true;
+  }
+  return false;
+}
+
+function switchHasCases(switchBody, cases) {
+  return Boolean(switchBody) && cases.every(item => switchBody.includes(`case"${item}"`));
+}
+
+function streamSwitchesIgnoreUnknownCases(content) {
+  const eventStart = content.indexOf('processStreamEvent(');
+  const eventSwitch = eventStart < 0 ? -1 : content.indexOf('switch(', eventStart);
+  const eventBody = extractSwitchBody(content, eventSwitch);
+  const eventOk = switchHasCases(eventBody, [
+    'message_start',
+    'message_delta',
+    'content_block_start',
+    'content_block_delta',
+    'content_block_stop',
+    'message_stop',
+  ]) && !hasTopLevelDefaultCase(eventBody);
+
+  const deltaMatch = STREAM_DELTA_SWITCH_PATTERN.exec(content);
+  STREAM_DELTA_SWITCH_PATTERN.lastIndex = 0;
+  const deltaBody = deltaMatch ? extractSwitchBody(content, content.indexOf('switch(', deltaMatch.index)) : null;
+  const deltaOk = switchHasCases(deltaBody, [
+    'text_delta',
+    'citations_delta',
+    'input_json_delta',
+    'thinking_delta',
+    'signature_delta',
+    'compaction_delta',
+  ]) && !hasTopLevelDefaultCase(deltaBody);
+
+  return eventOk && deltaOk;
+}
+
+function streamUnhandledCaseIsSafe(content) {
+  if (STREAM_UNHANDLED_CASE_PATCHED_RE.test(content)) return true;
+  const unsafeHelpers = content.match(STREAM_UNHANDLED_CASE_PATTERN) || [];
+  if (unsafeHelpers.length > 0) return false;
+  return streamSwitchesIgnoreUnknownCases(content);
+}
+
+function assessStreamUnhandledCaseContact(content) {
+  const patched = STREAM_UNHANDLED_CASE_PATCHED_RE.test(content);
+  const unsafeHelperCount = (content.match(STREAM_UNHANDLED_CASE_PATTERN) || []).length;
+  const semanticSwitchSafe = streamSwitchesIgnoreUnknownCases(content);
+  const contractSafe = streamUnhandledCaseIsSafe(content);
+  let anchorReason;
+  if (patched) anchorReason = 'patched-helper';
+  else if (unsafeHelperCount === 1) anchorReason = 'throw-helper-anchor';
+  else if (unsafeHelperCount === 0 && semanticSwitchSafe) anchorReason = 'upstream-safe-switch';
+  else if (unsafeHelperCount === 0) anchorReason = 'stream-switch-shape-miss';
+  else anchorReason = 'ambiguous-throw-helper';
+  let status = 'failed';
+  if (contractSafe) status = semanticSwitchSafe && !patched ? 'upstreamSafe' : 'patched';
+  return {
+    status,
+    priority: 'high',
+    anchorReason,
+    contractReason: contractSafe ? 'unknown-stream-cases-tolerated' : 'unknown-stream-cases-throw',
+    fingerprint: {
+      unsafeHelperCount,
+      semanticSwitchSafe,
+      patched,
+    },
+  };
+}
+
+function hostStateBridgeBusinessFingerprint(content) {
+  const tokens = [
+    'loadFromServer',
+    'launchClaude',
+    'session_states_update',
+    'dismissedSettingsErrorsKey',
+    'isOffline',
+  ];
+  const hits = {};
+  for (const token of tokens) hits[token] = content.includes(token);
+  return hits;
+}
+
+function assessHostStateBridgeContact(content) {
+  const fingerprint = hostStateBridgeBusinessFingerprint(content);
+  const businessOk = Object.values(fingerprint).every(Boolean);
+  const patched = HOST_STATE_BRIDGE_PATCHED_RE.test(content);
+  const brokenCount = (content.match(HOST_STATE_BRIDGE_BROKEN_RE) || []).length;
+  const secondaryAnchorCount = (content.match(HOST_STATE_BRIDGE_PATTERN) || []).length;
+  let anchorReason;
+  if (!businessOk) anchorReason = 'session-state-business-fingerprint-miss';
+  else if (patched) anchorReason = 'patched-semantic-bridge';
+  else if (brokenCount === 1) anchorReason = 'repairable-broken-bridge-anchor';
+  else if (secondaryAnchorCount === 1) anchorReason = 'signal-subscription-anchor';
+  else anchorReason = 'signal-subscription-anchor-miss';
+  const contractOk = businessOk && patched;
+  return {
+    status: contractOk ? 'patched' : 'failed',
+    priority: 'high',
+    anchorReason,
+    contractReason: contractOk ? 'semantic-bridge-publishes-host-state' : 'semantic-bridge-contract-miss',
+    fingerprint: {
+      ...fingerprint,
+      brokenCount,
+      secondaryAnchorCount,
+      patched,
+    },
+  };
+}
+
 function patchExtensionJs(content) {
   let updated = content;
   const statusLines = [];
+  const contracts = [];
+  const record = (name, line, detail = null) =>
+    pushInstallContract(contracts, name, line, detail);
 
   // Remove any legacy `<script src="enhance.js">` injection residue.
   const legacyCount = (updated.match(ENHANCE_SCRIPT_TAG_RE) || []).length;
@@ -828,7 +1223,7 @@ function patchExtensionJs(content) {
     label: 'style-src',
     replacementSuffix: ` ${CDN_HOST}`,
   });
-  statusLines.push(status);
+  statusLines.push(record('install.extensionCsp.style', status));
 
   [updated, status] = patchRequiredPattern(updated, {
     pattern: SCRIPT_CSP_PATTERN,
@@ -836,7 +1231,7 @@ function patchExtensionJs(content) {
     label: 'script-src',
     replacementSuffix: ` ${CDN_HOST}`,
   });
-  statusLines.push(status);
+  statusLines.push(record('install.extensionCsp.script', status));
 
   [updated, status] = patchRequiredPattern(updated, {
     pattern: FONT_CSP_PATTERN,
@@ -844,7 +1239,7 @@ function patchExtensionJs(content) {
     label: 'font-src',
     replacementSuffix: ` ${CDN_HOST} data:`,
   });
-  statusLines.push(status);
+  statusLines.push(record('install.extensionCsp.font', status));
 
   // Remove the legacy module-load diagnostic probe.
   updated = updated.replace(LEGACY_MODLOAD_RE, '');
@@ -866,30 +1261,35 @@ function patchExtensionJs(content) {
       );
     },
   });
-  statusLines.push(statusBadge);
+  statusLines.push(record('install.hostBadgeCommAttach', statusBadge));
 
   const guardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATCHED_RE) || []).length;
   const unguardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATTERN) || []).length;
+  let privateMessageStatus;
   if (unguardedMessages > 0) {
     updated = updated.replace(
       INCIPIT_MESSAGE_GUARD_PATTERN,
       (match, message) => match.replace(`=>{this.output.info`, `=>{if(${message}&&${message}.__incipit===true)return;this.output.info`),
     );
-    statusLines.push(`${padLabel('私有消息过滤')}: 已写入 (${unguardedMessages})`);
+    privateMessageStatus = `${padLabel('私有消息过滤')}: 已写入 (${unguardedMessages})`;
   } else if (guardedMessages > 0) {
-    statusLines.push(`${padLabel('私有消息过滤')}: 已存在 (${guardedMessages})`);
+    privateMessageStatus = `${padLabel('私有消息过滤')}: 已存在 (${guardedMessages})`;
   } else {
     throw new Error(`Claude Code 扩展结构已变化,未找到 私有消息过滤 的可补丁位置。`);
   }
+  statusLines.push(record('install.privateMessageGuard', privateMessageStatus));
 
   let statusAtMention;
   [updated, statusAtMention] = patchAtMentionCommand(updated);
-  statusLines.push(statusAtMention);
+  statusLines.push(record('install.atMentionCommand', statusAtMention));
   let statusVisibleCommand;
   [updated, statusVisibleCommand] = patchClaudeVisibleCommand(updated);
-  statusLines.push(statusVisibleCommand);
+  statusLines.push(record('install.claudeVisibleCommand', statusVisibleCommand));
 
-  return [updated, statusLines];
+  assertExtensionPatchContracts(updated);
+  statusLines.push(record('install.extensionContract', `${padLabel('extension 契约')}: ok`));
+
+  return [updated, statusLines, contracts];
 }
 
 // Render-blocking CSS at HTML-template level.
@@ -1012,18 +1412,54 @@ function patchMarkdownChildren(content) {
   });
 }
 
+function markdownCodeComponentReplacement(childrenVar, classNameVar, reactVar, codeVar) {
+  return (
+    `code:({children:${childrenVar},className:${classNameVar}})=>{` +
+    `let ${codeVar}=String(${childrenVar}),__incipitHtml;` +
+    `if(${classNameVar}){` +
+    `__incipitHtml=window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__(${codeVar},${classNameVar});` +
+    `if(__incipitHtml!==null&&__incipitHtml!==void 0)return ${reactVar}.default.createElement("code",{className:${classNameVar}+" hljs",dangerouslySetInnerHTML:{__html:__incipitHtml}});` +
+    `return ${reactVar}.default.createElement("code",{className:${classNameVar}},${childrenVar})` +
+    `}` +
+    `if(${codeVar}.indexOf("\\n")!==-1){` +
+    `__incipitHtml=window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__(${codeVar},"");` +
+    `if(__incipitHtml!==null&&__incipitHtml!==void 0)return ${reactVar}.default.createElement("code",{className:"hljs",dangerouslySetInnerHTML:{__html:__incipitHtml}})` +
+    `}`
+  );
+}
+
 function patchMarkdownCodeComponent(content) {
-  return patchUniqueReplace(content, {
-    pattern: MARKDOWN_CODE_COMPONENT_PATTERN,
-    alreadyPattern: MARKDOWN_CODE_COMPONENT_PATCHED_RE,
-    label: 'markdown 代码渲染',
-    replace(text) {
-      return text.replace(
-        MARKDOWN_CODE_COMPONENT_PATTERN,
-        'code:({children:$1,className:$2})=>{if($2){let $4=String($1),__incipitHtml=window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__($4,$2);if(__incipitHtml!==null&&__incipitHtml!==void 0)return $3.default.createElement("code",{className:$2+" hljs",dangerouslySetInnerHTML:{__html:__incipitHtml}});return $3.default.createElement("code",{className:$2},$1)}let $4=String($1);',
-      );
-    },
-  });
+  if (MARKDOWN_CODE_COMPONENT_PATCHED_RE.test(content)) {
+    return [content, `${padLabel('markdown 代码渲染')}: 已存在`];
+  }
+
+  const legacyMatches = content.match(MARKDOWN_CODE_COMPONENT_V1_PATCHED_PATTERN) || [];
+  if (legacyMatches.length === 1) {
+    return [
+      content.replace(
+        MARKDOWN_CODE_COMPONENT_V1_PATCHED_PATTERN,
+        (_match, childrenVar, classNameVar, codeVar, reactVar) =>
+          markdownCodeComponentReplacement(childrenVar, classNameVar, reactVar, codeVar),
+      ),
+      `${padLabel('markdown 代码渲染')}: 已升级`,
+    ];
+  }
+
+  const matches = content.match(MARKDOWN_CODE_COMPONENT_PATTERN) || [];
+  if (matches.length !== 1) {
+    return [
+      content,
+      `${padLabel('markdown 代码渲染')}: 降级 (未找到渲染锚点; 流式结束后高亮)`,
+    ];
+  }
+  return [
+    content.replace(
+      MARKDOWN_CODE_COMPONENT_PATTERN,
+      (_match, childrenVar, classNameVar, reactVar, codeVar) =>
+        markdownCodeComponentReplacement(childrenVar, classNameVar, reactVar, codeVar),
+    ),
+    `${padLabel('markdown 代码渲染')}: 已写入`,
+  ];
 }
 
 function patchAtMentionCommand(content) {
@@ -1098,24 +1534,114 @@ function patchDisableImplicitSelectionSend(content) {
 }
 
 function patchStreamUnhandledCase(content) {
-  return patchUniqueReplace(content, {
-    pattern: STREAM_UNHANDLED_CASE_PATTERN,
-    alreadyPattern: STREAM_UNHANDLED_CASE_PATCHED_RE,
-    label: '未知流事件保护',
-    replace(text) {
-      return text.replace(
+  if (STREAM_UNHANDLED_CASE_PATCHED_RE.test(content)) {
+    const assessment = assessStreamUnhandledCaseContact(content);
+    requireHighRiskContract(
+      installContractFromAssessment('install.streamUnhandledCase', '', assessment),
+      '未知流事件保护',
+    );
+    return [content, `${padLabel('未知流事件保护')}: 已存在`, assessment];
+  }
+  const matches = content.match(STREAM_UNHANDLED_CASE_PATTERN) || [];
+  if (matches.length === 1) {
+    const updated = content.replace(
         STREAM_UNHANDLED_CASE_PATTERN,
         (_match, name, value, reason) =>
           `function ${name}(${value},${reason}){try{var __incipitCase=${value}&&typeof ${value}==="object"?{type:${value}.type||null,deltaType:${value}.delta&&${value}.delta.type||null,keys:Object.keys(${value}).slice(0,12),deltaKeys:${value}.delta&&typeof ${value}.delta==="object"?Object.keys(${value}.delta).slice(0,12):[]}:${value};console.warn("[incipit] ignored unknown Claude stream case",__incipitCase,${reason})}catch(_){}}`,
-      );
-    },
-  });
+    );
+    const assessment = assessStreamUnhandledCaseContact(updated);
+    requireHighRiskContract(
+      installContractFromAssessment('install.streamUnhandledCase', '', assessment),
+      '未知流事件保护',
+    );
+    return [updated, `${padLabel('未知流事件保护')}: 已写入`, assessment];
+  }
+  if (matches.length === 0 && streamSwitchesIgnoreUnknownCases(content)) {
+    const assessment = assessStreamUnhandledCaseContact(content);
+    requireHighRiskContract(
+      installContractFromAssessment('install.streamUnhandledCase', '', assessment),
+      '未知流事件保护',
+    );
+    return [content, `${padLabel('未知流事件保护')}: 上游已容错`, assessment];
+  }
+  throw new Error('Claude Code 扩展结构已变化,未知流事件处理既没有可替换的抛错 helper,也未呈现上游容错 switch。');
 }
 
-function patchWebviewConfig(content, features, theme, language) {
-  const preamble = buildWebviewConfigPreamble(features, theme, language);
-  const hadPreamble = WEBVIEW_CONFIG_RE.test(content);
-  const stripped = content.replace(WEBVIEW_CONFIG_RE, '');
+function patchHostStateSemanticBridge(content) {
+  content = content.replace(
+    HOST_STATE_BRIDGE_BROKEN_RE,
+    '$1,j4(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}',
+  );
+  if (HOST_STATE_BRIDGE_PATCHED_RE.test(content)) {
+    const assessment = assessHostStateBridgeContact(content);
+    requireHighRiskContract(
+      installContractFromAssessment('install.hostStateBridge', '', assessment),
+      '宿主语义桥',
+    );
+    return [content, `${padLabel('宿主语义桥')}: ok`, assessment];
+  }
+  const matches = content.match(HOST_STATE_BRIDGE_PATTERN) || [];
+  if (matches.length !== 1) {
+    const assessment = assessHostStateBridgeContact(content);
+    requireHighRiskContract(
+      installContractFromAssessment('install.hostStateBridge', '', assessment),
+      '宿主语义桥',
+    );
+    return [content, `${padLabel('宿主语义桥')}: 降级 (将使用 fiber/DOM fallback)`, assessment];
+  }
+  const updated = content.replace(
+      HOST_STATE_BRIDGE_PATTERN,
+      '$1,j4(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}',
+  );
+  const assessment = assessHostStateBridgeContact(updated);
+  requireHighRiskContract(
+    installContractFromAssessment('install.hostStateBridge', '', assessment),
+    '宿主语义桥',
+  );
+  return [updated, `${padLabel('宿主语义桥')}: ok`, assessment];
+}
+
+function assertExtensionPatchContracts(content) {
+  requirePatchContract(STYLE_CSP_PATCHED_RE.test(content), 'extension style-src allows local incipit assets');
+  requirePatchContract(SCRIPT_CSP_PATCHED_RE.test(content), 'extension script-src allows local incipit assets');
+  requirePatchContract(FONT_CSP_PATCHED_RE.test(content), 'extension font-src allows incipit fonts');
+  requirePatchContract(BADGE_COMM_ATTACH_PATCHED_RE.test(content), 'host badge bridge attached');
+  requirePatchContract(INCIPIT_MESSAGE_GUARD_PATCHED_RE.test(content), 'incipit private messages filtered');
+  requirePatchContract(AT_MENTION_COMMAND_PATCHED_RE.test(content), '@ mention command accepts explicit string');
+  requirePatchContract(CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content), 'Claude visible command registered');
+}
+
+function assessWebviewPatchContracts(content) {
+  requirePatchContract(MARKDOWN_ASSIGN_PATCHED_RE.test(content), 'markdown source preprocess handoff');
+  requirePatchContract(IMPLICIT_SELECTION_SEND_PATCHED_RE.test(content), 'implicit IDE selection send disabled');
+  requirePatchContract(streamUnhandledCaseIsSafe(content), 'unknown stream cases are guarded or upstream-tolerant');
+
+  const highlighterCalls = literalCount(
+    content,
+    'window.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window.__INCIPIT_HIGHLIGHT_CODE_HTML__(',
+  );
+  const renderTimeOk = (
+    highlighterCalls >= 2 &&
+    content.includes('.indexOf("\\n")!==-1') &&
+    content.includes('className:"hljs"') &&
+    content.includes('+" hljs"') &&
+    content.includes('dangerouslySetInnerHTML:{__html:__incipitHtml}')
+  );
+  return {
+    renderTimeCode: renderTimeOk
+      ? `${padLabel('流式代码高亮')}: ok`
+      : `${padLabel('流式代码高亮')}: 降级 (流式结束后高亮)`,
+    semanticBridge: HOST_STATE_BRIDGE_PATCHED_RE.test(content)
+      ? `${padLabel('宿主语义桥')}: ok`
+      : `${padLabel('宿主语义桥')}: 降级 (将使用 fiber/DOM fallback)`,
+    webview: `${padLabel('webview 契约')}: ${renderTimeOk ? 'ok' : 'degraded'}`,
+  };
+}
+
+function patchWebviewConfig(content, features, theme, language, installContracts = []) {
+  const preamble = buildWebviewConfigPreamble(features, theme, language, installContracts);
+  const hadPreamble = WEBVIEW_CONFIG_RE.test(content) || INSTALL_MANIFEST_RE.test(content);
+  const stripped = stripWebviewGeneratedPreamble(content);
   const updated = preamble + stripped;
   if (updated === content) {
     return [content, `${padLabel('webview config')}: 已存在`];
@@ -1266,23 +1792,44 @@ function patchMonacoDiffModalScrollbar(content) {
   return [content, `${padLabel('diff 横向滚动')}: 已存在`];
 }
 
-function patchWebviewIndex(content, features, theme, language) {
-  let [updated, configStatus] = patchWebviewConfig(content, features, theme, language);
+function patchWebviewIndex(content, features, theme, language, installContracts = []) {
+  let updated = stripWebviewGeneratedPreamble(content);
+  const statusLines = [];
+  const contracts = Array.isArray(installContracts) ? installContracts.slice() : [];
+  const record = (name, line, detail = null) =>
+    pushInstallContract(contracts, name, line, detail);
+
   let markdownStatus;
   [updated, markdownStatus] = patchMarkdownChildren(updated);
+  statusLines.push(record('install.markdownPreprocess', markdownStatus));
+
   let markdownCodeStatus;
   [updated, markdownCodeStatus] = patchMarkdownCodeComponent(updated);
+  statusLines.push(record('install.markdownCodeComponent', markdownCodeStatus));
+
   let implicitSelectionStatus;
   [updated, implicitSelectionStatus] = patchDisableImplicitSelectionSend(updated);
+  statusLines.push(record('install.implicitSelectionSend', implicitSelectionStatus));
+
   let streamUnhandledStatus;
-  [updated, streamUnhandledStatus] = patchStreamUnhandledCase(updated);
-  const statusLines = [
-    configStatus,
-    markdownStatus,
-    markdownCodeStatus,
-    implicitSelectionStatus,
+  let streamUnhandledAssessment;
+  [updated, streamUnhandledStatus, streamUnhandledAssessment] = patchStreamUnhandledCase(updated);
+  contracts.push(installContractFromAssessment(
+    'install.streamUnhandledCase',
     streamUnhandledStatus,
-  ];
+    streamUnhandledAssessment,
+  ));
+  statusLines.push(streamUnhandledStatus);
+
+  let hostStateBridgeStatus;
+  let hostStateBridgeAssessment;
+  [updated, hostStateBridgeStatus, hostStateBridgeAssessment] = patchHostStateSemanticBridge(updated);
+  contracts.push(installContractFromAssessment(
+    'install.hostStateBridge',
+    hostStateBridgeStatus,
+    hostStateBridgeAssessment,
+  ));
+  statusLines.push(hostStateBridgeStatus);
 
   // Remove the legacy `acquireVsCodeApi` idempotency wrapper that earlier
   // development builds prepended to this file. Its only consumer has been
@@ -1294,31 +1841,38 @@ function patchWebviewIndex(content, features, theme, language) {
 
   let diffThemeStatus;
   [updated, diffThemeStatus] = patchMonacoDiffTheme(updated);
-  statusLines.push(diffThemeStatus);
+  statusLines.push(record('install.monacoDiff.theme', diffThemeStatus));
 
   let diffFontStatus;
   [updated, diffFontStatus] = patchMonacoDiffFont(updated);
-  statusLines.push(diffFontStatus);
+  statusLines.push(record('install.monacoDiff.font', diffFontStatus));
 
   let diffWrapStatus;
   [updated, diffWrapStatus] = patchMonacoDiffWordWrap(updated);
-  statusLines.push(diffWrapStatus);
+  statusLines.push(record('install.monacoDiff.wordWrap', diffWrapStatus));
 
   let diffOverviewStatus;
   [updated, diffOverviewStatus] = patchMonacoDiffOverview(updated);
-  statusLines.push(diffOverviewStatus);
+  statusLines.push(record('install.monacoDiff.overview', diffOverviewStatus));
 
   let diffInlineLayoutStatus;
   [updated, diffInlineLayoutStatus] = patchMonacoDiffInlineLayout(updated);
-  statusLines.push(diffInlineLayoutStatus);
+  statusLines.push(record('install.monacoDiff.inlineLayout', diffInlineLayoutStatus));
 
   let diffModalLayoutStatus;
   [updated, diffModalLayoutStatus] = patchMonacoDiffModalLayout(updated);
-  statusLines.push(diffModalLayoutStatus);
+  statusLines.push(record('install.monacoDiff.modalLayout', diffModalLayoutStatus));
 
   let diffScrollbarStatus;
   [updated, diffScrollbarStatus] = patchMonacoDiffModalScrollbar(updated);
-  statusLines.push(diffScrollbarStatus);
+  statusLines.push(record('install.monacoDiff.modalScrollbar', diffScrollbarStatus));
+
+  const contractStatus = assessWebviewPatchContracts(updated);
+  statusLines.push(record('install.renderTimeCode', contractStatus.renderTimeCode));
+  if (!statusLines.some(line => /宿主语义桥/.test(line || ''))) {
+    statusLines.push(record('install.hostStateBridge', contractStatus.semanticBridge));
+  }
+  statusLines.push(record('install.webviewContract', contractStatus.webview));
 
   const hasDynamicImport = DYNAMIC_IMPORT_RE.test(updated);
   const hasStaticImport = STATIC_IMPORT_RE.test(updated);
@@ -1328,14 +1882,32 @@ function patchWebviewIndex(content, features, theme, language) {
   }
 
   if (hasDynamicImport) {
-    statusLines.push(`${padLabel('enhance.js 注入')}: 已存在`);
-    return [updated, statusLines];
+    statusLines.push(record('install.enhanceImport', `${padLabel('enhance.js 注入')}: 已存在`));
+  } else {
+    updated = updated.replace(/\s+$/, '') + '\n' + IMPORT_MARKER + '\n';
+    statusLines.push(record(
+      'install.enhanceImport',
+      `${padLabel('enhance.js 注入')}: ${hasStaticImport ? '已替换旧版' : '已写入'}`,
+    ));
   }
-  updated = updated.replace(/\s+$/, '') + '\n' + IMPORT_MARKER + '\n';
-  statusLines.push(
-    `${padLabel('enhance.js 注入')}: ${hasStaticImport ? '已替换旧版' : '已写入'}`,
+
+  const configContract = patchContract({
+    name: 'install.webviewConfig',
+    status: 'patched',
+  });
+  const [finalUpdated] = patchWebviewConfig(
+    updated,
+    features,
+    theme,
+    language,
+    [configContract, ...contracts],
   );
-  return [updated, statusLines];
+  const hadGeneratedPreamble = WEBVIEW_CONFIG_RE.test(content) || INSTALL_MANIFEST_RE.test(content);
+  const configStatus = finalUpdated === content
+    ? `${padLabel('webview config')}: 已存在`
+    : `${padLabel('webview config')}: ${hadGeneratedPreamble ? '已更新' : '已写入'}`;
+  statusLines.unshift(configStatus);
+  return [finalUpdated, statusLines, [configContract, ...contracts]];
 }
 
 // ============================================================
@@ -1422,20 +1994,33 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     );
   }
 
-  // `extension.js`
   const extJsOriginal = fs.readFileSync(target.extensionJsPath, 'utf8');
-  let [extJsUpdatedText, extStatusLines] = patchExtensionJs(extJsOriginal);
+  const webviewOriginal = fs.readFileSync(target.webviewIndexJsPath, 'utf8');
+  const hostRouteContract = buildHostRouteContract(target, extJsOriginal, webviewOriginal);
+
+  // `extension.js`
+  let [extJsUpdatedText, extStatusLines, extContracts] = patchExtensionJs(extJsOriginal);
+  extContracts.unshift(hostRouteContract);
+  extStatusLines.unshift(renderHostRouteStatus(hostRouteContract));
   let extJsHeadStatus;
   [extJsUpdatedText, extJsHeadStatus] = patchExtensionHtmlHead(extJsUpdatedText, theme);
   extStatusLines.push(extJsHeadStatus);
+  pushInstallContract(extContracts, 'install.extensionHtmlHead', extJsHeadStatus, {
+    palette: theme && theme.palette === 'warm-white' ? 'warm-white' : 'warm-black',
+  });
   const extJsUpdated = extJsUpdatedText !== extJsOriginal;
   if (extJsUpdated) {
     fs.writeFileSync(target.extensionJsPath, extJsUpdatedText, 'utf8');
   }
 
   // `webview/index.js`
-  const webviewOriginal = fs.readFileSync(target.webviewIndexJsPath, 'utf8');
-  const [webviewUpdatedText, webviewStatusLines] = patchWebviewIndex(webviewOriginal, features, theme, language);
+  const [webviewUpdatedText, webviewStatusLines, installContracts] = patchWebviewIndex(
+    webviewOriginal,
+    features,
+    theme,
+    language,
+    extContracts,
+  );
   const webviewUpdated = webviewUpdatedText !== webviewOriginal;
   if (webviewUpdated) {
     fs.writeFileSync(target.webviewIndexJsPath, webviewUpdatedText, 'utf8');
@@ -1493,6 +2078,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
       },
       workbenchOverlay,
       legacyAssetTreesPruned,
+      installContracts,
     },
     statusLines,
     features,
@@ -1512,4 +2098,12 @@ module.exports = {
   findLatestClaudeCodeExtension,
   installClaudeCodeVSCodeEnhance,
   padLabel,
+  __test: {
+    patchExtensionJs,
+    patchExtensionHtmlHead,
+    patchWebviewIndex,
+    buildHostRouteContract,
+    assertExtensionPatchContracts,
+    assessWebviewPatchContracts,
+  },
 };

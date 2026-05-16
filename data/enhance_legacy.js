@@ -1,5 +1,19 @@
 import { ATTR, SEL, closestByAttr } from './host_probe.js';
-import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from './enhance_shared.js';
+import { CFG, assetURL, getActiveClaudeSessionId, locateClaudeConnection, log, reportHealth, warn, whenDOMReady } from './enhance_shared.js';
+import { defineCapability } from './capability.js';
+import { reactFiberForElement, reactFiberKeyForElement } from './capability/fingerprints/fiber.js';
+import { initLegacyIdentity } from './legacy/identity.js';
+import { initLegacyTranscriptActionDebug, initLegacyTranscriptActions } from './legacy/transcript_actions.js';
+import { initLegacyToolFold } from './legacy/tool_fold.js';
+import { initLegacyDiffIsland } from './legacy/diff_island.js';
+import { initLegacyForkRewind } from './legacy/fork_rewind.js';
+import { initLegacyUserBubble } from './legacy/user_bubble.js';
+import { initLegacyAskRefinement } from './legacy/ask_refinement.js';
+import {
+  conversationIsBusy as kernelConversationIsBusy,
+  getHostState as kernelGetHostState,
+  subscribe as subscribeRuntime,
+} from './runtime_kernel.js';
 
 /**
  * Heavy interaction module for the patched Claude Code UI.
@@ -741,122 +755,48 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     return null;
   }
 
+  function fiberMissResult(sawAnchor, sawFiber, detail = null) {
+    const result = {
+      ok: false,
+      value: null,
+      reason: sawAnchor ? (sawFiber ? 'shapeMiss' : 'noFiber') : 'notMounted',
+    };
+    if (detail) result.detail = detail;
+    return result;
+  }
+
+  const transcriptRecordCap = defineCapability({
+    name: 'runtime.fiber.transcriptRecord',
+    layer: 'fiber',
+    presence: 'always',
+    shapeValidate: isTranscriptRecord,
+    probe(el) {
+      if (!el) return { ok: false, value: null, reason: 'notMounted' };
+      let f = reactFiberForElement(el);
+      if (!f) return { ok: false, value: null, reason: 'noFiber' };
+      for (let i = 0; i < 50 && f; i++) {
+        const hit = findTranscriptRecordInValue(f.memoizedProps, 4, new WeakSet());
+        if (hit) return { ok: true, value: hit, reason: 'ok' };
+        f = f.return;
+      }
+      return { ok: false, value: null, reason: 'shapeMiss' };
+    },
+  });
+
   function transcriptRecordForElement(el) {
-    let f = reactFiberForElement(el);
-    for (let i = 0; i < 50 && f; i++) {
-      const hit = findTranscriptRecordInValue(f.memoizedProps, 4, new WeakSet());
-      if (hit) return hit;
-      f = f.return;
-    }
-    return null;
-  }
-
-  // ============================================================
-  // Active session-id resolution — the only identity field that
-  // matters for transcript mutations.
-  // ============================================================
-  //
-  // Decompiling Claude Code 2.1.118 webview/index.js:
-  //
-  //   class Jn {                      // connection class
-  //     activeSessionId = L0(void 0); // Preact signal
-  //     sessionStates  = L0([]);      // Preact signal
-  //     ...
-  //   }
-  //
-  //   case "session_states_update":
-  //     this.sessionStates.value = $.request.sessions;
-  //     this.activeSessionId.value = $.request.activeSessionId;
-  //
-  // The extension host pushes the authoritative active-session id onto
-  // every webview via this message, so reading `connection.activeSessionId
-  // .value` gives us the canonical identity for the current panel — no
-  // mtime guessing, correct across multi-window / multi-panel / sidebar-
-  // vs-editor scenarios.
-  //
-  // Locating the connection instance: it lives in React's state tree
-  // (props/state/contextDependencies) somewhere up the fiber chain. We
-  // fingerprint by demanding both `activeSessionId` AND `sessionStates`
-  // are present and signal-like (have a `value` accessor) — the pair is
-  // unique to `Jn` in this bundle, so false positives are extremely
-  // unlikely.
-  //
-  // Cache the located instance globally; React keeps it stable across
-  // renders. If the cache stales (e.g. webview rehydrates), we re-find.
-  let cachedConnection = null;
-
-  function isConnectionLike(obj) {
-    if (!obj || typeof obj !== 'object') return false;
-    const a = obj.activeSessionId;
-    if (!a || typeof a !== 'object' || !('value' in a)) return false;
-    const s = obj.sessionStates;
-    if (!s || typeof s !== 'object' || !('value' in s)) return false;
-    return true;
-  }
-
-  function findConnectionInValue(value, depth, seen) {
-    if (!value || typeof value !== 'object' || depth < 0) return null;
-    if (isConnectionLike(value)) return value;
-    if (value.nodeType || value.window === value) return null;
-    if (seen.has(value)) return null;
-    seen.add(value);
-    const preferred = ['comms', 'connection', 'value', 'current', 'context'];
-    for (const key of preferred) {
-      const v = value[key];
-      if (!v || typeof v !== 'object') continue;
-      const hit = findConnectionInValue(v, depth - 1, seen);
-      if (hit) return hit;
-    }
-    let scanned = 0;
-    for (const key of Object.keys(value)) {
-      if (preferred.includes(key)) continue;
-      if (++scanned > 25) break;
-      const v = value[key];
-      if (!v || typeof v !== 'object') continue;
-      const hit = findConnectionInValue(v, depth - 1, seen);
-      if (hit) return hit;
-    }
-    return null;
+    const result = transcriptRecordCap.read(el);
+    return result.ok ? result.value : null;
   }
 
   function locateConnection() {
-    if (cachedConnection && isConnectionLike(cachedConnection)) return cachedConnection;
-    // Walk up from any anchor that has a fiber (the body's first child
-    // typically does once React has mounted). Try a few anchors so we
-    // don't fail just because one element happens to be portal-detached.
-    const anchors = [
-      document.querySelector('[class*="root_"]'),
-      document.querySelector('[class*="messagesContainer_"]'),
-      document.querySelector('[class*="userMessage_"]'),
-      document.querySelector('[class*="inputContainer_"]'),
-      document.body && document.body.firstElementChild,
-      document.body,
-    ];
-    for (const anchor of anchors) {
-      if (!anchor) continue;
-      let f = reactFiberForElement(anchor);
-      for (let i = 0; i < 120 && f; i++) {
-        let conn = findConnectionInValue(f.memoizedProps, 6, new WeakSet());
-        if (!conn) conn = findConnectionInValue(f.stateNode, 6, new WeakSet());
-        if (!conn) conn = findConnectionInValue(f.memoizedState, 6, new WeakSet());
-        if (conn) {
-          cachedConnection = conn;
-          return conn;
-        }
-        f = f.return;
-      }
-    }
-    return null;
+    return locateClaudeConnection();
   }
 
   function getActiveSessionId() {
-    const conn = locateConnection();
-    if (conn) {
-      try {
-        const v = conn.activeSessionId.value;
-        if (typeof v === 'string' && v) return v;
-      } catch (_) {}
-    }
+    try {
+      const state = kernelGetHostState();
+      if (state && typeof state.sessionId === 'string' && state.sessionId) return state.sessionId;
+    } catch (_) {}
     // Editing/rerun still goes through the host-side JSONL guard, which
     // verifies both sessionId and message uuid before writing. If the React
     // connection shape drifts or a long-running webview loses that pointer,
@@ -940,32 +880,48 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     return null;
   }
 
-  function locateSessionsManager() {
-    if (cachedSessionsManager && isSessionsManagerLike(cachedSessionsManager))
-      return cachedSessionsManager;
-    const anchors = [
-      document.querySelector('[class*="root_"]'),
-      document.querySelector('[class*="messagesContainer_"]'),
-      document.querySelector('[class*="userMessage_"]'),
-      document.querySelector('[class*="inputContainer_"]'),
-      document.body && document.body.firstElementChild,
-      document.body,
-    ];
-    for (const anchor of anchors) {
-      if (!anchor) continue;
-      let f = reactFiberForElement(anchor);
-      for (let i = 0; i < 120 && f; i++) {
-        let mgr = findSessionsManagerInValue(f.memoizedProps, 6, new WeakSet());
-        if (!mgr) mgr = findSessionsManagerInValue(f.stateNode, 6, new WeakSet());
-        if (!mgr) mgr = findSessionsManagerInValue(f.memoizedState, 6, new WeakSet());
-        if (mgr) {
-          cachedSessionsManager = mgr;
-          return mgr;
-        }
-        f = f.return;
+  const sessionsManagerCap = defineCapability({
+    name: 'runtime.fiber.sessionsManager',
+    layer: 'fiber',
+    presence: 'always',
+    shapeValidate: isSessionsManagerLike,
+    probe() {
+      if (cachedSessionsManager && isSessionsManagerLike(cachedSessionsManager)) {
+        return { ok: true, value: cachedSessionsManager, reason: 'ok', detail: { source: 'cache' } };
       }
-    }
-    return null;
+      const anchors = [
+        document.querySelector('[class*="root_"]'),
+        document.querySelector('[class*="messagesContainer_"]'),
+        document.querySelector('[class*="userMessage_"]'),
+        document.querySelector('[class*="inputContainer_"]'),
+        document.body && document.body.firstElementChild,
+        document.body,
+      ];
+      let sawAnchor = false;
+      let sawFiber = false;
+      for (const anchor of anchors) {
+        if (!anchor) continue;
+        sawAnchor = true;
+        let f = reactFiberForElement(anchor);
+        if (f) sawFiber = true;
+        for (let i = 0; i < 120 && f; i++) {
+          let mgr = findSessionsManagerInValue(f.memoizedProps, 6, new WeakSet());
+          if (!mgr) mgr = findSessionsManagerInValue(f.stateNode, 6, new WeakSet());
+          if (!mgr) mgr = findSessionsManagerInValue(f.memoizedState, 6, new WeakSet());
+          if (mgr) {
+            cachedSessionsManager = mgr;
+            return { ok: true, value: mgr, reason: 'ok', detail: { source: 'fiber' } };
+          }
+          f = f.return;
+        }
+      }
+      return fiberMissResult(sawAnchor, sawFiber);
+    },
+  });
+
+  function locateSessionsManager() {
+    const result = sessionsManagerCap.read();
+    return result.ok ? result.value : null;
   }
 
   // ============================================================
@@ -1017,36 +973,55 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     return null;
   }
 
-  function locateActiveSessionState() {
-    // Try sessions manager's activeSession.value first — this is the
-    // canonical pointer the host itself maintains.
-    const mgr = locateSessionsManager();
-    if (mgr) {
-      try {
-        const cand = mgr.activeSession && mgr.activeSession.value;
-        if (cand && isSessionStateLike(cand)) return cand;
-      } catch (_) {}
-    }
-    // Fallback: fiber pierce from message-region anchors.
-    const anchors = [
-      document.querySelector('[class*="messagesContainer_"]'),
-      document.querySelector('[class*="userMessage_"]'),
-      document.querySelector('[class*="root_"]'),
-      document.body && document.body.firstElementChild,
-      document.body,
-    ];
-    for (const anchor of anchors) {
-      if (!anchor) continue;
-      let f = reactFiberForElement(anchor);
-      for (let i = 0; i < 120 && f; i++) {
-        let s = findSessionStateInValue(f.memoizedProps, 6, new WeakSet());
-        if (!s) s = findSessionStateInValue(f.stateNode, 6, new WeakSet());
-        if (!s) s = findSessionStateInValue(f.memoizedState, 6, new WeakSet());
-        if (s) return s;
-        f = f.return;
+  const activeSessionObjectCap = defineCapability({
+    name: 'runtime.fiber.activeSessionObject',
+    layer: 'fiber',
+    presence: 'always',
+    shapeValidate: isSessionStateLike,
+    probe() {
+      // Try sessions manager's activeSession.value first — this is the
+      // canonical pointer the host itself maintains.
+      const mgr = locateSessionsManager();
+      let managerDetail = null;
+      if (mgr) {
+        try {
+          const cand = mgr.activeSession && mgr.activeSession.value;
+          if (cand && isSessionStateLike(cand)) {
+            return { ok: true, value: cand, reason: 'ok', detail: { source: 'sessionsManager' } };
+          }
+        } catch (error) {
+          managerDetail = { managerError: error && error.message ? error.message : String(error) };
+        }
       }
-    }
-    return null;
+      const anchors = [
+        document.querySelector('[class*="messagesContainer_"]'),
+        document.querySelector('[class*="userMessage_"]'),
+        document.querySelector('[class*="root_"]'),
+        document.body && document.body.firstElementChild,
+        document.body,
+      ];
+      let sawAnchor = false;
+      let sawFiber = false;
+      for (const anchor of anchors) {
+        if (!anchor) continue;
+        sawAnchor = true;
+        let f = reactFiberForElement(anchor);
+        if (f) sawFiber = true;
+        for (let i = 0; i < 120 && f; i++) {
+          let s = findSessionStateInValue(f.memoizedProps, 6, new WeakSet());
+          if (!s) s = findSessionStateInValue(f.stateNode, 6, new WeakSet());
+          if (!s) s = findSessionStateInValue(f.memoizedState, 6, new WeakSet());
+          if (s) return { ok: true, value: s, reason: 'ok', detail: { source: 'fiber' } };
+          f = f.return;
+        }
+      }
+      return fiberMissResult(sawAnchor, sawFiber, managerDetail);
+    },
+  });
+
+  function locateActiveSessionState() {
+    const result = activeSessionObjectCap.read();
+    return result.ok ? result.value : null;
   }
 
   // ============================================================
@@ -1102,33 +1077,48 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
   }
 
   let cachedAppContext = null;
-  function locateActiveAppContext() {
-    if (cachedAppContext && isAppContextLike(cachedAppContext)) {
-      return cachedAppContext;
-    }
-    const anchors = [
-      document.querySelector('[class*="root_"]'),
-      document.querySelector('[class*="messagesContainer_"]'),
-      document.querySelector('[class*="userMessage_"]'),
-      document.querySelector('[class*="inputContainer_"]'),
-      document.body && document.body.firstElementChild,
-      document.body,
-    ];
-    for (const anchor of anchors) {
-      if (!anchor) continue;
-      let f = reactFiberForElement(anchor);
-      for (let i = 0; i < 120 && f; i++) {
-        let ctx = findAppContextInValue(f.memoizedProps, 6, new WeakSet());
-        if (!ctx) ctx = findAppContextInValue(f.stateNode, 6, new WeakSet());
-        if (!ctx) ctx = findAppContextInValue(f.memoizedState, 6, new WeakSet());
-        if (ctx) {
-          cachedAppContext = ctx;
-          return ctx;
-        }
-        f = f.return;
+  const appContextCap = defineCapability({
+    name: 'runtime.fiber.appContext',
+    layer: 'fiber',
+    presence: 'always',
+    shapeValidate: isAppContextLike,
+    probe() {
+      if (cachedAppContext && isAppContextLike(cachedAppContext)) {
+        return { ok: true, value: cachedAppContext, reason: 'ok', detail: { source: 'cache' } };
       }
-    }
-    return null;
+      const anchors = [
+        document.querySelector('[class*="root_"]'),
+        document.querySelector('[class*="messagesContainer_"]'),
+        document.querySelector('[class*="userMessage_"]'),
+        document.querySelector('[class*="inputContainer_"]'),
+        document.body && document.body.firstElementChild,
+        document.body,
+      ];
+      let sawAnchor = false;
+      let sawFiber = false;
+      for (const anchor of anchors) {
+        if (!anchor) continue;
+        sawAnchor = true;
+        let f = reactFiberForElement(anchor);
+        if (f) sawFiber = true;
+        for (let i = 0; i < 120 && f; i++) {
+          let ctx = findAppContextInValue(f.memoizedProps, 6, new WeakSet());
+          if (!ctx) ctx = findAppContextInValue(f.stateNode, 6, new WeakSet());
+          if (!ctx) ctx = findAppContextInValue(f.memoizedState, 6, new WeakSet());
+          if (ctx) {
+            cachedAppContext = ctx;
+            return { ok: true, value: ctx, reason: 'ok', detail: { source: 'fiber' } };
+          }
+          f = f.return;
+        }
+      }
+      return fiberMissResult(sawAnchor, sawFiber);
+    },
+  });
+
+  function locateActiveAppContext() {
+    const result = appContextCap.read();
+    return result.ok ? result.value : null;
   }
 
   // Look up the *current* record by uuid from active SessionState's
@@ -1509,13 +1499,11 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     }, 1500);
   }
 
-  // Watch send-button state attr to trigger the transcript-action gate.
+  // Subscribe to kernel stream/session events to trigger the transcript-action gate.
   // Assistant/tool action rows are not minted directly from streaming
   // mutations anymore. Those mutations only mark the transcript dirty;
   // once the UI is idle and the message DOM has gone quiet, the settle
   // scanner below materialises the final rows in one place.
-  // host_probe writes `data-incipit-send-state` idempotently via
-  // `ensureAttr`, so this observer only fires on actual transitions.
   let busyStateObserverBound = false;
   let lastBusySeen = false;
   function setupBusyStateObserver() {
@@ -1523,7 +1511,6 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     busyStateObserverBound = true;
     lastBusySeen = conversationIsBusy();
     const cleanupDuringBusy = () => {
-      try { scanAssistantTranscriptActions(document.body); } catch (_) {}
       try { sweepStreamingDisableState(); } catch (_) {}
     };
     const trigger = () => {
@@ -1532,7 +1519,6 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
       lastBusySeen = cur;
       if (cur === false) {
         flushDeferredCodeHighlightsIfReady();
-        scheduleTranscriptActionSettleScan(0);
       } else {
         // Idle → busy: flip past-turn rows to disabled and remove any
         // tail-row that slipped in during the send/stop transition.
@@ -1546,11 +1532,25 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
         requestAnimationFrame(cleanupDuringBusy);
       }
     };
-    const obs = new MutationObserver(trigger);
-    obs.observe(document.body, {
-      attributes: true,
-      attributeFilter: ['data-incipit-send-state'],
-      subtree: true,
+    // Only three kernel signals matter for the transcript-action gate:
+    //   • busyChanged       — flip disabled state on stream start/stop.
+    //   • assistantTurnFinalized — schedule the settle scan after the
+    //                         360 ms quiet window (kernel computes it).
+    //   • sessionChanged    — invalidate any in-flight settle scan.
+    //
+    // We deliberately do NOT subscribe to messagesChanged /
+    // messagesDomChanged / assistantMarkdownMounted: the typography
+    // observer already calls `noteTranscriptActionMutation()` once per
+    // mutation batch via the legacy hook, and the kernel events fire
+    // per added node — duplicating that channel sent the settle timer
+    // through clearTimeout/setTimeout hundreds of times per second
+    // during long streams without any extra information.
+    subscribeRuntime('busyChanged', trigger);
+    subscribeRuntime('assistantTurnFinalized', () => {
+      scheduleTranscriptActionSettleScan(0);
+    });
+    subscribeRuntime('sessionChanged', () => {
+      noteTranscriptActionMutation();
     });
   }
 
@@ -1823,6 +1823,8 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
   }
 
   function conversationIsBusy() {
+    try { return !!kernelConversationIsBusy(); }
+    catch (_) { /* Fall through to the legacy probes below. */ }
     // Claude Code's SessionState toggles this in send() and readMessages()
     // finally/result handling. It is the canonical stream gate; footer icon
     // shape is only a fallback for host versions where fiber lookup drifts.
@@ -3033,14 +3035,53 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     }, 0);
   }
 
-  // Prefer `[class*="content_"]` text. Fall back to the bubble text with
-  // attachments and injected controls removed.
+  const USER_CONTENT_EXCLUDE_SELECTOR = [
+    SEL.userAttachments,
+    '[class*="Attachments"]',
+    '.claude-show-more-row',
+    '.claude-user-copy-btn-row',
+    '[data-incipit-action-dropdown]',
+  ].join(', ');
+
+  const USER_TEXT_CONTENT_SELECTOR = [
+    SEL.userContent,
+    '[class*="expandableContainer"] [class*="content_"]',
+  ].join(', ');
+
+  function userBubbleContentElement(bubbleEl) {
+    if (!bubbleEl || !bubbleEl.querySelectorAll) return null;
+    const candidates = Array.from(
+      bubbleEl.querySelectorAll(USER_TEXT_CONTENT_SELECTOR)
+    ).filter(el => (
+      el &&
+      el.nodeType === 1 &&
+      !el.isContentEditable &&
+      !el.closest(USER_CONTENT_EXCLUDE_SELECTOR)
+    ));
+    if (!candidates.length) return null;
+    let best = null;
+    let bestScore = -1;
+    for (const el of candidates) {
+      const textLen = (el.textContent || '').trim().length;
+      const expandableBonus = el.closest('[class*="expandableContainer"]') ? 1000 : 0;
+      const taggedBonus = el.matches(SEL.userContent) ? 2000 : 0;
+      const score = taggedBonus + expandableBonus + textLen;
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  // Prefer the actual user text node, not attachment-chip internals. Fall
+  // back to the bubble text with attachments and injected controls removed.
   function userBubbleText(bubbleEl) {
-    const content = bubbleEl.querySelector(SEL.userContent);
+    const content = userBubbleContentElement(bubbleEl);
     if (content) return content.textContent || '';
     const clone = bubbleEl.cloneNode(true);
     clone.querySelectorAll(
-      `${SEL.userAttachments}, .claude-user-copy-btn, .claude-user-copy-btn-row`
+      `${USER_CONTENT_EXCLUDE_SELECTOR}, .claude-user-copy-btn`
     ).forEach(n => n.remove());
     return clone.textContent || '';
   }
@@ -3158,7 +3199,7 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
         EDIT_ICON_SVG,
         () => {
           const cur = liveRecord();
-          const userContentEl = bubbleEl.querySelector(SEL.userContent) || bubbleEl;
+          const userContentEl = userBubbleContentElement(bubbleEl) || bubbleEl;
           const initialText = transcriptText(cur) || userBubbleText(bubbleEl).trim();
           openInlineEditor({
             kind: 'user',
@@ -3323,7 +3364,7 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
   function classifyUserBubble(bubble) {
     const existing = bubble.getAttribute('data-claude-length');
     if (existing === 'short' || existing === 'long') return;
-    const content = bubble.querySelector(SEL.userContent);
+    const content = userBubbleContentElement(bubble);
     if (!content) return;
     // Temporarily remove clipping to measure the natural height.
     bubble.setAttribute('data-claude-length', 'measuring');
@@ -3636,7 +3677,7 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     for (const bubble of userBubbles) handle(bubble);
     if (assistantActions) {
       scanAssistantTranscriptActions(scope);
-    } else {
+    } else if (options.sweepBusyState !== false) {
       // Sweep at the end so newly-mounted user-bubble rows (created above
       // by addUserCopyButton) snap to the current busy state in the same
       // mutation flush. Cheap: applyButtonBusyState early-returns on no-op.
@@ -4117,27 +4158,40 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
   }
 
-  function reactFiberForElement(el) {
-    if (!el) return null;
-    const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-    return fk ? el[fk] : null;
-  }
+  const diffPayloadCap = defineCapability({
+    name: 'runtime.fiber.diffPayload',
+    layer: 'fiber',
+    presence: 'always',
+    shapeValidate: value => value &&
+      typeof value.oldText === 'string' &&
+      typeof value.newText === 'string',
+    probe(wrapper) {
+      if (!wrapper) return { ok: false, value: null, reason: 'notMounted' };
+      let f = reactFiberForElement(wrapper);
+      if (!f) return { ok: false, value: null, reason: 'noFiber' };
+      for (let i = 0; i < 30 && f; i++) {
+        const p = f.memoizedProps;
+        if (p && typeof p.original === 'string' && typeof p.modified === 'string') {
+          return {
+            ok: true,
+            value: {
+              filePath: typeof p.filePath === 'string' ? p.filePath : '',
+              oldText: p.original,
+              newText: p.modified,
+              source: 'rendered',
+            },
+            reason: 'ok',
+          };
+        }
+        f = f.return;
+      }
+      return { ok: false, value: null, reason: 'shapeMiss' };
+    },
+  });
 
   function readRenderedDiffPayload(wrapper) {
-    let f = reactFiberForElement(wrapper);
-    for (let i = 0; i < 30 && f; i++) {
-      const p = f.memoizedProps;
-      if (p && typeof p.original === 'string' && typeof p.modified === 'string') {
-        return {
-          filePath: typeof p.filePath === 'string' ? p.filePath : '',
-          oldText: p.original,
-          newText: p.modified,
-          source: 'rendered',
-        };
-      }
-      f = f.return;
-    }
-    return null;
+    const result = diffPayloadCap.read(wrapper);
+    return result.ok ? result.value : null;
   }
 
   function firstEditPayload(input) {
@@ -4583,12 +4637,12 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
   // the render.
   //
   // FRAGILITY NOTE — this is the only place in the project that reads
-  // React's internal bookkeeping (`__reactFiber*` / `memoizedProps`). Every
+  // React's internal bookkeeping (private fiber key / `memoizedProps`). Every
   // other module (host_probe, math gate, thinking, badge, input avoidance)
   // stays on CSS module prefixes + DOM structure, which survives Claude
   // Code's minor version bumps. Fiber pierce does not have that guarantee:
   // a React major upgrade could rename the DOM key (historical precedent:
-  // 16→17 `__reactInternalInstance` → `__reactFiber$`), and a bundler /
+  // 16→17 private instance/fiber key), and a bundler /
   // component refactor inside Claude Code could reshape `memoizedProps`
   // into something `readToolUseBlock` no longer recognises. We mitigate
   // with a dual-shape unwrap (accepts both `p.content.type` and
@@ -4819,6 +4873,32 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     // they use — the fiber walk + outer prop name `content` are the
     // stable parts. See `__incipitDumpFiber` for diagnostic dumping.
     const _toolResultDiagSeen = new Set();
+    const toolUseBlockCap = defineCapability({
+      name: 'runtime.fiber.toolUseBlock',
+      layer: 'fiber',
+      presence: 'afterSeen',
+      shapeValidate: v => v && v.block && v.block.type === 'tool_use',
+      probe(el) {
+        if (!el) return { ok: false, value: null, reason: 'notMounted' };
+        const fk = reactFiberKeyForElement(el);
+        if (!fk) return { ok: false, value: null, reason: 'noFiber' };
+        let f = el[fk];
+        for (let i = 0; i < 10 && f; i++) {
+          const p = f.memoizedProps;
+          if (p && p.content) {
+            const outer = p.content;
+            if (outer.type === 'tool_use') {
+              return { ok: true, value: { block: outer, status: p.status }, reason: 'ok' };
+            }
+            if (outer.content && outer.content.type === 'tool_use') {
+              return { ok: true, value: { block: outer.content, status: p.status }, reason: 'ok' };
+            }
+          }
+          f = f.return;
+        }
+        return { ok: false, value: null, reason: 'shapeMiss' };
+      },
+    });
 
     // Manual fiber-tree DFS dumper. Call from webview Devtools console:
     //   __incipitDumpFiber()              — uses last [data-incipit-tool-use]
@@ -4838,8 +4918,8 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
         el = all[all.length - 1];
         if (!el) { console.warn('[incipit dump] no [data-incipit-tool-use] found'); return; }
       }
-      const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-      if (!fk) { console.warn('[incipit dump] no __reactFiber* key on element'); return; }
+      const fk = reactFiberKeyForElement(el);
+      if (!fk) { console.warn('[incipit dump] no React fiber key on element'); return; }
 
       let f = el[fk];
       let upDepth = 0;
@@ -4934,33 +5014,55 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
       return { root: f, findings, toolResultHits, toolUseHits };
     };
 
-    function readToolResult(useBlock, el) {
-      if (!useBlock || !useBlock.id) return null;
-      const targetId = useBlock.id;
-
-      const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-      if (!fk) return null;
-
-      let f = el[fk];
-      for (let i = 0; i < 30 && f; i++) {
-        const c = f.memoizedProps && f.memoizedProps.content;
-        if (c && typeof c === 'object' && c.toolResultSignal) {
-          try {
-            const sig = c.toolResultSignal;
-            const tr = typeof sig.peek === 'function' ? sig.peek() : sig.value;
-            if (tr && tr.type === 'tool_result' && tr.tool_use_id === targetId) {
-              return tr;
-            }
-          } catch (_) { /* signal read failed; fall through */ }
-          break; // found the wrapper but couldn't read — don't keep walking
+    const toolResultSignalCap = defineCapability({
+      name: 'runtime.fiber.toolResultSignal',
+      layer: 'fiber',
+      presence: 'always',
+      shapeValidate: value => value && value.type === 'tool_result',
+      probe(ctx) {
+        const useBlock = ctx && ctx.useBlock;
+        const el = ctx && ctx.el;
+        if (!useBlock || !useBlock.id) {
+          return { ok: false, value: null, reason: 'notApplicable' };
         }
-        f = f.return;
-      }
+        const targetId = useBlock.id;
+        if (!el) return { ok: false, value: null, reason: 'notMounted', detail: { targetId: targetId.slice(-8) } };
 
-      // Diagnostic: signal not found on any ancestor. Fires once per
-      // tool_use_id; if this prints in production, host changed the
-      // wrapping prop shape and we should re-run __incipitDumpFiber.
-      if (!_toolResultDiagSeen.has(targetId)) {
+        const fk = reactFiberKeyForElement(el);
+        if (!fk) return { ok: false, value: null, reason: 'noFiber', detail: { targetId: targetId.slice(-8) } };
+
+        let f = el[fk];
+        for (let i = 0; i < 30 && f; i++) {
+          const c = f.memoizedProps && f.memoizedProps.content;
+          if (c && typeof c === 'object' && c.toolResultSignal) {
+            try {
+              const sig = c.toolResultSignal;
+              const tr = typeof sig.peek === 'function' ? sig.peek() : sig.value;
+              if (tr && tr.type === 'tool_result' && tr.tool_use_id === targetId) {
+                return { ok: true, value: tr, reason: 'ok', detail: { targetId: targetId.slice(-8) } };
+              }
+            } catch (error) {
+              return {
+                ok: false,
+                value: null,
+                reason: 'error',
+                detail: { targetId: targetId.slice(-8), message: error && error.message },
+              };
+            }
+            break; // found the wrapper but couldn't read — don't keep walking
+          }
+          f = f.return;
+        }
+        return { ok: false, value: null, reason: 'shapeMiss', detail: { targetId: targetId.slice(-8) } };
+      },
+    });
+
+    function readToolResult(useBlock, el) {
+      const result = toolResultSignalCap.read({ useBlock, el });
+      if (result.ok) return result.value;
+
+      const targetId = useBlock && useBlock.id;
+      if (targetId && result.reason === 'shapeMiss' && !_toolResultDiagSeen.has(targetId)) {
         _toolResultDiagSeen.add(targetId);
         console.warn('[incipit] toolResultSignal not found for', targetId.slice(-8),
                      '— host fiber prop shape may have changed; run __incipitDumpFiber()');
@@ -4981,23 +5083,8 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     }
 
     function readToolUseBlock(el) {
-      const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-      if (!fk) return null;
-      let f = el[fk];
-      for (let i = 0; i < 10 && f; i++) {
-        const p = f.memoizedProps;
-        if (p && p.content) {
-          const outer = p.content;
-          if (outer.type === 'tool_use') {
-            return { block: outer, status: p.status };
-          }
-          if (outer.content && outer.content.type === 'tool_use') {
-            return { block: outer.content, status: p.status };
-          }
-        }
-        f = f.return;
-      }
-      return null;
+      const result = toolUseBlockCap.read(el);
+      return result.ok ? result.value : null;
     }
 
     function lineDiffStats(oldText, newText) {
@@ -5363,17 +5450,31 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
     // tool-use DOM node and expects a `context.fileOpener.open` shape. If
     // Claude Code refactors that prop, return null and leave the Grep filename
     // as tooltip-only text.
+    const fileOpenerCap = defineCapability({
+      name: 'runtime.fiber.fileOpener',
+      layer: 'fiber',
+      presence: 'always',
+      shapeValidate: opener => opener && typeof opener.open === 'function',
+      probe(el) {
+        if (!el) return { ok: false, value: null, reason: 'notMounted' };
+        const fk = reactFiberKeyForElement(el);
+        if (!fk) return { ok: false, value: null, reason: 'noFiber' };
+        let f = el[fk];
+        for (let i = 0; i < 30 && f; i++) {
+          const ctx = f.memoizedProps && f.memoizedProps.context;
+          const opener = ctx && ctx.fileOpener;
+          if (opener && typeof opener.open === 'function') {
+            return { ok: true, value: opener, reason: 'ok' };
+          }
+          f = f.return;
+        }
+        return { ok: false, value: null, reason: 'shapeMiss' };
+      },
+    });
+
     function readHostFileOpener(el) {
-      const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-      if (!fk) return null;
-      let f = el[fk];
-      for (let i = 0; i < 30 && f; i++) {
-        const ctx = f.memoizedProps && f.memoizedProps.context;
-        const opener = ctx && ctx.fileOpener;
-        if (opener && typeof opener.open === 'function') return opener;
-        f = f.return;
-      }
-      return null;
+      const result = fileOpenerCap.read(el);
+      return result.ok ? result.value : null;
     }
 
     function validLineNumber(value) {
@@ -7126,6 +7227,12 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
       }
     }
 
+    // Local body observer is the primary path again. An earlier attempt
+    // funnelled tool-use mounts through a kernel `mutationBus` event, but
+    // that observer ran six selector tests per added node for every
+    // streaming token — a much higher per-mutation cost than this loop,
+    // which only walks `addedNodes` and does a single `closest`. The
+    // `pendingToolUseRoots` Set keeps the scan amortised per RAF.
     const mo = new MutationObserver(muts => {
       let dirty = false;
       for (let i = 0; i < muts.length; i++) {
@@ -7140,8 +7247,11 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
 
     // Seed the queue with everything already on the page so the first frame
     // decorates the same set the old `scheduleRescan()` initial call did.
-    if (document.body) {
-      const initial = document.body.querySelectorAll('[class*="toolUse_"]');
+    const initialRoot = document.querySelector(SEL.messagesContainer) ||
+      document.querySelector('[class*="messagesContainer_"]') ||
+      document.body;
+    if (initialRoot) {
+      const initial = initialRoot.querySelectorAll('[class*="toolUse_"]');
       for (const t of initial) pendingToolUseRoots.add(t);
       scheduleRescan();
     }
@@ -7160,6 +7270,7 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
       conversationIsBusy,
       noteTranscriptActionMutation,
       scanAndAddCopyButtons,
+      sweepStreamingDisableState,
     };
     globalThis.__incipitLegacyHooks = hooks;
     const typography = globalThis.__incipitTypography;
@@ -7167,22 +7278,48 @@ import { CFG, assetURL, getActiveClaudeSessionId, log, warn, whenDOMReady } from
       typography.configure(hooks);
     }
     if (typography && typeof typography.scanCopyButtons === 'function') {
-      typography.scanCopyButtons(document.body, { assistantActions: false });
+      const transcriptRoot = document.querySelector(SEL.messagesContainer) ||
+        document.querySelector('[class*="messagesContainer_"]') ||
+        document.body;
+      typography.scanCopyButtons(transcriptRoot, { assistantActions: false });
     }
     noteTranscriptActionMutation();
+    reportHealth('legacy.hooks', 'ok');
+  }
+
+  function assertForkRewindReady() {
+    if (typeof forkFromUser !== 'function' ||
+        typeof rewindOnlyFromUser !== 'function' ||
+        typeof forkWithRewindFromUser !== 'function') {
+      throw new Error('fork/rewind actions are not available');
+    }
   }
 
   function init() {
+    reportHealth('legacy', 'starting');
     log('Initializing legacy interaction module...');
-    preloadEffortBrainIcons();
-    exposeLegacyHooks();
-    setupToolFold();
-    setupDiffSideBars();
-    setupBusyStateObserver();
-    setupFileDragReferenceHint();
-    setupUserBubbleNativeActionSuppression();
-    setupAskRequestRefinement();
-    setupTranscriptActionDebugTools();
+    const legacyContext = {
+      reportHealth,
+      preloadEffortBrainIcons,
+      exposeLegacyHooks,
+      setupToolFold,
+      setupDiffSideBars,
+      setupBusyStateObserver,
+      setupFileDragReferenceHint,
+      setupUserBubbleNativeActionSuppression,
+      setupAskRequestRefinement,
+      setupTranscriptActionDebugTools,
+      assertForkRewindReady,
+    };
+    initLegacyIdentity(legacyContext);
+    initLegacyTranscriptActions(legacyContext);
+    initLegacyToolFold(legacyContext);
+    initLegacyDiffIsland(legacyContext);
+    initLegacyForkRewind(legacyContext);
+    initLegacyUserBubble(legacyContext);
+    initLegacyAskRefinement(legacyContext);
+    initLegacyTranscriptActionDebug(legacyContext);
+    reportHealth('legacy', 'ok');
   }
 
   whenDOMReady(init);

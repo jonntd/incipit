@@ -1,3 +1,6 @@
+import { defineCapability } from './capability.js';
+import { reactFiberForElement } from './capability/fingerprints/fiber.js';
+
 /**
  * Shared runtime helpers for incipit webview modules.
  *
@@ -30,6 +33,90 @@ export const log  = (...a) => console.log('[Claude Enhance]', ...a);
 export const warn = (...a) => console.warn('[Claude Enhance]', ...a);
 export const dbg  = (...a) => { if (DEBUG) console.log('[Claude Enhance:dbg]', ...a); };
 
+function sanitizeHealthDetail(value, depth = 0, seen = new WeakSet()) {
+  if (value == null) return value;
+  const type = typeof value;
+  if (type === 'string') return value.length > 240 ? value.slice(0, 240) + '...' : value;
+  if (type === 'number' || type === 'boolean') return value;
+  if (type === 'function') return '[function]';
+  if (type !== 'object') return String(value);
+  if (seen.has(value)) return '[circular]';
+  if (depth >= 2) return '[object]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.slice(0, 12).map(item => sanitizeHealthDetail(item, depth + 1, seen));
+  }
+  const out = {};
+  for (const key of Object.keys(value).slice(0, 16)) {
+    out[key] = sanitizeHealthDetail(value[key], depth + 1, seen);
+  }
+  return out;
+}
+
+function createHealthRegistry() {
+  const entries = new Map();
+  const history = [];
+  const MAX_HISTORY = 80;
+
+  function set(name, status = 'ok', detail = null) {
+    const key = String(name || 'unknown');
+    const entry = Object.freeze({
+      status: String(status || 'ok'),
+      detail: sanitizeHealthDetail(detail),
+      updatedAt: new Date().toISOString(),
+    });
+    entries.set(key, entry);
+    history.push({ name: key, ...entry });
+    if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+    if (DEBUG) dbg('health', key, entry.status, entry.detail);
+    return entry;
+  }
+
+  function snapshot() {
+    const out = {};
+    for (const [key, entry] of entries) out[key] = { ...entry };
+    return out;
+  }
+
+  function events() {
+    return history.map(entry => ({ ...entry }));
+  }
+
+  return Object.freeze({
+    set,
+    get(name) {
+      const entry = entries.get(String(name || 'unknown'));
+      return entry ? { ...entry } : null;
+    },
+    snapshot,
+    events,
+  });
+}
+
+export const health = (() => {
+  const existing = globalThis.__incipitHealth;
+  if (existing && typeof existing.set === 'function' && typeof existing.snapshot === 'function') {
+    return existing;
+  }
+  const registry = createHealthRegistry();
+  try {
+    Object.defineProperty(globalThis, '__incipitHealth', {
+      value: registry,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+  } catch (_) {
+    globalThis.__incipitHealth = registry;
+  }
+  return registry;
+})();
+
+export function reportHealth(name, status = 'ok', detail = null) {
+  try { return health.set(name, status, detail); }
+  catch (_) { return null; }
+}
+
 export const BASE_URL = (() => {
   try {
     return new URL('./', import.meta.url);
@@ -41,12 +128,6 @@ export const BASE_URL = (() => {
 })();
 
 export const assetURL = (rel) => new URL(rel, BASE_URL).href;
-
-export function reactFiberForElement(el) {
-  if (!el) return null;
-  const fk = Object.keys(el).find(k => k.startsWith('__reactFiber'));
-  return fk ? el[fk] : null;
-}
 
 let cachedClaudeConnection = null;
 let lastClaudeConnectionMissAt = 0;
@@ -90,38 +171,58 @@ function findClaudeConnectionInValue(value, depth, seen) {
   return null;
 }
 
-export function locateClaudeConnection() {
-  if (cachedClaudeConnection && isClaudeConnectionLike(cachedClaudeConnection)) {
-    return cachedClaudeConnection;
-  }
-  const now = Date.now();
-  if (lastClaudeConnectionMissAt && now - lastClaudeConnectionMissAt < 800) {
-    return null;
-  }
-  const anchors = [
-    document.querySelector('[class*="root_"]'),
-    document.querySelector('[class*="messagesContainer_"]'),
-    document.querySelector('[class*="userMessage_"]'),
-    document.querySelector('[class*="inputContainer_"]'),
-    document.body && document.body.firstElementChild,
-    document.body,
-  ];
-  for (const anchor of anchors) {
-    if (!anchor) continue;
-    let f = reactFiberForElement(anchor);
-    for (let i = 0; i < 120 && f; i++) {
-      let conn = findClaudeConnectionInValue(f.memoizedProps, 6, new WeakSet());
-      if (!conn) conn = findClaudeConnectionInValue(f.stateNode, 6, new WeakSet());
-      if (!conn) conn = findClaudeConnectionInValue(f.memoizedState, 6, new WeakSet());
-      if (conn) {
-        cachedClaudeConnection = conn;
-        return conn;
-      }
-      f = f.return;
+const connectionCap = defineCapability({
+  name: 'runtime.fiber.connection',
+  layer: 'fiber',
+  presence: 'always',
+  shapeValidate: isClaudeConnectionLike,
+  staleAfterMs: 800,
+  probe() {
+    if (cachedClaudeConnection && isClaudeConnectionLike(cachedClaudeConnection)) {
+      return { ok: true, value: cachedClaudeConnection, reason: 'ok', detail: { source: 'cache' } };
     }
-  }
-  lastClaudeConnectionMissAt = now;
-  return null;
+    const now = Date.now();
+    if (lastClaudeConnectionMissAt && now - lastClaudeConnectionMissAt < 800) {
+      return { ok: false, value: null, reason: 'shapeMiss', detail: { via: 'missCooldown' } };
+    }
+    const anchors = [
+      document.querySelector('[class*="root_"]'),
+      document.querySelector('[class*="messagesContainer_"]'),
+      document.querySelector('[class*="userMessage_"]'),
+      document.querySelector('[class*="inputContainer_"]'),
+      document.body && document.body.firstElementChild,
+      document.body,
+    ];
+    let sawAnchor = false;
+    let sawFiber = false;
+    for (const anchor of anchors) {
+      if (!anchor) continue;
+      sawAnchor = true;
+      let f = reactFiberForElement(anchor);
+      if (f) sawFiber = true;
+      for (let i = 0; i < 120 && f; i++) {
+        let conn = findClaudeConnectionInValue(f.memoizedProps, 6, new WeakSet());
+        if (!conn) conn = findClaudeConnectionInValue(f.stateNode, 6, new WeakSet());
+        if (!conn) conn = findClaudeConnectionInValue(f.memoizedState, 6, new WeakSet());
+        if (conn) {
+          cachedClaudeConnection = conn;
+          return { ok: true, value: conn, reason: 'ok', detail: { source: 'fiber' } };
+        }
+        f = f.return;
+      }
+    }
+    lastClaudeConnectionMissAt = now;
+    return {
+      ok: false,
+      value: null,
+      reason: sawAnchor ? (sawFiber ? 'shapeMiss' : 'noFiber') : 'notMounted',
+    };
+  },
+});
+
+export function locateClaudeConnection() {
+  const result = connectionCap.read();
+  return result.ok ? result.value : null;
 }
 
 function getVsCodeApi() {
@@ -151,12 +252,14 @@ function getVsCodeStateSessionId(options = {}) {
 }
 
 export function getActiveClaudeSessionId(options = {}) {
-  const conn = locateClaudeConnection();
-  if (conn) {
-    try {
-      const v = normalizeSessionId(conn.activeSessionId.value);
-      if (v) return v;
-    } catch (_) {}
+  if (options.skipFiber !== true) {
+    const conn = locateClaudeConnection();
+    if (conn) {
+      try {
+        const v = normalizeSessionId(conn.activeSessionId.value);
+        if (v) return v;
+      } catch (_) {}
+    }
   }
   return getVsCodeStateSessionId(options);
 }
