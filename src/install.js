@@ -1932,7 +1932,15 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
   const features = getFeatures();
   const theme = getTheme();
   const language = getLanguage() || 'en';
-  preflightWorkbenchOverlayForTarget(target, features.editorSelectionOverlay === true);
+  // Editor overlay is opt-in + experimental. If it is requested but the
+  // editor's Workbench cannot be uniquely + safely confirmed, do NOT abort
+  // the whole apply: degrade — apply everything else, skip only the overlay,
+  // and surface a mandatory red notice downstream. The user's saved
+  // `editorSelectionOverlay` setting is left untouched.
+  const overlayRequested = features.editorSelectionOverlay === true;
+  const overlayPreflight = preflightWorkbenchOverlayForTarget(target, overlayRequested);
+  const overlayDegraded = overlayPreflight && overlayPreflight.status === 'degraded';
+  const overlayEffective = overlayRequested && !overlayDegraded;
   const enhancePreamble = buildEnhancePreamble(features, theme, language);
   const themeOverrideBlock = buildThemeOverrideBlock(theme);
 
@@ -2040,11 +2048,42 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     ? `已写入 ${serifWritten}/${SYSTEM_FONT_FILES.length}`
     : `已存在 (${SYSTEM_FONT_FILES.length} 个)`;
 
-  const workbenchOverlay = applyWorkbenchOverlayForTarget(
-    target,
-    features.editorSelectionOverlay === true,
-    theme,
-  );
+  // The editor overlay is opt-in + experimental. Per the 2026-05-16 design
+  // override, NO overlay failure mode may abort the user's whole apply:
+  //   - preflight unconfirmable target  -> degrade (effective=false)
+  //   - any apply-time throw while it was *requested* (sha drift, command
+  //     bridge shape change, missing restore point, or a throwing cleanup
+  //     of some *other* incipit-patched Workbench) -> caught and degraded
+  // Everything else still applies; the degrade is surfaced as a mandatory
+  // red notice; the user's saved `editorSelectionOverlay` is left intact.
+  // Throws while overlay is NOT requested (the disable/cleanup path) keep
+  // their original fail-closed behavior — out of this override's scope.
+  let workbenchOverlay;
+  let overlayDegradeReason = null;
+  let overlayDegradeMessage = null;
+  let overlayDegradeCandidates = [];
+  if (overlayDegraded) {
+    overlayDegradeReason = overlayPreflight.reason || 'unknown';
+    overlayDegradeMessage = overlayPreflight.message || null;
+    overlayDegradeCandidates = overlayPreflight.candidates || [];
+  }
+  try {
+    workbenchOverlay = applyWorkbenchOverlayForTarget(target, overlayEffective, theme);
+  } catch (exc) {
+    if (!overlayRequested) throw exc;
+    workbenchOverlay = { status: 'off', enabled: false };
+    if (!overlayDegraded) {
+      overlayDegradeReason = 'apply-error';
+      overlayDegradeMessage = exc && exc.message ? exc.message : String(exc);
+    }
+  }
+  if (overlayRequested && (overlayDegraded || overlayDegradeReason)) {
+    workbenchOverlay.status = 'degraded';
+    workbenchOverlay.requested = true;
+    workbenchOverlay.degradeReason = overlayDegradeReason || 'unknown';
+    workbenchOverlay.degradeMessage = overlayDegradeMessage;
+    workbenchOverlay.degradeCandidates = overlayDegradeCandidates;
+  }
 
   const statusLines = [
     ...rootResourceStatuses,

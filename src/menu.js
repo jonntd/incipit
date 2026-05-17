@@ -359,6 +359,7 @@ function printApplyReport({ target, restorePoint, result }) {
   printTree(buildPatchTree(result));
   console.log();
 
+  printOverlayDegradedNotice(result && result.report ? result.report : {});
   console.log(formatApplyConfigInline(result.features, result.theme));
   const warnings = collectApplyWarnings(result && result.report ? result.report : {});
   if (warnings.length) {
@@ -374,6 +375,31 @@ function printApplyReport({ target, restorePoint, result }) {
   const restart = color(t('apply.restart_action', { app: appName }), Ansi.TERRA);
   console.log(t('apply.done', { app: appName, reload, restart }));
   console.log(color(t('apply.upgrade_hint'), Ansi.GREY));
+}
+
+// The editor overlay is opt-in + experimental. When it was requested but the
+// editor's Workbench could not be uniquely + safely confirmed, apply does NOT
+// abort: it skips ONLY the overlay and everything else applies. Per the
+// 2026-05-16 design override this degrade must be loud and explicit (red),
+// never a silent behavior swap — the user's saved config is left intact.
+function printOverlayDegradedNotice(report) {
+  const wb = report && report.workbenchOverlay;
+  if (!wb || wb.status !== 'degraded') return;
+  const reasonKey = `apply.report.overlay_degraded_reason_${String(wb.degradeReason || 'unknown').replace(/-/g, '_')}`;
+  let reasonText = t(reasonKey);
+  if (reasonText === reasonKey) reasonText = t('apply.report.overlay_degraded_reason_unknown');
+  console.log();
+  console.log(color(t('apply.report.overlay_degraded_heading'), `${Ansi.RED}${Ansi.BOLD}`));
+  console.log(color('  ' + reasonText, Ansi.RED));
+  if (wb.degradeReason === 'apply-error' && wb.degradeMessage) {
+    console.log(color('  ' + String(wb.degradeMessage).split(/\r?\n/)[0], Ansi.RED));
+  }
+  console.log(color('  ' + t('apply.report.overlay_degraded_hint'), Ansi.RED));
+  const candidates = Array.isArray(wb.degradeCandidates) ? wb.degradeCandidates.filter(Boolean) : [];
+  if (candidates.length) {
+    console.log(color('  ' + t('apply.report.overlay_degraded_candidates', { list: candidates.join(' | ') }), Ansi.RED));
+  }
+  console.log();
 }
 
 function printReportSection(label, detail = '') {

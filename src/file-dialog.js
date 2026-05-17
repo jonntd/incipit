@@ -10,8 +10,13 @@
 //
 // Implementation per platform:
 //   - Windows  : PowerShell + System.Windows.Forms.FolderBrowserDialog
-//                (Vista-style dialog, present on every Win10/11 .NET
-//                install; no external deps).
+//                (no external deps). The Vista-style upgrade hinges on
+//                `UseDescriptionForTitle`, which only exists on .NET
+//                Framework 4.8.1+ / .NET Core 3.0+; Windows PowerShell
+//                5.1 binds .NET Framework and many Win10/Win11 21H2 boxes
+//                still ship 4.8, so that assignment is made conditional —
+//                missing => classic dialog (description as a tree label),
+//                still fully functional.
 //   - macOS    : `osascript -e 'POSIX path of (choose folder ...)'`.
 //   - Linux    : `zenity --file-selection --directory` first, then
 //                `kdialog --getexistingdirectory` as fallback.
@@ -101,7 +106,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms | Out-Null
 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
 $dlg.Description = ${psQuote(title)}
-$dlg.UseDescriptionForTitle = $true
+if ($dlg.PSObject.Properties['UseDescriptionForTitle']) { $dlg.UseDescriptionForTitle = $true }
 $dlg.ShowNewFolderButton = $false
 $result = $dlg.ShowDialog()
 if ($result -eq [System.Windows.Forms.DialogResult]::OK) {

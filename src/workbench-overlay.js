@@ -140,13 +140,31 @@ function extensionRootForTarget(target) {
   return extensionDir;
 }
 
-function isVSCodeStableTarget(target) {
+// Gate for the *no-companion fallback scan* only (env + companion
+// host-identity are tried first and bypass this). It admits targets whose
+// Workbench is the upstream VS Code build shape:
+//   - Stable    `~/.vscode/extensions`            product "Code"
+//   - Insiders  `~/.vscode-insiders/extensions`   product "Code - Insiders"
+//   - VSCodium / Code - OSS  `~/.vscode-oss/extensions`  (same-source OSS
+//     rebuilds — NOT reshaped forks; their command-service shape matches
+//     the official minified anchor)
+// Reshaped forks (Cursor / Windsurf / Antigravity / Kiro) are not admitted
+// here: empirically their workbench does not contain incipit's command
+// bridge anchor (verified 0 matches on Kiro 0.12 + Antigravity 1.107), so
+// the patch would fail anyway. This is NOT a prohibition — if a companion
+// pins such a host the overlay still *attempts* and safely degrades; the
+// real protection is the anchor verification + the degrade safety net, not
+// this gate. resolveWorkbenchTarget's uniqueness/degrade contract is
+// unchanged: ambiguous or unfound Workbench still degrades.
+function isOfficialVSCodeTarget(target) {
   const extensionDir = canonicalPath(extensionRootForTarget(target));
   const settingsPath = canonicalPath(target && target.settingsPath);
   if (/(?:^|[\\/])\.vscode[\\/]extensions$/.test(extensionDir)) return true;
+  if (/(?:^|[\\/])\.vscode-insiders[\\/]extensions$/.test(extensionDir)) return true;
+  if (/(?:^|[\\/])\.vscode-oss[\\/]extensions$/.test(extensionDir)) return true;
   return (
-    /(?:^|[\\/])code[\\/]extensions$/.test(extensionDir) &&
-    /(?:^|[\\/])code[\\/]user[\\/]settings\.json$/.test(settingsPath)
+    /(?:^|[\\/])(?:code(?: - insiders)?|vscodium|code - oss)[\\/]extensions$/.test(extensionDir) &&
+    /(?:^|[\\/])(?:code(?: - insiders)?|vscodium|code - oss)[\\/]user[\\/]settings\.json$/.test(settingsPath)
   );
 }
 
@@ -182,7 +200,14 @@ function appRootLooksLikeWorkbench(appRoot) {
 function appRootLooksSupported(appRoot) {
   if (!appRootLooksLikeWorkbench(appRoot)) return false;
   const product = readProductInfo(appRoot);
-  return product.applicationName === 'code' || product.name === 'Visual Studio Code' || product.name === 'Code';
+  const app = String(product.applicationName || '').toLowerCase();
+  const name = String(product.name || '');
+  return (
+    app === 'code' || app === 'code-insiders' || app === 'codium' || app === 'code-oss' ||
+    name === 'Visual Studio Code' || name === 'Visual Studio Code - Insiders' ||
+    name === 'Code' || name === 'Code - Insiders' ||
+    name === 'VSCodium' || name === 'Code - OSS'
+  );
 }
 
 function addAppRootCandidate(out, appRoot, options = {}) {
@@ -279,44 +304,73 @@ function addCliScriptCandidates(out, scriptPath) {
   }
 }
 
+// Both official channels ship a CLI shim with the same basename pattern:
+// Stable => code(.cmd) / Code.exe, Insiders => code-insiders(.cmd) /
+// "Code - Insiders.exe". Each shim still resolves to its own
+// `resources/app`, so probing both keeps per-target precision.
+const VSCODE_CLI_BASENAMES = ['code', 'code-insiders'];
+const VSCODE_EXE_BASENAMES = ['code.exe', 'Code.exe', 'code-insiders.exe', 'Code - Insiders.exe'];
+
 function addPathBasedCandidates(out) {
   if (process.platform !== 'win32') return;
   for (const entry of pathEntries()) {
     const base = path.basename(entry).toLowerCase();
-    addCliScriptCandidates(out, path.join(entry, 'code.cmd'));
-    addCliScriptCandidates(out, path.join(entry, 'code'));
-    if (base === 'bin' && (
-      fs.existsSync(path.join(entry, 'code.cmd')) ||
-      fs.existsSync(path.join(entry, 'code.exe')) ||
-      fs.existsSync(path.join(entry, 'code'))
-    )) {
+    for (const cli of VSCODE_CLI_BASENAMES) {
+      addCliScriptCandidates(out, path.join(entry, `${cli}.cmd`));
+      addCliScriptCandidates(out, path.join(entry, cli));
+    }
+    const hasCliShim = VSCODE_CLI_BASENAMES.some(cli =>
+      fs.existsSync(path.join(entry, `${cli}.cmd`)) ||
+      fs.existsSync(path.join(entry, `${cli}.exe`)) ||
+      fs.existsSync(path.join(entry, cli)),
+    );
+    const hasExe = VSCODE_EXE_BASENAMES.some(exe => fs.existsSync(path.join(entry, exe)));
+    if (base === 'bin' && hasCliShim) {
       addInstallRootCandidates(out, path.dirname(entry));
-    } else if (
-      fs.existsSync(path.join(entry, 'Code.exe')) ||
-      fs.existsSync(path.join(entry, 'code.exe'))
-    ) {
+    } else if (hasExe) {
       addInstallRootCandidates(out, entry);
     }
   }
 }
 
 function addPlatformCandidates(out) {
+  // Probe both official channels' default install roots. If a user has BOTH
+  // Stable and Insiders installed and no companion-written host identity /
+  // env hint pins the exact one, resolveWorkbenchTarget sees >1 candidate
+  // and degrades (ambiguous) rather than guessing — the safe, intended path.
   if (process.platform === 'win32') {
     const local = process.env.LOCALAPPDATA;
     const programFiles = process.env.ProgramFiles;
     const programFilesX86 = process.env['ProgramFiles(x86)'];
-    addInstallRootCandidates(out, local && path.join(local, 'Programs', 'Microsoft VS Code'));
-    addInstallRootCandidates(out, programFiles && path.join(programFiles, 'Microsoft VS Code'));
-    addInstallRootCandidates(out, programFilesX86 && path.join(programFilesX86, 'Microsoft VS Code'));
+    for (const dir of ['Microsoft VS Code', 'Microsoft VS Code Insiders', 'VSCodium']) {
+      addInstallRootCandidates(out, local && path.join(local, 'Programs', dir));
+      addInstallRootCandidates(out, programFiles && path.join(programFiles, dir));
+      addInstallRootCandidates(out, programFilesX86 && path.join(programFilesX86, dir));
+    }
     return;
   }
   if (process.platform === 'darwin') {
-    addAppRootCandidate(out, '/Applications/Visual Studio Code.app/Contents/Resources/app');
+    // Probe both the system /Applications and the user-local ~/Applications
+    // (drag-install / Homebrew Cask --appdir). The companion host-identity
+    // path is install-method-agnostic; this is only the no-companion last
+    // resort.
+    const appNames = [
+      'Visual Studio Code.app',
+      'Visual Studio Code - Insiders.app',
+      'VSCodium.app',
+    ];
+    for (const base of ['/Applications', path.join(os.homedir(), 'Applications')]) {
+      for (const appName of appNames) {
+        addAppRootCandidate(out, path.join(base, appName, 'Contents', 'Resources', 'app'));
+      }
+    }
     return;
   }
-  addAppRootCandidate(out, '/usr/share/code/resources/app');
-  addAppRootCandidate(out, '/usr/lib/code/resources/app');
-  addAppRootCandidate(out, '/snap/code/current/usr/share/code/resources/app');
+  for (const id of ['code', 'code-insiders', 'codium', 'code-oss']) {
+    addAppRootCandidate(out, `/usr/share/${id}/resources/app`);
+    addAppRootCandidate(out, `/usr/lib/${id}/resources/app`);
+    addAppRootCandidate(out, `/snap/${id}/current/usr/share/${id}/resources/app`);
+  }
 }
 
 function addEnvironmentCandidates(out) {
@@ -382,8 +436,8 @@ function resolveWorkbenchTarget(target) {
   if (portableAppRoot) {
     return resolvedWorkbenchTargetFromAppRoot(portableAppRoot);
   }
-  if (!isVSCodeStableTarget(target)) {
-    return unsupportedResult('only-vscode-stable');
+  if (!isOfficialVSCodeTarget(target)) {
+    return unsupportedResult('only-official-vscode');
   }
   const candidates = [];
   addEnvironmentCandidates(candidates);
@@ -404,26 +458,37 @@ function resolveWorkbenchTarget(target) {
 function overlayResolutionFailureMessage(resolved) {
   const reason = resolved && resolved.reason ? resolved.reason : 'unknown';
   const reasonText = {
-    'only-vscode-stable': '当前 Claude Code 目标无法对应到一个可确认的编辑器程序文件',
-    'workbench-not-found': '没有找到 VS Code/编辑器的 Workbench 程序文件',
-    'ambiguous-workbench': '找到了多个可能的 Workbench 程序文件，无法安全选择',
+    'only-official-vscode': '当前 Claude Code 目标不是官方 VS Code Stable/Insiders，无法安全确认编辑器程序文件',
+    'workbench-not-found': '没有找到 VS Code Stable/Insiders 的 Workbench 程序文件',
+    'ambiguous-workbench': '找到了多个可能的 Workbench 程序文件，无法安全唯一选择',
   }[reason] || reason;
   const candidates = Array.isArray(resolved && resolved.candidates) && resolved.candidates.length
     ? ` 候选: ${resolved.candidates.join(' | ')}`
     : '';
-  return (
-    `编辑器浮层已启用，但浮层没有被安全应用：${reasonText}。` +
-    '本次 apply 已停止，不会退回 CodeLens 兜底。' +
-    '请关闭“编辑器浮层（引用文本或文件）”后重新 apply，或修正编辑器路径后再试。' +
-    candidates
-  );
+  return `编辑器浮层无法被安全应用：${reasonText}。${candidates}`;
 }
 
+// Preflight runs before any files are written. The editor overlay is an
+// opt-in experimental feature that patches the editor's Workbench; if it is
+// enabled but the Workbench cannot be uniquely + safely confirmed we DO NOT
+// abort the whole apply (that punished the user's entire setup for one
+// experimental extra). Instead we report a `degraded` result: the caller
+// applies everything else, skips ONLY the overlay, and surfaces a mandatory
+// red notice. This supersedes the original 2026-05-12 "fail closed the whole
+// apply" rule while preserving its intent — the degrade is loud and explicit,
+// never a silent behavior swap, and the user's saved config is left intact.
 function preflightWorkbenchOverlayForTarget(claudeTarget, enabled) {
   if (!enabled) return { status: 'off', enabled: false };
   const resolved = resolveWorkbenchTarget(claudeTarget);
   if (!resolved.ok) {
-    throw new Error(overlayResolutionFailureMessage(resolved));
+    return {
+      status: 'degraded',
+      enabled: false,
+      requested: true,
+      reason: resolved.reason || 'unknown',
+      candidates: Array.isArray(resolved.candidates) ? resolved.candidates : [],
+      message: overlayResolutionFailureMessage(resolved),
+    };
   }
   return resolved;
 }
@@ -1019,6 +1084,8 @@ module.exports = {
   preflightWorkbenchOverlayForTarget,
   restoreWorkbenchOverlayForTarget,
   resolveWorkbenchTarget,
+  isOfficialVSCodeTarget,
+  appRootLooksSupported,
   hostKeyForAppRoot,
   sentinelPathForHostKey,
   stripWorkbenchPatch,

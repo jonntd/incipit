@@ -1,6 +1,6 @@
 {
   "name": "incipit",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "A frontend rework of the official Claude Code VS Code extension — surface redrawn, engine untouched.",
   "bin": {
     "incipit": "bin/cli.js"
@@ -19,10 +19,11 @@
     "start": "node bin/cli.js",
     "apply": "node bin/cli.js apply",
     "restore": "node bin/cli.js restore",
-    "test": "node tests/patch-contracts.test.js && node tests/cache-history-buckets.test.js && node tests/rerun-handoff.test.js",
+    "test": "node tests/patch-contracts.test.js && node tests/cache-history-buckets.test.js && node tests/rerun-handoff.test.js && node tests/editor-overlay-insiders.test.js",
     "test:contracts": "node tests/patch-contracts.test.js",
     "test:cache-history": "node tests/cache-history-buckets.test.js",
-    "test:rerun-handoff": "node tests/rerun-handoff.test.js"
+    "test:rerun-handoff": "node tests/rerun-handoff.test.js",
+    "test:overlay-insiders": "node tests/editor-overlay-insiders.test.js"
   },
   "engines": {
     "node": ">=16"
