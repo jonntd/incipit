@@ -8,6 +8,7 @@ import { initLegacyToolFold } from './legacy/tool_fold.js';
 import { initLegacyDiffIsland } from './legacy/diff_island.js';
 import { initLegacyForkRewind } from './legacy/fork_rewind.js';
 import { initLegacyUserBubble } from './legacy/user_bubble.js';
+import { initLegacyDeferredNext } from './legacy/deferred_next.js';
 import { initLegacyAskRefinement } from './legacy/ask_refinement.js';
 import {
   conversationIsBusy as kernelConversationIsBusy,
@@ -129,6 +130,21 @@ import {
     '<circle cx="12" cy="5.5" r="1.6"/>' +
     '<circle cx="12" cy="12" r="1.6"/>' +
     '<circle cx="12" cy="18.5" r="1.6"/>' +
+    '</svg>';
+  const GUIDE_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M19 12H5"/>' +
+    '<path d="M12 5l-7 7 7 7"/>' +
+    '</svg>';
+  const TRASH_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 6h18"/>' +
+    '<path d="M8 6V4h8v2"/>' +
+    '<path d="M19 6l-1 14H6L5 6"/>' +
+    '<path d="M10 11v5"/>' +
+    '<path d="M14 11v5"/>' +
     '</svg>';
   // Fork (git-branch Y): main button on user bubbles, also reused inside
   // the More dropdown for "Fork with code rewind". Lucide git-branch
@@ -1717,6 +1733,995 @@ import {
     document.addEventListener('dragend', clearFileDragHintState, true);
     document.addEventListener('drop', clearFileDragHintState, true);
     window.addEventListener('blur', clearFileDragHintState);
+  }
+
+  // Deferred-next-message card.
+  //
+  // While Claude is streaming, the host's normal `session.send(...)` is the
+  // immediate guidance path. incipit layers one extra mode on top: a normal
+  // composer submit is captured into an ordered queue, released one at a
+  // time only on a natural turn end. The "Guide" affordance sends a chosen
+  // item NOW through the ORIGINAL host send, so the official behavior stays
+  // available without a parallel protocol.
+  //
+  // English-only: this is APPLIED-GUI copy. By project convention the
+  // Chinese locale lives only in the CLI (the apply tool's terminal
+  // output); the in-editor surface matches the host UI's language and
+  // every other incipit GUI string, which are plain English literals. The
+  // assisting-AI scaffold's zh/en table + locale switch was redundant
+  // here and is removed — one flat map, kept only because several strings
+  // take `{var}` interpolation (counts / sizes / error detail).
+  const DEFERRED_NEXT_TEXT = Object.freeze({
+    guide: 'Guide',
+    guideTitle: 'Send now as guidance for the current reply',
+    removeTitle: 'Remove queued message',
+    reorder: 'Hold and drag to reorder',
+    edit: 'Edit message',
+    save: 'Save',
+    cancel: 'Cancel',
+    attach: 'Attach image',
+    previewImage: 'Click to preview',
+    removeAttachment: 'Remove attachment',
+    empty: 'Nothing to send',
+    sending: 'Sending follow-up message…',
+    imageFallback: 'Image',
+    imageCount: '{n} images',
+    attachmentCount: '{n} attachments',
+    pasteDrop: 'Paste or drop images',
+    tooLarge: 'Image too large: {size} MB (max 5 MB)',
+    badType: 'Only PNG, JPEG, GIF, and WebP images can be attached',
+    readFail: 'Failed to read image',
+    sendFail: 'Follow-up send failed: {msg}',
+  });
+  // Image MIME allow-list and size cap are SHARED with the user-bubble
+  // inline editor (`ALLOWED_INLINE_IMAGE_MIMES` / `MAX_INLINE_IMAGE_BYTES`,
+  // defined later in the same scope). Same concept — "an image attached to
+  // a message" — so there is one source of truth, not a parallel copy. The
+  // reference resolves at call time (long after module init), so forward
+  // use across the IIFE is fine.
+  // Generous: an *errored* turn's host "interrupted" marker can render well
+  // AFTER busy flips false (user-reported, real machine). Releasing the queue
+  // must outlast that lag, so a natural-end decision is gated behind this
+  // sustained-quiet confirm window AND re-checked at fire. Do not shrink
+  // without re-confirming the error-marker latency — fail-closed by design.
+  const DEFERRED_NEXT_NATURAL_CONFIRM_MS = 1500;
+  const deferredOriginalSendBySession = new WeakMap();
+  let deferredQueue = [];            // ordered; [0] = next to release
+  let deferredNextEl = null;
+  let deferredInlineError = '';      // surfaced inside the card, never a toast
+  let deferredNextSetupBound = false;
+  let deferredNextPatchTimer = 0;
+  let deferredNextConfirmTimer = 0;
+  let deferredNextRenderScheduled = false;
+  let deferredNextBypassDepth = 0;
+  let deferredNextFlushInFlight = false;
+  let deferredNextVisibilityObserver = null;
+  let deferredNextSeq = 0;
+  let deferredNextPatchAttempts = 0;
+  let deferredDragId = null;         // id of the row being pointer-dragged
+
+  function deferredHead() { return deferredQueue[0] || null; }
+  function deferredFindById(id) {
+    return deferredQueue.find(it => it && it.id === id) || null;
+  }
+  function deferredRemoveById(id) {
+    const i = deferredQueue.findIndex(it => it && it.id === id);
+    if (i >= 0) deferredQueue.splice(i, 1);
+    return i >= 0;
+  }
+  function deferredAnySending() {
+    return deferredQueue.some(it => it && it.sending);
+  }
+  function deferredQueueSessionId() {
+    for (const it of deferredQueue) if (it && it.sessionId) return it.sessionId;
+    return null;
+  }
+  function setDeferredInlineError(msg) {
+    deferredInlineError = msg ? String(msg) : '';
+    scheduleDeferredNextRender();
+  }
+
+  // The host paints an explicit "interrupted" marker on a turn stopped by
+  // the user OR ended by an error. It is the ONLY thing that distinguishes
+  // "did not end naturally" — runtime busy/finalized fire identically for a
+  // natural end, a Stop, and an error. partial-tail is a secondary signal
+  // (a streaming-cut turn often leaves a partial block). Fail-closed: any
+  // doubt ⇒ not natural ⇒ do not release.
+  function deferredLastTurnInterrupted() {
+    try {
+      const msgs = document.querySelectorAll('[class*="timelineMessage"]');
+      if (msgs.length) {
+        const last = msgs[msgs.length - 1];
+        if (last && (last.matches?.('[class*="interruptedMessage"]') ||
+                     last.querySelector?.('[class*="interruptedMessage"]'))) return true;
+      }
+    } catch (_) {}
+    try { if (activeSessionHasPartialTail()) return true; } catch (_) {}
+    return false;
+  }
+  function deferredConvBusySafe() {
+    try { return conversationIsBusy() === true; }
+    catch (_) { return true; }  // bridge unknown → treat busy (fail-closed)
+  }
+  function deferredTurnLooksNatural() {
+    if (deferredConvBusySafe()) return false;
+    if (deferredLastTurnInterrupted()) return false;
+    if (askPanelIsActive()) return false;
+    return true;
+  }
+  function cancelNaturalEndConfirm() {
+    if (deferredNextConfirmTimer) {
+      clearTimeout(deferredNextConfirmTimer);
+      deferredNextConfirmTimer = 0;
+    }
+  }
+  // Arm/restart the sustained confirm countdown. Each settle/finalize restarts
+  // it; a new busy turn cancels it. Only a window that stays quiet AND natural
+  // for its full duration AND still passes the fire-time re-check releases the
+  // head — this is what absorbs the lagging error interrupt-marker.
+  function armNaturalEndConfirm() {
+    if (!deferredQueue.length) return;
+    cancelNaturalEndConfirm();
+    deferredNextConfirmTimer = setTimeout(() => {
+      deferredNextConfirmTimer = 0;
+      if (!deferredQueue.length) return;
+      if (!deferredTurnLooksNatural()) return;  // interrupted/busy/ask → frozen
+      flushDeferredNextIfReady();
+    }, DEFERRED_NEXT_NATURAL_CONFIRM_MS);
+  }
+
+  function deferredText(key, vars = null) {
+    // English-only (applied-GUI copy); no locale switch — see DEFERRED_NEXT_TEXT.
+    let text = DEFERRED_NEXT_TEXT[key] || key;
+    if (vars && typeof vars === 'object') {
+      for (const [name, value] of Object.entries(vars)) {
+        text = text.replace(new RegExp('\\{' + name + '\\}', 'g'), String(value));
+      }
+    }
+    return text;
+  }
+
+  function signalValue(sig) {
+    try {
+      return sig && typeof sig === 'object' && 'value' in sig ? sig.value : sig;
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  function sessionIdOf(session) {
+    const fromSession = signalValue(session && session.sessionId);
+    return typeof fromSession === 'string' && fromSession ? fromSession : getActiveSessionId();
+  }
+
+  function sessionIsBusy(session) {
+    const busy = signalValue(session && session.busy);
+    if (typeof busy === 'boolean') return busy;
+    try { return conversationIsBusy(); }
+    catch (_) { return false; }
+  }
+
+  function askPanelIsActive() {
+    try {
+      const containers = document.querySelectorAll(ASK_PERMISSION_CONTAINER_SELECTOR);
+      for (const container of containers) {
+        if (container.querySelector && container.querySelector(ASK_QUESTIONS_SELECTOR)) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function deferredNodeTouchesComposerOrAsk(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.matches?.(SEL.inputContainer) ||
+          node.matches?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
+          node.matches?.(ASK_QUESTIONS_SELECTOR)) return true;
+      if (node.querySelector?.(SEL.inputContainer) ||
+          node.querySelector?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
+          node.querySelector?.(ASK_QUESTIONS_SELECTOR)) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function deferredComposerIsVisible(input) {
+    if (!input || !input.isConnected) return false;
+    try {
+      const style = window.getComputedStyle ? window.getComputedStyle(input) : null;
+      if (style && (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse'
+      )) return false;
+      if (input.getClientRects && input.getClientRects().length === 0) return false;
+    } catch (_) {}
+    return true;
+  }
+
+  function deferredSessionMatchesItem(session, item) {
+    if (!session || !item || !item.sessionId) return false;
+    const sessionId = sessionIdOf(session);
+    return !sessionId || sessionId === item.sessionId;
+  }
+
+  function deferredActiveSessionDiffers(item) {
+    if (!item || !item.sessionId) return false;
+    const active = locateActiveSessionState();
+    return !!(active && !deferredSessionMatchesItem(active, item));
+  }
+
+  function deferredCardShouldHide(mount) {
+    if (!deferredQueue.length) return true;
+    if (!mount || !deferredComposerIsVisible(mount.input)) return true;
+    if (askPanelIsActive()) return true;
+    const qsid = deferredQueueSessionId();
+    if (qsid) {
+      const active = locateActiveSessionState();
+      const asid = active && sessionIdOf(active);
+      if (asid && asid !== qsid) return true;
+    }
+    return false;
+  }
+
+  function normalizeDeferredAttachments(attachments) {
+    if (!Array.isArray(attachments)) return [];
+    return attachments.filter(att => att && typeof att === 'object').slice();
+  }
+
+  function deferredPayloadHasContent(text, attachments) {
+    return !!(
+      (typeof text === 'string' && text.trim()) ||
+      (Array.isArray(attachments) && attachments.length)
+    );
+  }
+
+  function summarizeDeferredText(text, attachments) {
+    const prose = String(text || '').replace(/\s+/g, ' ').trim();
+    if (prose) return prose.length > 130 ? prose.slice(0, 127) + '...' : prose;
+    const count = Array.isArray(attachments) ? attachments.length : 0;
+    if (!count) return deferredText('empty');
+    const imageCount = attachments.filter(isImageAttachment).length;
+    if (imageCount === count) return deferredText('imageCount', { n: count });
+    return deferredText('attachmentCount', { n: count });
+  }
+
+  function isImageAttachment(att) {
+    const type = String(att?.file?.type || '').toLowerCase();
+    return type.startsWith('image/') || /^data:image\//i.test(String(att?.dataUrl || ''));
+  }
+
+  function cloneDeferredForEdit(item) {
+    return {
+      text: String(item && item.text || ''),
+      attachments: normalizeDeferredAttachments(item && item.attachments),
+    };
+  }
+
+  function rawSendForSession(session) {
+    if (!session || typeof session.send !== 'function') return null;
+    return deferredOriginalSendBySession.get(session) || session.send;
+  }
+
+  function captureDeferredNext(session, argsLike) {
+    const text = typeof argsLike[0] === 'string' ? argsLike[0] : String(argsLike[0] || '');
+    const attachments = normalizeDeferredAttachments(argsLike[1]);
+    if (!deferredPayloadHasContent(text, attachments)) return;
+    const sessionId = sessionIdOf(session);
+    // Append, never replace: the user explicitly wants a multi-message
+    // queue. No toast — the persistent card IS the feedback.
+    deferredQueue.push({
+      id: 'deferred-' + (++deferredNextSeq).toString(36),
+      session,
+      sessionId,
+      text,
+      attachments,
+      includeSelection: false,
+      createdAt: Date.now(),
+      editing: false,
+      sending: false,
+    });
+    deferredInlineError = '';
+    scheduleDeferredNextRender();
+  }
+
+  function shouldCaptureDeferredSend(session, argsLike) {
+    if (deferredNextBypassDepth > 0) return false;
+    if (!session || typeof session.send !== 'function') return false;
+    if (!sessionIsBusy(session)) return false;
+    if (!deferredPayloadHasContent(argsLike[0], argsLike[1])) return false;
+    return true;
+  }
+
+  function wrapDeferredSendOnSession(session) {
+    if (!session || typeof session.send !== 'function') return false;
+    if (deferredOriginalSendBySession.has(session)) return true;
+    const original = session.send;
+    deferredOriginalSendBySession.set(session, original);
+    session.send = function incipitDeferredNextSendWrapper(...args) {
+      if (shouldCaptureDeferredSend(this, args)) {
+        captureDeferredNext(this, args);
+        return Promise.resolve();
+      }
+      return original.apply(this, args);
+    };
+    return true;
+  }
+
+  function patchActiveDeferredSession() {
+    const session = locateActiveSessionState();
+    if (wrapDeferredSendOnSession(session)) {
+      deferredNextPatchAttempts = 0;
+      reportHealth('legacy.deferred_next.sendWrap', 'ok');
+      return true;
+    }
+    reportHealth('legacy.deferred_next.sendWrap', 'pending', { reason: 'no-active-session' });
+    return false;
+  }
+
+  function scheduleDeferredSessionPatch(delay = 80) {
+    if (deferredNextPatchTimer) return;
+    deferredNextPatchTimer = setTimeout(() => {
+      deferredNextPatchTimer = 0;
+      if (!patchActiveDeferredSession() && ++deferredNextPatchAttempts < 24) {
+        scheduleDeferredSessionPatch(650);
+      }
+    }, delay);
+  }
+
+  function deferredCardMountPoint() {
+    const input = document.querySelector(SEL.inputContainer);
+    if (!input || !input.parentElement) return null;
+    return { parent: input.parentElement, before: input, input };
+  }
+
+  function removeDeferredNextCard() {
+    if (deferredNextEl) {
+      try { deferredNextEl.remove(); } catch (_) {}
+      deferredNextEl = null;
+    }
+  }
+
+  function ensureDeferredNextCard() {
+    if (!deferredQueue.length) {
+      removeDeferredNextCard();
+      return null;
+    }
+    const mount = deferredCardMountPoint();
+    if (!mount) {
+      removeDeferredNextCard();
+      return null;
+    }
+    if (!deferredNextEl || !deferredNextEl.isConnected) {
+      deferredNextEl = document.createElement('div');
+      deferredNextEl.setAttribute('data-incipit-deferred-next', '');
+    }
+    if (deferredNextEl.parentElement !== mount.parent || deferredNextEl.nextSibling !== mount.before) {
+      mount.parent.insertBefore(deferredNextEl, mount.before);
+    }
+    return { el: deferredNextEl, mount };
+  }
+
+  function scheduleDeferredNextRender() {
+    if (deferredNextRenderScheduled) return;
+    deferredNextRenderScheduled = true;
+    requestAnimationFrame(() => {
+      deferredNextRenderScheduled = false;
+      renderDeferredNextCard();
+    });
+  }
+
+  function makeDeferredIconButton(kind, title, iconSvg, handler) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('data-incipit-deferred-next-icon-btn', kind);
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.innerHTML = iconSvg;
+    btn.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      handler(btn, evt);
+    });
+    return btn;
+  }
+
+  // The attachment chips deliberately REUSE the user-bubble inline
+  // editor's chip visual language (`incipit-edit-chip*` classes) and its
+  // standalone `openImagePreview` modal — same concept, one look, one
+  // preview behaviour, zero changes to that battle-tested path. We do
+  // NOT reuse its data model (`chips`/JSONL blocks): deferred-next sends
+  // composer `{file,dataUrl}` attachments via `session.send`, so the
+  // strip is built here against that shape, mirroring `buildChipElement`.
+  // The `data-incipit-deferred-next-attachments` attr stays only as the
+  // JS hook `refreshDeferredEditorInPlace` queries to swap the strip in
+  // place without touching the <textarea> (CJK IME red line).
+  function renderDeferredAttachmentStrip(item, editDraft = null) {
+    const attachments = editDraft ? editDraft.attachments : item.attachments;
+    // Summary (no draft): nothing to show when empty. Editing: always
+    // render — the strip carries the '+' add slot even with no images.
+    if (!editDraft && (!attachments || !attachments.length)) return null;
+    const strip = document.createElement('div');
+    strip.className = 'incipit-edit-chip-strip';
+    strip.setAttribute('data-incipit-deferred-next-attachments', '');
+
+    (attachments || []).forEach((att, index) => {
+      const chip = document.createElement('span');
+      chip.className = 'incipit-edit-chip';
+      const isImage = isImageAttachment(att);
+
+      if (isImage && att.dataUrl) {
+        chip.classList.add('incipit-edit-chip--image');
+        const img = document.createElement('img');
+        img.className = 'incipit-edit-chip-thumb';
+        img.src = att.dataUrl;
+        img.alt = att.file && att.file.name ? att.file.name : deferredText('imageFallback');
+        img.draggable = false;
+        chip.appendChild(img);
+        // Click / keyboard → same fullscreen preview as the bubble
+        // editor. Guard the X (its own handler stopPropagation's, but a
+        // keyboard activation can still bubble here).
+        chip.style.cursor = 'zoom-in';
+        chip.setAttribute('role', 'button');
+        chip.setAttribute('tabindex', '0');
+        chip.setAttribute('aria-label', deferredText('previewImage'));
+        chip.title = deferredText('previewImage');
+        const preview = ev => {
+          if (ev.target && ev.target.closest && ev.target.closest('.incipit-edit-chip-x')) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          openImagePreview(att.dataUrl);
+        };
+        chip.addEventListener('click', preview);
+        chip.addEventListener('keydown', ev => {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          preview(ev);
+        });
+      } else {
+        // Non-image attachment, or an image with no usable data URL:
+        // neutral file glyph + label so the user still sees "something
+        // is attached" and can remove it (mirrors the bubble fallback).
+        const icon = document.createElement('span');
+        icon.className = 'incipit-edit-chip-icon';
+        icon.innerHTML = CHIP_FILE_ICON_SVG;
+        chip.appendChild(icon);
+        const label = document.createElement('span');
+        label.className = 'incipit-edit-chip-label';
+        label.textContent = (att && att.file && att.file.name) || deferredText('imageFallback');
+        chip.appendChild(label);
+      }
+
+      if (editDraft) {
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'incipit-edit-chip-x';
+        x.setAttribute('aria-label', deferredText('removeAttachment'));
+        x.title = deferredText('removeAttachment');
+        x.innerHTML = CHIP_X_ICON_SVG;
+        x.addEventListener('click', evt => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          editDraft.attachments.splice(index, 1);
+          scheduleDeferredNextRender();
+        });
+        chip.appendChild(x);
+      }
+      strip.appendChild(chip);
+    });
+
+    // Editing: a dashed "empty slot" '+' that opens the file picker —
+    // same affordance as the bubble editor, so add lives in the strip,
+    // not as a stray button in the action row. Fresh hidden input per
+    // render keeps it self-contained across keyed reconciliation.
+    if (editDraft) {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'incipit-edit-chip-add';
+      add.title = deferredText('attach');
+      add.setAttribute('aria-label', deferredText('attach'));
+      add.innerHTML = CHIP_PLUS_ICON_SVG;
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = 'image/png,image/jpeg,image/gif,image/webp';
+      fileInput.multiple = true;
+      fileInput.style.display = 'none';
+      fileInput.addEventListener('change', () => {
+        for (const file of Array.from(fileInput.files || [])) {
+          addDeferredAttachmentFromFile(editDraft, file);
+        }
+        fileInput.value = '';
+      });
+      add.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        fileInput.click();
+      });
+      strip.appendChild(add);
+      strip.appendChild(fileInput);
+    }
+    return strip;
+  }
+
+  // Refresh ONLY the attachment strip inside an already-mounted editor,
+  // leaving the <textarea> node — its value, caret, and any in-flight CJK
+  // IME composition — untouched. Returns false when no live editor is
+  // mounted yet, so the caller falls back to a full build.
+  function refreshDeferredEditorInPlace(el, item) {
+    const row = el.querySelector('[data-incipit-deferred-next-edit]');
+    if (!row) return false;
+    const textarea = row.querySelector('[data-incipit-deferred-next-textarea]');
+    if (!textarea || !textarea.isConnected) return false;
+    const draft = item.editDraft || (item.editDraft = cloneDeferredForEdit(item));
+    const existing = row.querySelector('[data-incipit-deferred-next-attachments]');
+    const fresh = renderDeferredAttachmentStrip(item, draft);
+    if (existing && fresh) row.replaceChild(fresh, existing);
+    else if (existing && !fresh) existing.remove();
+    else if (!existing && fresh) {
+      const actions = row.querySelector('[data-incipit-deferred-next-edit-actions]');
+      if (actions) row.insertBefore(fresh, actions);
+      else row.appendChild(fresh);
+    }
+    return true;
+  }
+
+  // Keyed-by-id list reconciliation. The list container and each row node
+  // PERSIST across renders so a row never detaches — detaching the row that
+  // holds the live editor would cancel CJK IME composition (the 2026-04-15
+  // red line). Summary rows are stateless → rebuilt freely; the editing row
+  // is kept and only its strip refreshed in place. Reorder is a pure node
+  // move, not a teardown.
+  function deferredRowFor(list, item) {
+    let row = list.querySelector('[data-incipit-deferred-id="' + item.id + '"]');
+    if (!row) {
+      row = document.createElement('div');
+      row.setAttribute('data-incipit-deferred-row', '');
+      row.setAttribute('data-incipit-deferred-id', item.id);
+      list.appendChild(row);
+    }
+    row.toggleAttribute('data-incipit-deferred-next-sending', !!item.sending);
+    const hasEditor = !!row.querySelector('[data-incipit-deferred-next-edit]');
+    if (item.editing) {
+      if (hasEditor) refreshDeferredEditorInPlace(row, item); // keep textarea/IME
+      else { row.textContent = ''; renderDeferredNextEditor(row, item); }
+    } else {
+      row.textContent = '';                                   // summary is stateless
+      renderDeferredNextSummary(row, item);
+    }
+    return row;
+  }
+
+  function renderDeferredNextCard() {
+    const ensured = ensureDeferredNextCard();
+    if (!ensured) return;
+    const { el, mount } = ensured;
+    if (!deferredQueue.length) { el.textContent = ''; return; }
+    el.toggleAttribute('data-incipit-deferred-next-hidden', deferredCardShouldHide(mount));
+
+    let list = el.querySelector('[data-incipit-deferred-next-list]');
+    if (!list) {
+      el.textContent = '';
+      list = document.createElement('div');
+      list.setAttribute('data-incipit-deferred-next-list', '');
+      el.appendChild(list);
+    }
+    let errEl = el.querySelector('[data-incipit-deferred-next-error]');
+    if (deferredInlineError) {
+      if (!errEl) {
+        errEl = document.createElement('div');
+        errEl.setAttribute('data-incipit-deferred-next-error', '');
+        el.insertBefore(errEl, list);
+      }
+      errEl.textContent = deferredInlineError;
+    } else if (errEl) {
+      errEl.remove();
+    }
+
+    const wanted = deferredQueue.map(item => deferredRowFor(list, item));
+    const wantedSet = new Set(wanted);
+    wanted.forEach((row, i) => {
+      if (list.children[i] !== row) list.insertBefore(row, list.children[i] || null);
+    });
+    Array.from(list.children).forEach(ch => { if (!wantedSet.has(ch)) ch.remove(); });
+  }
+
+  function deferredRowAfterPoint(list, y) {
+    const rows = Array.from(
+      list.querySelectorAll(':scope > [data-incipit-deferred-row]:not([data-incipit-deferred-dragging])'),
+    );
+    for (const r of rows) {
+      const b = r.getBoundingClientRect();
+      if (y < b.top + b.height / 2) return r;
+    }
+    return null;
+  }
+
+  function commitDeferredOrderFromDom(list) {
+    const ids = Array.from(
+      list.querySelectorAll(':scope > [data-incipit-deferred-row]'),
+    ).map(r => r.getAttribute('data-incipit-deferred-id'));
+    deferredQueue.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    scheduleDeferredNextRender();
+  }
+
+  // Pointer-drag on the grip (NOT native HTML5 DnD — flaky in the webview,
+  // and it would collide with the editor's file-drop). The in-flight or
+  // editing row is locked.
+  function startDeferredRowDrag(evt, item, row) {
+    if (item.sending || item.editing) return;
+    const list = row.parentElement;
+    if (!list) return;
+    evt.preventDefault();
+    deferredDragId = item.id;
+    row.setAttribute('data-incipit-deferred-dragging', '');
+    const onMove = ev => {
+      const after = deferredRowAfterPoint(list, ev.clientY);
+      if (after == null) list.appendChild(row);
+      else if (after !== row) list.insertBefore(row, after);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      row.removeAttribute('data-incipit-deferred-dragging');
+      deferredDragId = null;
+      commitDeferredOrderFromDom(list);
+    };
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+  }
+
+  function renderDeferredNextSummary(el, item) {
+    const row = document.createElement('div');
+    row.setAttribute('data-incipit-deferred-next-row', '');
+
+    const grip = document.createElement('span');
+    grip.setAttribute('data-incipit-deferred-next-grip', '');
+    grip.title = deferredText('reorder');
+    grip.textContent = '::';
+    grip.addEventListener('pointerdown', evt => startDeferredRowDrag(evt, item, el));
+    row.appendChild(grip);
+
+    const text = document.createElement('div');
+    text.setAttribute('data-incipit-deferred-next-text', '');
+    text.textContent = item.sending ? deferredText('sending') : summarizeDeferredText(item.text, item.attachments);
+    row.appendChild(text);
+
+    const guide = document.createElement('button');
+    guide.type = 'button';
+    guide.setAttribute('data-incipit-deferred-next-guide', '');
+    guide.title = deferredText('guideTitle');
+    guide.innerHTML = '<span data-incipit-deferred-next-guide-icon>' + GUIDE_ICON_SVG + '</span>' +
+      '<span data-incipit-deferred-next-guide-label>' + deferredText('guide') + '</span>';
+    guide.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      guideDeferredNextNow(item);
+    });
+    row.appendChild(guide);
+
+    // Flattened action row. The old kebab held only Edit + "Close
+    // queue", and "Close queue" was the literal same call as the trash
+    // button beside it (`discardDeferredNext(item.id)`) — a redundant
+    // destructive duplicate hidden behind an extra tap. Edit + Delete
+    // are now direct icons (edit before delete: constructive then
+    // destructive, matching the user-bubble action order).
+    row.appendChild(makeDeferredIconButton('edit', deferredText('edit'), EDIT_ICON_SVG, () => {
+      startEditingDeferredNext(item.id);
+    }));
+    row.appendChild(makeDeferredIconButton('delete', deferredText('removeTitle'), TRASH_ICON_SVG, () => {
+      discardDeferredNext(item.id);
+    }));
+
+    el.appendChild(row);
+    const strip = renderDeferredAttachmentStrip(item);
+    if (strip) el.appendChild(strip);
+  }
+
+  function renderDeferredNextEditor(el, item) {
+    if (!item.editDraft) item.editDraft = cloneDeferredForEdit(item);
+    const draft = item.editDraft;
+    const row = document.createElement('div');
+    row.setAttribute('data-incipit-deferred-next-edit', '');
+
+    const textarea = document.createElement('textarea');
+    textarea.setAttribute('data-incipit-deferred-next-textarea', '');
+    textarea.value = draft.text;
+    textarea.rows = 2;
+    textarea.placeholder = deferredText('pasteDrop');
+    textarea.addEventListener('input', () => { draft.text = textarea.value; });
+    textarea.addEventListener('paste', evt => handleDeferredImagePaste(evt, draft));
+    textarea.addEventListener('keydown', evt => {
+      // Never steal a key mid CJK IME composition (229 = legacy keyCode for
+      // an in-progress composition); Enter/Escape there belong to the IME.
+      if (evt.isComposing || evt.keyCode === 229) return;
+      if (evt.key === 'Escape') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        item.editing = false;
+        item.editDraft = null;
+        scheduleDeferredNextRender();
+        return;
+      }
+      if (evt.key === 'Enter' && (evt.metaKey || evt.ctrlKey)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        saveDeferredNextEdit(item);
+      }
+    });
+    row.appendChild(textarea);
+
+    const strip = renderDeferredAttachmentStrip(item, draft);
+    if (strip) row.appendChild(strip);
+
+    // Add-image now lives as the dashed '+' slot INSIDE the chip strip
+    // (built in renderDeferredAttachmentStrip), mirroring the user-bubble
+    // editor. The action row is just Cancel / Save — no stray button.
+    const actions = document.createElement('div');
+    actions.setAttribute('data-incipit-deferred-next-edit-actions', '');
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.setAttribute('data-incipit-deferred-next-edit-cancel', '');
+    cancel.textContent = deferredText('cancel');
+    cancel.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      item.editing = false;
+      item.editDraft = null;
+      scheduleDeferredNextRender();
+    });
+    actions.appendChild(cancel);
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.setAttribute('data-incipit-deferred-next-edit-save', '');
+    save.textContent = deferredText('save');
+    save.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      saveDeferredNextEdit(item);
+    });
+    actions.appendChild(save);
+
+    row.appendChild(actions);
+    row.addEventListener('dragover', evt => {
+      if (!hasFileishDrag(evt.dataTransfer)) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      try { evt.dataTransfer.dropEffect = 'copy'; } catch (_) {}
+    });
+    row.addEventListener('drop', evt => {
+      if (!hasFileishDrag(evt.dataTransfer)) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      for (const file of Array.from(evt.dataTransfer.files || [])) addDeferredAttachmentFromFile(draft, file);
+    });
+
+    el.appendChild(row);
+    setTimeout(() => {
+      try {
+        textarea.focus({ preventScroll: true });
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      } catch (_) {}
+    }, 0);
+  }
+
+  function startEditingDeferredNext(id) {
+    const item = deferredFindById(id);
+    if (!item || item.sending) return;
+    item.editing = true;
+    item.editDraft = cloneDeferredForEdit(item);
+    deferredInlineError = '';
+    scheduleDeferredNextRender();
+  }
+
+  function saveDeferredNextEdit(item) {
+    if (!item || !item.editDraft) return;
+    const text = String(item.editDraft.text || '');
+    const attachments = normalizeDeferredAttachments(item.editDraft.attachments);
+    if (!deferredPayloadHasContent(text, attachments)) {
+      setDeferredInlineError(deferredText('empty'));
+      return;
+    }
+    item.text = text;
+    item.attachments = attachments;
+    item.editing = false;
+    item.editDraft = null;
+    deferredInlineError = '';
+    // No flush here: the queue still only releases on a natural turn end.
+    scheduleDeferredNextRender();
+  }
+
+  function handleDeferredImagePaste(evt, draft) {
+    const items = (evt.clipboardData && evt.clipboardData.items) || [];
+    let handled = false;
+    for (const it of items) {
+      if (it.kind === 'file' && /^image\//.test(it.type || '')) {
+        const file = it.getAsFile && it.getAsFile();
+        if (file) {
+          addDeferredAttachmentFromFile(draft, file);
+          handled = true;
+        }
+      }
+    }
+    if (handled) {
+      evt.preventDefault();
+      evt.stopPropagation();
+    }
+  }
+
+  function addDeferredAttachmentFromFile(draft, file) {
+    if (!draft || !file) return;
+    // Shared allow-list / cap with the user-bubble inline editor — one
+    // source of truth. Error sink stays INLINE (the card), never a toast:
+    // the bubble path toasts, this path must not (deferred-next contract).
+    if (!ALLOWED_INLINE_IMAGE_MIMES.has(file.type)) {
+      setDeferredInlineError(deferredText('badType'));
+      return;
+    }
+    if (file.size > MAX_INLINE_IMAGE_BYTES) {
+      setDeferredInlineError(deferredText('tooLarge', {
+        size: (file.size / 1024 / 1024).toFixed(1),
+      }));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      if (!/^data:image\//i.test(dataUrl)) {
+        setDeferredInlineError(deferredText('readFail'));
+        return;
+      }
+      deferredInlineError = '';
+      draft.attachments.push({ file, dataUrl });
+      scheduleDeferredNextRender();
+    };
+    reader.onerror = () => setDeferredInlineError(deferredText('readFail'));
+    reader.readAsDataURL(file);
+  }
+
+  function discardDeferredNext(id) {
+    if (id == null) deferredQueue = [];
+    else deferredRemoveById(id);
+    if (!deferredQueue.length) { deferredInlineError = ''; removeDeferredNextCard(); }
+    else scheduleDeferredNextRender();
+  }
+
+  // Manual "Guide": send THIS item now through the original host send,
+  // bypassing the queue — available any time, including a frozen/interrupted
+  // state. Only this item leaves; the rest stay queued in order.
+  async function guideDeferredNextNow(item) {
+    if (!item || item.sending) return;
+    const active = locateActiveSessionState();
+    if (active && !deferredSessionMatchesItem(active, item)) {
+      scheduleDeferredNextRender();
+      return;
+    }
+    const session = active || item.session;
+    const rawSend = rawSendForSession(session);
+    if (!session || typeof rawSend !== 'function') return;
+    item.sending = true;
+    scheduleDeferredNextRender();
+    try {
+      deferredNextBypassDepth++;
+      await rawSend.apply(session, [item.text, item.attachments, false]);
+      deferredRemoveById(item.id);
+      if (!deferredQueue.length) removeDeferredNextCard();
+      else scheduleDeferredNextRender();
+    } catch (error) {
+      item.sending = false;
+      setDeferredInlineError(deferredText('sendFail', {
+        msg: error && error.message ? error.message : String(error),
+      }));
+    } finally {
+      deferredNextBypassDepth--;
+    }
+  }
+
+  // Releases EXACTLY the head, and only when the just-ended turn looks
+  // natural (re-checked here even though armNaturalEndConfirm already
+  // gated — the error interrupt-marker can land between the two). It does
+  // NOT chain to the next item: the next release waits for THIS new turn
+  // to end naturally (a fresh armNaturalEndConfirm on the next settle).
+  async function flushDeferredNextIfReady() {
+    const item = deferredHead();
+    if (!item || item.sending || item.editing || deferredNextFlushInFlight) return;
+    if (deferredAnySending()) return;
+    if (!deferredTurnLooksNatural()) { scheduleDeferredNextRender(); return; }
+    const active = locateActiveSessionState();
+    const activeSessionId = sessionIdOf(active);
+    if (!active || !item.sessionId || activeSessionId !== item.sessionId) {
+      scheduleDeferredNextRender();
+      return;
+    }
+    if (sessionIsBusy(active)) return;  // a turn started; re-arms on next settle
+    const rawSend = rawSendForSession(active);
+    if (typeof rawSend !== 'function') return;
+    item.sending = true;
+    deferredNextFlushInFlight = true;
+    scheduleDeferredNextRender();
+    try {
+      deferredNextBypassDepth++;
+      await rawSend.apply(active, [item.text, item.attachments, false]);
+      deferredRemoveById(item.id);
+      if (!deferredQueue.length) removeDeferredNextCard();
+      else scheduleDeferredNextRender();
+    } catch (error) {
+      item.sending = false;
+      setDeferredInlineError(deferredText('sendFail', {
+        msg: error && error.message ? error.message : String(error),
+      }));
+    } finally {
+      deferredNextBypassDepth--;
+      deferredNextFlushInFlight = false;
+    }
+  }
+
+  function setupDeferredNextVisibilityObserver() {
+    if (deferredNextVisibilityObserver || !document.body) return;
+    deferredNextVisibilityObserver = new MutationObserver(muts => {
+      if (!deferredQueue.length && !deferredNextEl) return;
+      let touched = false;
+      for (const m of muts) {
+        if (m.type === 'attributes') {
+          if (deferredNodeTouchesComposerOrAsk(m.target)) {
+            touched = true;
+            break;
+          }
+          continue;
+        }
+        if (m.type !== 'childList') continue;
+        for (const node of m.addedNodes) {
+          if (deferredNodeTouchesComposerOrAsk(node)) {
+            touched = true;
+            break;
+          }
+        }
+        if (touched) break;
+        for (const node of m.removedNodes) {
+          if (deferredNodeTouchesComposerOrAsk(node)) {
+            touched = true;
+            break;
+          }
+        }
+        if (touched) break;
+      }
+      if (!touched) return;
+      scheduleDeferredNextRender();
+      if (deferredQueue.length && !askPanelIsActive() && !deferredConvBusySafe()) {
+        armNaturalEndConfirm();
+      }
+    });
+    deferredNextVisibilityObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'],
+    });
+  }
+
+  function setupDeferredNextMessageQueue() {
+    if (deferredNextSetupBound) return;
+    deferredNextSetupBound = true;
+    setupDeferredNextVisibilityObserver();
+    scheduleDeferredSessionPatch(0);
+    subscribeRuntime('sessionChanged', () => {
+      deferredNextPatchAttempts = 0;
+      scheduleDeferredSessionPatch(0);
+      cancelNaturalEndConfirm();          // never carry a pending release across sessions
+      scheduleDeferredNextRender();
+    });
+    subscribeRuntime('busyChanged', evt => {
+      deferredNextPatchAttempts = 0;
+      scheduleDeferredSessionPatch(0);
+      // A turn went live (or a tool round-trip) → never release mid-flight.
+      if (evt && evt.busy === true) cancelNaturalEndConfirm();
+      scheduleDeferredNextRender();
+    });
+    // Both fire for natural end AND for Stop/error alike — they only ARM the
+    // sustained confirm window; the window's re-check (interrupted marker /
+    // partial tail) is what actually refuses an interrupted turn.
+    subscribeRuntime('streamSettled', () => { armNaturalEndConfirm(); });
+    subscribeRuntime('assistantTurnFinalized', () => { armNaturalEndConfirm(); });
+    reportHealth('legacy.deferred_next', 'ok');
   }
 
   function setupTranscriptMutationChannel() {
@@ -7626,6 +8631,7 @@ import {
       setupBusyStateObserver,
       setupFileDragReferenceHint,
       setupUserBubbleNativeActionSuppression,
+      setupDeferredNextMessageQueue,
       setupAskRequestRefinement,
       setupTranscriptActionDebugTools,
       assertForkRewindReady,
@@ -7636,6 +8642,7 @@ import {
     initLegacyDiffIsland(legacyContext);
     initLegacyForkRewind(legacyContext);
     initLegacyUserBubble(legacyContext);
+    initLegacyDeferredNext(legacyContext);
     initLegacyAskRefinement(legacyContext);
     initLegacyTranscriptActionDebug(legacyContext);
     reportHealth('legacy', 'ok');

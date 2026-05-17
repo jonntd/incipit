@@ -6,9 +6,10 @@
 // flat dotted strings so they are greppable without tooling.
 //
 // Intentionally NOT translated:
-//   - the frontispiece tagline ("a quiet typesetting patch / for
-//     long-form reading") — it is the project's brand-level identity
-//     and is meant to read as a literary epigraph, not UI copy
+//   - the frontispiece tagline ("A frontend rework of the official /
+//     Claude Code VS Code extension") — it is the project's
+//     brand-level identity, kept verbatim in sync with the git/package
+//     description, and reads as a literary epigraph, not UI copy
 //   - the ledger labels (Target / Extension / Restore) — these are
 //     typography/administration terms, not prose
 //
@@ -27,7 +28,7 @@ const STRINGS = {
     // --- help ---
     'help.usage_heading':       'Usage',
     'help.cmd_default':         'open the interactive frontispiece menu (default)',
-    'help.cmd_apply':           'apply the typesetting patch without entering the menu',
+    'help.cmd_apply':           'apply the interface patch without entering the menu',
     'help.cmd_restore':         'restore the official Claude Code files',
     'help.cmd_clean_backups':   'delete legacy incipit backup files',
     'help.cmd_list_targets':    'list every known Claude Code target and exit',
@@ -44,7 +45,7 @@ const STRINGS = {
     'ledger.extension_missing': 'Claude Code extension not detected',
 
     // --- menu table of contents ---
-    'menu.apply':               'Apply typesetting patch',
+    'menu.apply':               'Apply interface patch',
     'menu.restore':             'Restore official Claude Code',
     'menu.configure':           'Configure',
     'menu.target':              'Manage Claude Code targets',
@@ -70,12 +71,12 @@ const STRINGS = {
     'connect.back':             'Back',
 
     // --- apply flow ---
-    'apply.title':              '[ Apply Claude Code typesetting patch ]',
+    'apply.title':              '[ Apply Claude Code interface patch ]',
     'apply.extension_header':   'Claude Code extension',
     'apply.version_header':     'Detected version',
     'apply.restore_point_failed': 'Official restore point failed: {msg}',
     'apply.missing_original':   '(original file does not exist)',
-    'apply.applying':           'Applying typesetting patch ...',
+    'apply.applying':           'Applying interface patch ...',
     'apply.apply_failed':       'Patch failed: {msg}',
     'apply.restore_missing.heading': 'Official restore point is missing',
     'apply.restore_missing.body': 'This Claude Code already contains an older incipit patch, but incipit cannot find the original official files. This usually only happens after applying an old incipit version.',
@@ -193,6 +194,7 @@ const STRINGS = {
     'target.no_targets_hint':   "Use '+ Add target' below to point at one manually.",
     'target.list_heading':      'Known targets',
     'target.add_label':         '+ Add target (folder dialog)',
+    'target.scan_label':        '⌕ Deep scan (find more installs)',
     'target.remove_label':      '× Remove target',
     'target.back':              'Back',
     'target.column_auto':       'auto',
@@ -204,7 +206,7 @@ const STRINGS = {
     'target.cannot_remove_auto':'Auto-detected entries cannot be removed; remove the underlying installation instead.',
     'target.no_manual_to_delete':'No manual targets to delete (auto-detected entries cannot be removed).',
     'target.delete_mode_heading':'Pick a target to remove',
-    'target.hint':              'a add · d remove · b back',
+    'target.hint':              'a add · s scan · d remove · b back',
     'target.hint_delete':       '↑↓ pick · Enter remove · Esc cancel',
 
     // --- add target wizard ---
@@ -253,10 +255,17 @@ const STRINGS = {
     'target.identify.fail_heading':            'Could not recognize this folder',
     'target.identify.fail_picked':             'You picked',
     'target.identify.fail_unknown':
-        'This folder does not look like a VS Code-family installation. It must satisfy one of:\n' +
-        '  · contain an anthropic.claude-code-* subfolder\n' +
-        '  · contain both extensions/ and user-data/\n' +
-        '  · be a portable install root containing a data/ folder',
+        'This does not look like a place a VS Code-family editor keeps Claude Code.\n' +
+        'Pick one of these instead:\n' +
+        '  · the editor data/profile folder, e.g.  ~/.vscode  ~/.cursor  ~/.vscode-insiders\n' +
+        '  · its extensions/ subfolder\n' +
+        '  · a single anthropic.claude-code-* version folder\n' +
+        '  · a portable data/ folder (with extensions/ + user-data/ inside)',
+    'target.identify.fail_profile_no_claude':
+        'This looks like a VS Code-family editor profile, but no Claude Code\n' +
+        'extension is installed under its extensions/ folder. Install Claude Code\n' +
+        'in that editor first, or pick the profile/extensions folder of the\n' +
+        'editor that actually has it.',
     'target.identify.fail_standard_install':
         'You picked a VS Code-family program installation directory, but on this machine\n' +
         'that host appears to run in standard (non-portable) mode: extensions and settings\n' +
@@ -268,6 +277,23 @@ const STRINGS = {
         'then pick that data/ folder instead of the program root.',
     'target.identify.fail_repick':             'Pick another folder',
     'target.identify.fail_back':               'Back',
+    'target.identify.fail_scan_here':          '⌕ Deep scan inside this folder',
+
+    // --- deep scan ---
+    'target.scan.heading':            '── Deep scan for Claude Code ──',
+    'target.scan.progress_heading':   'Scanning…',
+    'target.scan.stat':               'scanned {dirs} dirs · found {found} · {secs}s',
+    'target.scan.scanning_empty':     'searching… (nothing new yet)',
+    'target.scan.progress_hint':      'press any key to stop and use what was found',
+    'target.scan.results_heading':    'Deep scan results',
+    'target.scan.results_summary':    '{from}–{to} of {count} found',
+    'target.scan.results_hint':       '↑↓ move   ·   PgUp/PgDn page   ·   Home/End ends — list only',
+    'target.scan.results_actions':    '[Space] toggle    [↵] add selected ({n})\n[a] select all    [n] select none    [Esc] cancel',
+    'target.scan.none_found':         'No new Claude Code installs were found (already-known targets are hidden).',
+    'target.scan.timed_out':          'time limit reached — results may be incomplete; pick a more specific folder for a full scan',
+    'target.scan.stopped':            'stopped',
+    'target.scan.added':              'Added {n} target(s).',
+    'target.scan.added_none':         'Nothing selected — no targets added.',
 
     // --- apply pre-picker ---
     'target.apply_picker.heading':             '── Confirm target for apply ──',
@@ -365,7 +391,7 @@ const STRINGS = {
     // --- help ---
     'help.usage_heading':       '用法',
     'help.cmd_default':         '交互式扉页菜单(默认)',
-    'help.cmd_apply':           '直接应用排版补丁，不进菜单',
+    'help.cmd_apply':           '直接应用界面补丁，不进菜单',
     'help.cmd_restore':         '恢复为官方 Claude Code 文件',
     'help.cmd_clean_backups':   '删除旧版 incipit 备份文件',
     'help.cmd_list_targets':    '列出所有已知 Claude Code 目标后退出',
@@ -380,7 +406,7 @@ const STRINGS = {
 
     'ledger.extension_missing': '未检测到 Claude Code 扩展',
 
-    'menu.apply':               '应用排版补丁',
+    'menu.apply':               '应用界面补丁',
     'menu.restore':             '恢复官方 Claude Code',
     'menu.configure':           '配置',
     'menu.target':              '管理 Claude Code 目标位置',
@@ -404,12 +430,12 @@ const STRINGS = {
     'connect.heading':          'Connect us',
     'connect.back':             '返回',
 
-    'apply.title':              '[应用 Claude Code 排版补丁]',
+    'apply.title':              '[应用 Claude Code 界面补丁]',
     'apply.extension_header':   'Claude Code 扩展',
     'apply.version_header':     '检测版本',
     'apply.restore_point_failed': '官方恢复点创建失败：{msg}',
     'apply.missing_original':   '(原文件不存在)',
-    'apply.applying':           '正在应用排版补丁 ...',
+    'apply.applying':           '正在应用界面补丁 ...',
     'apply.apply_failed':       '应用失败：{msg}',
     'apply.restore_missing.heading': '官方恢复点缺失',
     'apply.restore_missing.body': '这个 Claude Code 已经包含旧 incipit 补丁，但本机找不到当时保存的官方文件。通常只会发生在很早版本的 incipit apply 过以后。',
@@ -525,6 +551,7 @@ const STRINGS = {
     'target.no_targets_hint':   '可使用下方"+ 添加新目标"手动指定。',
     'target.list_heading':      '已知目标',
     'target.add_label':         '+ 添加新目标 (文件夹对话框)',
+    'target.scan_label':        '⌕ 深度扫描 (查找更多安装)',
     'target.remove_label':      '× 删除目标',
     'target.back':              '返回',
     'target.column_auto':       '自动',
@@ -536,7 +563,7 @@ const STRINGS = {
     'target.cannot_remove_auto':'自动探测到的项不能删除——请直接卸载对应的安装。',
     'target.no_manual_to_delete':'当前没有可删除的手动目标(自动探测项不能从这里删除)。',
     'target.delete_mode_heading':'请选择要删除的目标',
-    'target.hint':              'a 添加 · d 删除 · b 返回',
+    'target.hint':              'a 添加 · s 扫描 · d 删除 · b 返回',
     'target.hint_delete':       '↑↓ 选择 · 回车 删除 · Esc 取消',
 
     // --- add target wizard ---
@@ -585,10 +612,15 @@ const STRINGS = {
     'target.identify.fail_heading':            '无法识别这个文件夹',
     'target.identify.fail_picked':             '你选的是',
     'target.identify.fail_unknown':
-        '这个文件夹不像 VS Code 系的安装位置。它需要满足以下任一条件：\n' +
-        '  · 内含 anthropic.claude-code-* 子目录\n' +
-        '  · 同时有 extensions/ 和 user-data/ 两个子目录\n' +
-        '  · 是 portable 解压版的安装根 (含 data/ 子目录)',
+        '这里不像 VS Code 系编辑器存放 Claude Code 的位置。请改选下列之一：\n' +
+        '  · 编辑器的 数据/profile 目录，如  ~/.vscode  ~/.cursor  ~/.vscode-insiders\n' +
+        '  · 它的 extensions/ 子目录\n' +
+        '  · 单个 anthropic.claude-code-* 版本目录\n' +
+        '  · portable 的 data/ 目录（里面有 extensions/ + user-data/）',
+    'target.identify.fail_profile_no_claude':
+        '这看着是 VS Code 系编辑器的 profile 目录，但它的 extensions/ 下\n' +
+        '没有安装 Claude Code 扩展。请先在该编辑器里装上 Claude Code，或改选\n' +
+        '真正装了 Claude Code 的那个编辑器的 profile / extensions 目录。',
     'target.identify.fail_standard_install':
         '你选的是 VS Code 系宿主的程序安装目录,但这台机器上它看起来走的是标准模式——\n' +
         '扩展和设置实际**不在**程序目录下,而是在系统标准的用户目录里。如果已经安装 Claude Code,\n' +
@@ -599,6 +631,23 @@ const STRINGS = {
         '不是程序根目录。',
     'target.identify.fail_repick':             '重新选择',
     'target.identify.fail_back':               '返回',
+    'target.identify.fail_scan_here':          '⌕ 深度扫描这个目录',
+
+    // --- 深度扫描 ---
+    'target.scan.heading':            '── 深度扫描 Claude Code ──',
+    'target.scan.progress_heading':   '扫描中…',
+    'target.scan.stat':               '已扫 {dirs} 个目录 · 找到 {found} · {secs}s',
+    'target.scan.scanning_empty':     '搜索中…(暂无新发现)',
+    'target.scan.progress_hint':      '按任意键停止,并使用已找到的结果',
+    'target.scan.results_heading':    '深度扫描结果',
+    'target.scan.results_summary':    '第 {from}–{to} / 共 {count}',
+    'target.scan.results_hint':       '↑↓ 移动   ·   PgUp/PgDn 翻页   ·   Home/End 首尾 — 只动列表',
+    'target.scan.results_actions':    '[空格] 勾选    [↵] 添加所选（{n}）\n[a] 全选    [n] 全不选    [Esc] 取消',
+    'target.scan.none_found':         '没有发现新的 Claude Code 安装(已知目标已隐藏)。',
+    'target.scan.timed_out':          '已达时间上限——结果可能不全;想全扫请选更具体的目录',
+    'target.scan.stopped':            '已停止',
+    'target.scan.added':              '已添加 {n} 个目标。',
+    'target.scan.added_none':         '未勾选——没有添加任何目标。',
 
     // --- apply pre-picker ---
     'target.apply_picker.heading':             '── 确认 apply 目标 ──',
@@ -663,7 +712,7 @@ const STRINGS = {
     'configure.off':            '关闭',
     'configure.reset_confirm':  '将功能开关和外观设置重置为默认？(y/N)：',
     'configure.reset_done':     '已重置。',
-    'configure.saved_hint':     '已保存。重跑 1. 应用排版补丁 使更改生效。',
+    'configure.saved_hint':     '已保存。重跑 1. 应用界面补丁 使更改生效。',
     'configure.body_size_heading':'正文字号',
     'configure.body_size_default_mark':'(默认)',
     'configure.param_palette':  '主题色',
@@ -690,7 +739,7 @@ const STRINGS = {
     'apply.summary_heading':    '当前配置',
     'apply.summary_on':         '启用',
     'apply.summary_off':        '关闭',
-    'apply.summary_hint':       '提示：`3. 配置` 可调整，改动后重跑 `1. 应用排版补丁` 生效。',
+    'apply.summary_hint':       '提示：`3. 配置` 可调整，改动后重跑 `1. 应用界面补丁` 生效。',
   },
 };
 

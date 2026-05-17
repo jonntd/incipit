@@ -322,4 +322,78 @@ function viewportRows() {
   return Number.isFinite(rows) && rows > 0 ? rows : Infinity;
 }
 
-module.exports = { keyLoop, withScreenSession, invalidateScreenSession };
+// Live progress loop: repaint `render()` on a timer while `task()` runs,
+// and let ANY key cancel. Used for the deep scan — the user must see
+// scrolling progress and be able to stop the moment they see what they
+// want. `task` receives `{ isCancelled }` and is expected to poll it (the
+// engine also enforces its own hard deadline). Resolves
+// `{ cancelled, result }` when the task settles. Raw-mode / cursor
+// teardown mirrors keyLoop exactly so the terminal is always restored.
+function liveLoop({ task, render, intervalMs = 120 }) {
+  return new Promise((resolve, reject) => {
+    const wasRaw = process.stdin.isRaw === true;
+    const terminal = supportsTerminalControl();
+    const screen = terminal
+      ? (activeScreenSession || createScreenRenderer())
+      : createDumbRenderer(render);
+
+    let finished = false;
+    let cancelled = false;
+    let timer = null;
+
+    const cleanup = () => {
+      if (timer) { clearInterval(timer); timer = null; }
+      process.stdin.removeListener('keypress', handler);
+      try {
+        if (process.stdin.isTTY) process.stdin.setRawMode(wasRaw);
+      } catch (_) {}
+      process.stdin.pause();
+      if (terminal) process.stdout.write(CURSOR_SHOW);
+    };
+    const settle = (fn, val) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      fn(val);
+    };
+
+    function handler(str, key) {
+      if (finished) return;
+      if (key && key.ctrl && key.name === 'c') {
+        finished = true;
+        cleanup();
+        process.stdout.write('\n');
+        process.exit(130);
+      }
+      // Any other key = "stop now, take what you have".
+      cancelled = true;
+    }
+
+    try {
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    } catch (_) {}
+    process.stdin.resume();
+    if (terminal) process.stdout.write(CURSOR_HIDE);
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.on('keypress', handler);
+
+    const paint = () => {
+      try {
+        screen.draw(render);
+        if (terminal) process.stdout.write(CURSOR_HIDE);
+      } catch (exc) {
+        settle(reject, exc);
+      }
+    };
+
+    paint();
+    timer = setInterval(paint, intervalMs);
+
+    Promise.resolve()
+      .then(() => task({ isCancelled: () => cancelled }))
+      .then(result => { paint(); settle(resolve, { cancelled, result }); })
+      .catch(exc => settle(reject, exc));
+  });
+}
+
+module.exports = { keyLoop, liveLoop, withScreenSession, invalidateScreenSession };

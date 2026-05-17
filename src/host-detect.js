@@ -536,6 +536,34 @@ function identifyFolder(picked) {
     }
   }
 
+  // Layer 5: a host profile/data root the user pointed at — e.g. ~/.vscode,
+  // ~/.cursor, ~/.vscode-insiders — whose `extensions/` subfolder holds
+  // Claude Code. This is the single most natural manual pick (the parent of
+  // the extensions dir). Resolve EXACTLY one level down; never an arbitrary
+  // deep walk — a deep scan could match a stale or wrong-host copy and
+  // silently retarget the patch. Settings derivation reuses the same
+  // (already-validated) path used by Layer 2 for a directly-picked
+  // extensions dir, so standard mode correctly resolves to the
+  // platform-default user settings location.
+  const profileExtDir = path.join(picked, 'extensions');
+  if (isDir(profileExtDir)) {
+    const profileExts = scanClaudeCodeExtensions(profileExtDir);
+    if (profileExts.length) {
+      const latest = profileExts[profileExts.length - 1];
+      return {
+        kind: 'extensions_dir',
+        extensionsDir: profileExtDir,
+        settingsPath: deriveSettingsPathFromExtensionsDir(profileExtDir),
+        latestVersion: latest.version.join('.') || 'unknown',
+        latestExtName: latest.name,
+      };
+    }
+    // It IS an editor-profile shape (has an `extensions/`) but Claude Code
+    // is not installed there — return a specific, actionable hint instead
+    // of the generic "no known shape".
+    return { kind: 'unknown', hint: 'profile-no-claude-code' };
+  }
+
   if (looksLikeStandardVSCodeInstall(picked)) {
     return {
       kind: 'standard_install_root',
@@ -602,6 +630,33 @@ function deriveAppDataSettingsPathFromExtensionsDir(extensionsDir) {
     }
   }
   return null;
+}
+
+// Best-effort friendly identity for a discovered `.../extensions` dir: a
+// host label for the picker plus the SAME settings path manual identify
+// would derive (so a scanned target behaves exactly like a hand-picked
+// one). Label precedence: profile home-name (.vscode → VS Code) → app-data
+// root name → portable (sibling user-data) → the parent dir name.
+function describeExtensionsDir(extensionsDir) {
+  const settingsPath = deriveSettingsPathFromExtensionsDir(extensionsDir);
+  const parentName = path.basename(path.dirname(extensionsDir));
+
+  const homeHosts = HOSTS_BY_HOME_NAME.get(parentName);
+  if (homeHosts && homeHosts.length) {
+    return { label: selectHostsForHomeName(parentName, homeHosts)[0].label, settingsPath };
+  }
+  const lower = parentName.toLowerCase();
+  for (const host of HOSTS) {
+    for (const appDataRoot of appDataRootCandidatesForHost(host)) {
+      if (path.basename(appDataRoot).toLowerCase() === lower) {
+        return { label: `${host.label} (app data)`, settingsPath };
+      }
+    }
+  }
+  if (isDir(path.join(path.dirname(extensionsDir), 'user-data'))) {
+    return { label: `${parentName} (portable)`, settingsPath };
+  }
+  return { label: parentName || 'Unknown editor', settingsPath };
 }
 
 // ============================================================
@@ -682,5 +737,6 @@ module.exports = {
   validateTargetEntry,
   scanClaudeCodeExtensions,
   deriveSettingsPathFromExtensionsDir,
+  describeExtensionsDir,
   settingsPathForAppDataName,
 };

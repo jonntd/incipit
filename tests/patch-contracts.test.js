@@ -297,6 +297,7 @@ function assertRuntimeSourceContracts() {
     diff_island: 'initLegacyDiffIsland',
     fork_rewind: 'initLegacyForkRewind',
     user_bubble: 'initLegacyUserBubble',
+    deferred_next: 'initLegacyDeferredNext',
     ask_refinement: 'initLegacyAskRefinement',
   };
   for (const [moduleName, initName] of Object.entries(legacyModules)) {

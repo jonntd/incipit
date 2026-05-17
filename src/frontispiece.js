@@ -50,8 +50,8 @@ function viewportRows() {
 
 const TITLE = 'I  ·  N  ·  C  ·  I  ·  P  ·  I  ·  T';
 const TAGLINES = Object.freeze([
-  'a quiet typesetting patch',
-  'for long-form reading',
+  'A frontend rework of the official',
+  'Claude Code VS Code extension',
 ]);
 
 let activeCapture = null;
@@ -889,6 +889,133 @@ function renderIdentifyFailure(options) {
   renderHint(printer, indent, hint);
 }
 
+// Live deep-scan progress. Repainted on a timer by select.liveLoop; the
+// results list grows in place inside the scroll region as the engine
+// streams hits. Any key stops the scan (see the hint).
+function renderDeepScanProgress(options) {
+  const {
+    version, heading, statLine, currentLine, results, hint, emptyText,
+  } = options;
+  clearScreen();
+  const { inner, framePad, indent } = frameGeometry();
+  const gaps = verticalGaps();
+  const printer = createPrinter(framePad, inner);
+  const rule = color('━'.repeat(inner), Ansi.GREY);
+  const centered = text => centerLine(text, inner);
+
+  printer.line(rule);
+  for (let i = 0; i < gaps.topBlanks; i++) printer.blank();
+  renderTitle(printer, inner, version);
+  for (let i = 0; i < gaps.titleGapAfter; i++) printer.blank();
+  printer.line(centered(color(heading, `${Ansi.TERRA}${Ansi.BOLD}`)));
+  printer.blank();
+  printer.line(indent + color(statLine, Ansi.IVORY));
+  if (currentLine) {
+    for (const chunk of wrapPathValue(currentLine, inner - indent.length - 2)) {
+      printer.line(indent + color(chunk, `${Ansi.GREY}${Ansi.ITALIC}`));
+    }
+  }
+  printer.blank();
+
+  printer.scrollStart();
+  if (!results.length) {
+    printer.line(indent + color(emptyText, `${Ansi.GREY}${Ansi.ITALIC}`));
+  } else {
+    for (const r of results) {
+      printer.line(
+        indent +
+        color('+ ', Ansi.TERRA) +
+        color(r.label, Ansi.IVORY) +
+        color(`  ${r.version}`, Ansi.GREY),
+      );
+      for (const chunk of wrapPathValue(shortenPath(r.path), inner - indent.length - 4)) {
+        printer.line(indent + '    ' + color(chunk, Ansi.GREY));
+      }
+    }
+  }
+  printer.scrollEnd();
+
+  for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
+  printer.line(rule);
+  renderHint(printer, indent, hint);
+}
+
+// Deep-scan results: an explicit multi-select. Nothing here is applied —
+// the caller saves only what the user ticks (fail-closed: a broad scan
+// still never silently retargets).
+//
+// Deterministic PAGINATION, not a scroll region: the caller passes the
+// already-windowed `visibleRows` (a page slice, each row carrying its
+// `focused` flag) plus `rangeText` ("3–10 / 19"). This removes all
+// dependence on the screen renderer's scroll-region math, which collapsed
+// to ~2 visible entries on short terminals and didn't track 2-line rows.
+// The commit is an explicit, focusable "✓ Add selected (N)" action below
+// the list — the settle step is visible and deliberate.
+function renderDeepScanResults(options) {
+  const {
+    version, heading, rangeText, visibleRows, actionLegend, hint, emptyText,
+  } = options;
+  clearScreen();
+  const { inner, framePad, indent } = frameGeometry();
+  const gaps = verticalGaps();
+  const printer = createPrinter(framePad, inner);
+  const rule = color('━'.repeat(inner), Ansi.GREY);
+  const centered = text => centerLine(text, inner);
+  const cursor = cursorIndent();
+
+  printer.line(rule);
+  for (let i = 0; i < gaps.topBlanks; i++) printer.blank();
+  renderTitle(printer, inner, version);
+  for (let i = 0; i < gaps.titleGapAfter; i++) printer.blank();
+  printer.line(centered(color(heading, `${Ansi.TERRA}${Ansi.BOLD}`)));
+  printer.blank();
+
+  if (!visibleRows.length) {
+    printer.line(indent + color(emptyText, `${Ansi.GREY}${Ansi.ITALIC}`));
+    for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
+    printer.line(rule);
+    renderHint(printer, indent, hint);
+    return;
+  }
+
+  printer.line(indent + color(rangeText, Ansi.GREY));
+  printer.blank();
+
+  for (const row of visibleRows) {
+    // Checked = colored affordance (terra box + bright ivory label) so a
+    // pick visibly lights up; unchecked recedes to a calm grey blank box +
+    // grey label. Terra stays small-area (the box only) per the project's
+    // restraint — an unchecked→checked row brightens, it does not redden.
+    const box = color(row.checked ? '[✓]' : '[ ]', row.checked ? Ansi.TERRA : Ansi.GREY);
+    printer.line(
+      (row.focused ? cursor : indent) + box + ' ' +
+      color(row.label, row.checked ? Ansi.IVORY : Ansi.GREY) +
+      color(`  ${row.version}`, Ansi.GREY),
+    );
+    for (const chunk of wrapPathValue(shortenPath(row.path), inner - indent.length - 6)) {
+      printer.line(indent + '     ' + color(chunk, Ansi.GREY));
+    }
+  }
+
+  // One blank only — no extra '─' divider here. The standard bottom '━'
+  // rule (below) is the single decorative footer line; a second indented
+  // rule above the legend just reads as a duplicate.
+  printer.blank();
+
+  // The actions are a FIXED keyboard legend, never cursor-focusable rows.
+  // `cursorIndent()` (the only source of '›') is deliberately not used
+  // here: the single cursor lives on a result row above. Re-introducing a
+  // focused/cursor action re-merges nav and action onto one axis — the
+  // exact 19-result scrolling conflict this screen was rebuilt to remove.
+  for (const lineText of String(actionLegend).split('\n')) {
+    printer.line(indent + color(lineText, Ansi.IVORY));
+  }
+
+  for (let i = 0; i < gaps.menuGapBeforeRule; i++) printer.blank();
+  printer.line(rule);
+  renderHint(printer, indent, hint);
+}
+
 // Apply pre-picker — invoked once at the top of every interactive apply.
 // `entries` lists the user's known targets in order; `selectedIndex`
 // indexes the row the user is about to commit to (cursor + dot are
@@ -987,5 +1114,7 @@ module.exports = {
   renderAddTargetIntro,
   renderIdentifyResult,
   renderIdentifyFailure,
+  renderDeepScanProgress,
+  renderDeepScanResults,
   renderApplyPicker,
 };

@@ -73,9 +73,12 @@ const {
   renderAddTargetIntro,
   renderIdentifyResult,
   renderIdentifyFailure,
+  renderDeepScanProgress,
+  renderDeepScanResults,
   renderApplyPicker,
 } = require('./frontispiece');
-const { keyLoop, withScreenSession, invalidateScreenSession } = require('./select');
+const { keyLoop, liveLoop, withScreenSession, invalidateScreenSession } = require('./select');
+const { deepScan, defaultDeepScanRoots, canonicalKey } = require('./deep-scan');
 
 function prompt(question) {
   return new Promise(resolve => {
@@ -1360,6 +1363,7 @@ async function handleTarget() {
 
     const actions = [
       { mark: 'a.', label: t('target.add_label'),    id: 'add' },
+      { mark: 's.', label: t('target.scan_label'),   id: 'scan' },
       { mark: 'd.', label: t('target.remove_label'), id: 'remove' },
       { mark: 'b.', label: t('target.back'),         id: 'back' },
     ];
@@ -1442,6 +1446,9 @@ async function handleTarget() {
         if (key.name === 'a' || str === 'a') {
           return { done: true, result: { action: 'add' } };
         }
+        if (key.name === 's' || str === 's') {
+          return { done: true, result: { action: 'scan' } };
+        }
         if (key.name === 'd' || str === 'd') {
           return { done: true, result: { action: 'remove' } };
         }
@@ -1511,9 +1518,226 @@ async function handleTarget() {
         if (exc.stack) console.log(exc.stack);
         await pause();
       }
+      // The wizard always scrolled the terminal (native dialog + prompts).
+      // Reset the screen session so the manage screen redraws clean instead
+      // of stacking on the wizard's residue ("已知目标" / hint repeated).
+      resetScreenForMenuTransition();
+      continue;
+    }
+    if (outcome.action === 'scan') {
+      // Leading reset: the manage menu's keyLoop frame must be invalidated
+      // BEFORE the scan flow's full-screen liveLoop starts, or its heading
+      // ("管理 Claude Code 目标位置") bleeds through above the scan screen.
+      resetScreenForMenuTransition();
+      try {
+        await runDeepScanFlow(defaultDeepScanRoots());
+      } catch (exc) {
+        resetScreenForPrompt();
+        console.log(color(t('menu.operation_failed', { msg: exc.message }), Ansi.RED));
+        if (exc.stack) console.log(exc.stack);
+        await pause();
+      }
+      resetScreenForMenuTransition();
       continue;
     }
   }
+}
+
+// Known-target keys to suppress in scan results: a deep scan only surfaces
+// installs the fixed-list auto-detect + stored manual targets do not
+// already cover. Reuses the engine's canonical key so dedup is consistent.
+function knownTargetKeys() {
+  const keys = new Set();
+  try {
+    for (const e of buildMergedTargets().merged) {
+      if (e && e.extensionsDir) keys.add(canonicalKey(e.extensionsDir));
+    }
+  } catch (_) {}
+  return keys;
+}
+
+// Shared by the manage-screen "deep scan" action and the add-wizard
+// "scan inside this folder" fallback. DISCOVERY only — every found
+// install is shown for an explicit multi-select; nothing is applied or
+// saved without the user ticking it (fail-closed red line preserved even
+// for a broad scan).
+async function runDeepScanFlow(roots) {
+  if (!roots || !roots.length) {
+    resetScreenForPrompt();
+    console.log();
+    console.log('  ' + color(t('target.scan.none_found'), Ansi.GREY));
+    await pause();
+    return;
+  }
+
+  const state = { results: [], stats: { scanned: 0, found: 0, elapsedMs: 0, current: '' } };
+  const knownKeys = knownTargetKeys();
+
+  const progressRender = () => {
+    const s = state.stats;
+    renderDeepScanProgress({
+      version: PACKAGE_VERSION,
+      heading: t('target.scan.progress_heading'),
+      statLine: t('target.scan.stat', {
+        dirs: s.scanned,
+        found: state.results.length,
+        secs: (s.elapsedMs / 1000).toFixed(1),
+      }),
+      currentLine: s.current,
+      results: state.results.map(r => ({ label: r.label, path: r.extensionsDir, version: r.latestVersion })),
+      hint: t('target.scan.progress_hint'),
+      emptyText: t('target.scan.scanning_empty'),
+    });
+  };
+
+  const { result } = await liveLoop({
+    render: progressRender,
+    task: ({ isCancelled }) => deepScan({
+      roots,
+      isCancelled,
+      knownKeys,
+      onResult: r => { state.results.push(r); },
+      onProgress: s => { state.stats = { ...s }; },
+    }),
+  });
+
+  const found = state.results.slice();
+  if (!found.length) {
+    resetScreenForPrompt();
+    console.log();
+    console.log('  ' + color(t('target.scan.none_found'), Ansi.GREY));
+    if (result && result.timedOut) {
+      console.log('  ' + color(t('target.scan.timed_out'), `${Ansi.GREY}${Ansi.ITALIC}`));
+    }
+    await pause();
+    return;
+  }
+
+  // Explicit multi-select. Every row is independently tick/untickable.
+  // Default everything UNticked (user-chosen): the list starts as a calm
+  // grey column; a row only lights up (terra box + bright label) once the
+  // user deliberately picks it — picks stand out instead of starting as a
+  // wall of terra. The fail-closed line still holds: nothing is added
+  // unless the user ticks it and presses [↵].
+  const rows = found.map(r => ({
+    label: r.label,
+    path: r.extensionsDir,
+    version: r.latestVersion,
+    extensionsDir: r.extensionsDir,
+    settingsPath: r.settingsPath || null,
+    checked: false,
+  }));
+  // GUARDRAIL — the four actions are a FIXED keyboard legend, never rows
+  // on the cursor axis. They were once navigable rows after the result
+  // list (one shared selectedIndex over rows+actions); on a real 19-result
+  // terminal the down-arrow walked straight off the list into "Add
+  // selected" and the user could not reach every result — list-scroll and
+  // action-pick fought for ↑↓. Now selectedIndex is STRICTLY a result row;
+  // [Space] toggles, [↵] commits, [a]/[n] all/none, [Esc] cancels. Do not
+  // fold any action back onto selectedIndex — it reopens that conflict
+  // (tests/deep-scan-results-screen.test.js asserts a single result-only
+  // cursor and a cursor-free legend; re-merging turns it red).
+  const checkedCount = () => rows.filter(r => r.checked).length;
+  // Deterministic windowed paging (never the fragile scroll-region math).
+  // Chrome (title block + heading + range + separator + 2 legend lines +
+  // hint) ≈ 20 lines; each result is 2 lines. clampPage() keeps the cursor
+  // on-screen, so every one of N results is reachable by plain ↑↓.
+  const termRows = (process.stdout && process.stdout.rows) || 30;
+  const PAGE = Math.max(3, Math.min(12, Math.floor((termRows - 20) / 2)));
+  let selectedIndex = 0;   // STRICTLY 0..rows.length-1 — always a result row
+  let pageStart = 0;       // first result index shown in the window
+  const clampPage = () => {
+    const maxStart = Math.max(0, rows.length - PAGE);
+    if (selectedIndex < pageStart) pageStart = selectedIndex;
+    else if (selectedIndex >= pageStart + PAGE) pageStart = selectedIndex - PAGE + 1;
+    if (pageStart > maxStart) pageStart = maxStart;
+    if (pageStart < 0) pageStart = 0;
+  };
+
+  // Progress (liveLoop) and results (keyLoop) are different-height full
+  // screens; invalidate the session so the results screen hard-clears the
+  // progress frame instead of soft-painting over its taller tail (which
+  // would leave the progress heading/rule stacked behind the results).
+  resetScreenForMenuTransition();
+  const outcome = await keyLoop({
+    render: () => {
+      const end = Math.min(pageStart + PAGE, rows.length);
+      const visibleRows = rows.slice(pageStart, end).map((r, k) => ({
+        label: r.label,
+        path: r.path,
+        version: r.version,
+        checked: r.checked,
+        focused: (pageStart + k) === selectedIndex,
+      }));
+      return renderDeepScanResults({
+        version: PACKAGE_VERSION,
+        heading: t('target.scan.results_heading'),
+        rangeText: t('target.scan.results_summary', {
+          count: rows.length,
+          from: rows.length ? pageStart + 1 : 0,
+          to: end,
+        }),
+        visibleRows,
+        actionLegend: t('target.scan.results_actions', { n: checkedCount() }),
+        hint: t('target.scan.results_hint'),
+        emptyText: t('target.scan.none_found'),
+      });
+    },
+    onKey: (str, key) => {
+      if (!key) return;
+      if (key.name === 'up' || key.name === 'k') {
+        selectedIndex = Math.max(0, selectedIndex - 1); clampPage(); return;
+      }
+      if (key.name === 'down' || key.name === 'j') {
+        selectedIndex = Math.min(rows.length - 1, selectedIndex + 1); clampPage(); return;
+      }
+      if (key.name === 'pageup') {
+        selectedIndex = Math.max(0, selectedIndex - PAGE); clampPage(); return;
+      }
+      if (key.name === 'pagedown') {
+        selectedIndex = Math.min(rows.length - 1, selectedIndex + PAGE); clampPage(); return;
+      }
+      if (key.name === 'home') { selectedIndex = 0; clampPage(); return; }
+      if (key.name === 'end') { selectedIndex = rows.length - 1; clampPage(); return; }
+      if (str === ' ' || key.name === 'space') {
+        rows[selectedIndex].checked = !rows[selectedIndex].checked;
+        return;
+      }
+      if (str === 'a' || str === 'A') { for (const r of rows) r.checked = true; return; }
+      if (str === 'n' || str === 'N') { for (const r of rows) r.checked = false; return; }
+      if (key.name === 'return' || key.name === 'enter') {
+        return { done: true, result: 'confirm' };
+      }
+      if (key.name === 'backspace' || key.name === 'escape' ||
+          key.name === 'b' || key.name === 'q' || str === 'b' || str === 'q') {
+        return { done: true, result: 'cancel' };
+      }
+    },
+  });
+
+  resetScreenForPrompt();
+  console.log();
+  if (outcome !== 'confirm') {
+    console.log('  ' + color(t('target.scan.added_none'), Ansi.GREY));
+    await pause();
+    return;
+  }
+  const picked = rows.filter(r => r.checked);
+  if (!picked.length) {
+    console.log('  ' + color(t('target.scan.added_none'), Ansi.GREY));
+    await pause();
+    return;
+  }
+  for (const r of picked) {
+    addManualTarget({
+      id: generateTargetId(),
+      label: r.label,
+      extensionsDir: r.extensionsDir,
+      settingsPath: r.settingsPath,
+    });
+  }
+  console.log('  ' + color(t('target.scan.added', { n: picked.length }), Ansi.GREEN));
+  await pause();
 }
 
 async function confirmRemoveTarget() {
@@ -1609,11 +1833,26 @@ async function runAddTargetWizard() {
     return;
   }
 
+  // The native folder dialog (and any console output around it) scrolls the
+  // terminal outside the screen-session model. Drop the stale session so the
+  // next full-screen keyLoop hard-clears instead of soft-painting on top of
+  // the intro screen + dialog residue.
+  resetScreenForMenuTransition();
+
   // Step 4: identify. Loop on failure so the user can re-pick.
   let identification = identifyFolder(pickedPath);
   while (identification.kind === 'unknown' || identification.kind === 'standard_install_root') {
-    const repick = await renderIdentifyFailureAndChoose(pickedPath, identification);
-    if (repick !== 'repick') return;
+    const choice = await renderIdentifyFailureAndChoose(pickedPath, identification);
+    if (choice === 'scan-here') {
+      // Reuse the one scan engine, seeded at exactly what the user picked.
+      // If they picked something huge (home), it behaves like the manage
+      // deep scan — bounded, streaming, cancelable. The flow owns its own
+      // multi-select + save, so we leave the wizard afterwards.
+      resetScreenForMenuTransition();
+      await runDeepScanFlow([{ dir: pickedPath, maxDepth: 9 }]);
+      return;
+    }
+    if (choice !== 'repick') return;
     let nextPicked;
     try {
       nextPicked = pickFolder({ title: t('target.add.dialog_title') });
@@ -1636,6 +1875,9 @@ async function runAddTargetWizard() {
       return;
     }
     pickedPath = nextPicked;
+    // Same scroll boundary as the first pick: the re-pick dialog scrolled
+    // the terminal, so reset before the next identify-failure render.
+    resetScreenForMenuTransition();
     identification = identifyFolder(pickedPath);
   }
 
@@ -1672,13 +1914,18 @@ async function renderDialogUnavailable(reasonCode) {
 
 async function renderIdentifyFailureAndChoose(picked, identification) {
   const actions = [
-    { mark: '1.', label: t('target.identify.fail_repick'), id: 'repick' },
-    { mark: '2.', label: t('target.identify.fail_back'),   id: 'back' },
+    { mark: '1.', label: t('target.identify.fail_scan_here'), id: 'scan-here' },
+    { mark: '2.', label: t('target.identify.fail_repick'),    id: 'repick' },
+    { mark: '3.', label: t('target.identify.fail_back'),      id: 'back' },
   ];
-  const isStandardInstall = identification.kind === 'standard_install_root';
-  const body = isStandardInstall
-    ? t('target.identify.fail_standard_install')
-    : t('target.identify.fail_unknown');
+  let body;
+  if (identification.kind === 'standard_install_root') {
+    body = t('target.identify.fail_standard_install');
+  } else if (identification.hint === 'profile-no-claude-code') {
+    body = t('target.identify.fail_profile_no_claude');
+  } else {
+    body = t('target.identify.fail_unknown');
+  }
 
   let selectedIndex = 0;
   const outcome = await keyLoop({
@@ -1710,8 +1957,9 @@ async function renderIdentifyFailureAndChoose(picked, identification) {
       if (key.name === 'return' || key.name === 'enter') {
         return { done: true, result: actions[selectedIndex].id };
       }
-      if (str === '1') return { done: true, result: 'repick' };
-      if (str === '2') return { done: true, result: 'back' };
+      if (str === '1') return { done: true, result: 'scan-here' };
+      if (str === '2') return { done: true, result: 'repick' };
+      if (str === '3') return { done: true, result: 'back' };
     },
   });
   return outcome;
@@ -2257,7 +2505,7 @@ async function chooseCliLanguage() {
 
 function printHelp() {
   const brand = color('incipit', `${Ansi.TERRA}${Ansi.BOLD}`);
-  const tagline = color('a quiet typesetting patch for long-form reading', `${Ansi.GREY}${Ansi.ITALIC}`);
+  const tagline = color('A frontend rework of the official Claude Code VS Code extension', `${Ansi.GREY}${Ansi.ITALIC}`);
   const usage = color(t('help.usage_heading'), Ansi.GREY);
   const flags = color('flags', `${Ansi.GREY}${Ansi.ITALIC}`);
   const cmd = value => color(value, Ansi.IVORY);
