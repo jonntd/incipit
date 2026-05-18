@@ -44,7 +44,7 @@ incipit
 菜单操作：
 
 - **Apply / Restore**：应用补丁，或把选中的 Claude Code 目标恢复为官方文件。每个目标/版本第一次干净 apply 时只记录一个官方恢复点，后续 apply 复用它；恢复时不会动你其他的 VS Code 配置。
-- **Configure**：开关数学公式渲染、会话用量徽章；切换正文字号（12 / 13 / 14）和暖黑 / 暖白主题。
+- **Configure**：开关数学公式渲染、会话用量徽章；切换正文字号（12 / 13 / 14 / 15 / 16，默认 13）和暖黑 / 暖白主题。
 - **Manage Claude Code targets**：自动探测 VS Code / Cursor / Insiders / VSCodium / Windsurf / Antigravity，也支持手动指定扩展目录。
 - **CLI language**：随时切换中英文。
 
@@ -225,5 +225,18 @@ VS Code 的扩展之间有严格的沙箱隔离，一个插件没有办法向另
 ## License
 
 从下一个版本开始，incipit 按 GNU Affero General Public License v3.0 or later 发布。此前已经发布的版本仍保留其发布时的许可。见 [LICENSE](LICENSE)。
+
+### 内置字体
+
+incipit 内置以下 webview 字体，均依 SIL Open Font License 1.1 授权。每个字族的完整许可随附在 `data/fonts/<字族>/OFL.txt`：
+
+| 字体 | 用途 | 版权 | 来源 |
+| --- | --- | --- | --- |
+| IBM Plex Serif | 拉丁正文 + 强调 | © 2017 IBM Corp.，保留字体名 "Plex" | [IBM/plex](https://github.com/IBM/plex) |
+| Noto Sans SC 思源黑体 | CJK 正文（默认 `plex-hei` 预设） | © 2014–2021 Adobe（Source Han Sans / Noto CJK） | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) |
+| LXGW WenKai 霞鹜文楷 | CJK 正文（可选 `plex-serif` 楷体预设） | © 2021–2026 LXGW；© 2020 The Klee Project Authors | [lxgw/LxgwWenKai](https://github.com/lxgw/LxgwWenKai) |
+| Recursive | 等宽（代码 / 工具输出） | © 2020 The Recursive Project Authors | [arrowtype/recursive](https://github.com/arrowtype/recursive) |
+
+OFL 允许这样的内置与再分发；这些字体经过子集化（OFL 许可范围内的修改），且没有以使用保留字体名（Reserved Font Name）的方式重命名。
 
 ---
