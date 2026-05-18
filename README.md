@@ -46,7 +46,7 @@ On first launch you'll choose a CLI language, then enter the interactive menu:
 Menu actions:
 
 - **Apply / Restore**: apply the patch, or restore the selected Claude Code target to its official files. The first clean apply for each target/version records one official restore point; later applies reuse it. Restore does not touch other VS Code settings.
-- **Configure**: toggle math rendering and the session usage badge; switch body font size (12 / 13 / 14) and warm-black / warm-white palette.
+- **Configure**: toggle math rendering and the session usage badge; switch body font size (12 / 13 / 14 / 15 / 16, default 13) and warm-black / warm-white palette.
 - **Manage Claude Code targets**: auto-detects VS Code / Cursor / Insiders / VSCodium / Windsurf / Antigravity, and accepts manually specified extension directories.
 - **CLI language**: switch between Chinese and English at any time.
 
@@ -227,5 +227,18 @@ Thanks to the [linuxdo](https://linux.do/) community for discussion, sharing, an
 ## License
 
 Starting with the next release, incipit is distributed under the GNU Affero General Public License v3.0 or later. Earlier published releases remain under the license they were published with. See [LICENSE](LICENSE).
+
+### Bundled fonts
+
+incipit bundles the following webview fonts, each under the SIL Open Font License 1.1. The full license accompanies every family at `data/fonts/<family>/OFL.txt`:
+
+| Font | Use | Copyright | Source |
+| --- | --- | --- | --- |
+| IBM Plex Serif | Latin reading + emphasis | © 2017 IBM Corp., Reserved Font Name "Plex" | [IBM/plex](https://github.com/IBM/plex) |
+| Noto Sans SC | CJK reading (default `plex-hei` preset) | © 2014–2021 Adobe (Source Han Sans / Noto CJK) | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) |
+| LXGW WenKai 霞鹜文楷 | CJK reading (opt-in `plex-serif` kai preset) | © 2021–2026 LXGW; © 2020 The Klee Project Authors | [lxgw/LxgwWenKai](https://github.com/lxgw/LxgwWenKai) |
+| Recursive | Monospace (code / tool output) | © 2020 The Recursive Project Authors | [arrowtype/recursive](https://github.com/arrowtype/recursive) |
+
+The OFL permits this bundling and redistribution; the fonts are subset (a permitted modification) and none is renamed in a way that uses a Reserved Font Name.
 
 ---

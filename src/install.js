@@ -693,13 +693,24 @@ function buildThemeOverrideBlock(theme) {
   const rawBody = theme.bodyFontFamily && theme.bodyFontFamily.css;
   const rawCode = theme.codeFontFamily && theme.codeFontFamily.css;
   const bodyFont = sanitizeFontFamilyValue(rawBody)
-    || "'Reading', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, serif";
+    || "'ReadingHei', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif";
   const codeFont = sanitizeFontFamilyValue(rawCode)
     || "'Rec Mono Linear', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', Consolas, Monaco, 'Courier New', monospace";
+  // Emphasis (bold/heading) + warm-white bodyBold face follow the body
+  // preset so a gothic body never gets kai bold runs. Only emitted for
+  // presets that carry a face (config's BODY_FONT_FACE_BY_KEY); for a
+  // custom body font these stay unset and theme.css's static `Emphasis`
+  // / `PaperReading` defaults hold, matching pre-preset behaviour.
+  const emphasisFont = sanitizeFontFamilyValue(
+    theme.bodyFontFamily && theme.bodyFontFamily.emphasisCss);
+  const paperFace = sanitizeFontFamilyValue(
+    theme.bodyFontFamily && theme.bodyFontFamily.paperFace);
   return '\n\n/* incipit user theme overrides (generated at apply; do not edit) */\n' +
          ':root {\n' +
          `  --incipit-body-size: ${theme.bodyFontSize}px;\n` +
          `  --incipit-body-font: ${bodyFont};\n` +
+         (emphasisFont ? `  --incipit-emphasis-font: ${emphasisFont};\n` : '') +
+         (paperFace ? `  --incipit-paper-reading-font: ${paperFace};\n` : '') +
          `  --incipit-code-font: ${codeFont};\n` +
          '}\n';
 }

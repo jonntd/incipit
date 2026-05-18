@@ -38,14 +38,34 @@ const DEFAULT_FEATURES = Object.freeze({
 // irradiation thinning on light surfaces — meaningful only on warm-white,
 // which the UI enforces at pick time and `getTheme()` enforces at read time
 // so warm-black always reports `bodyBold: false`.
-const BODY_FONT_SIZE_OPTIONS = Object.freeze([12, 13, 14]);
+const BODY_FONT_SIZE_OPTIONS = Object.freeze([12, 13, 14, 15, 16]);
 const PALETTE_OPTIONS = Object.freeze(['warm-black', 'warm-white']);
 
 // Preset font-family options. Each entry is [labelKey, cssValue].
-// The labelKey is looked up via i18n; cssValue is the raw font-family stack.
+// The labelKey is looked up via i18n; cssValue is the raw body stack.
+//   plex-hei   : Latin IBM Plex Serif + CJK Noto Sans SC 思源黑体 (gothic) —
+//                DEFAULT, the upstream "online" CJK look; solid on screen
+//   plex-serif : Latin IBM Plex Serif + CJK LXGW WenKai 霞鹜文楷 (kai) —
+//                opt-in literary face; airier (kai caps at Medium 500)
+// First entry is the default (resolveBodyFontFamily / DEFAULT_THEME).
+// Latin is identical across presets; only the CJK face differs. Each
+// preset leads with a bundled @font-face family (`ReadingHei`/`Reading`)
+// whose CJK unicode-range is wired to the matching woff2 in theme.css.
 const BODY_FONT_FAMILY_OPTIONS = Object.freeze([
-  ['plex-serif', "'Reading', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, serif"],
+  ['plex-hei', "'ReadingHei', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif"],
+  ['plex-serif', "'Reading', 'IBM Plex Serif', 'LXGW WenKai', 'Kaiti SC', 'STKaiti', 'KaiTi', serif"],
 ]);
+// Emphasis (bold/heading) + warm-white bodyBold face must switch WITH the
+// body preset, otherwise gothic body text gets kai bold runs (or vice
+// versa). The emphasis stack reuses var(--incipit-body-font) for its own
+// fallback so it always trails the active body chain. `paper` is the
+// family name the warm-white bodyBold rule prepends. Keyed by preset key;
+// absent for `custom` (then theme.css's static `Emphasis` default stands,
+// matching pre-preset behaviour).
+const BODY_FONT_FACE_BY_KEY = Object.freeze({
+  'plex-serif': { emphasis: "'Emphasis', var(--incipit-body-font)", paper: "'PaperReading'" },
+  'plex-hei':   { emphasis: "'EmphasisHei', var(--incipit-body-font)", paper: "'PaperReadingHei'" },
+});
 const RETIRED_BODY_FONT_FAMILY_KEYS = Object.freeze(['georgia', 'system-serif']);
 const CODE_FONT_FAMILY_OPTIONS = Object.freeze([
   ['rec-mono', "'Rec Mono Linear', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', Consolas, Monaco, 'Courier New', monospace"],
@@ -57,7 +77,7 @@ const DEFAULT_THEME = Object.freeze({
   bodyFontSize: 13,
   palette: 'warm-black',
   bodyBold: false,
-  bodyFontFamily: 'plex-serif',
+  bodyFontFamily: 'plex-hei',
   codeFontFamily: 'rec-mono',
 });
 
@@ -175,19 +195,26 @@ function getTheme() {
   return { bodyFontSize: size, palette, bodyBold, bodyFontFamily, codeFontFamily };
 }
 
+function withBodyFace(key, css) {
+  const face = BODY_FONT_FACE_BY_KEY[key];
+  return face
+    ? { key, css, emphasisCss: face.emphasis, paperFace: face.paper }
+    : { key, css };
+}
+
 function resolveBodyFontFamily(saved) {
   const preset = BODY_FONT_FAMILY_OPTIONS.find(([key]) => key === saved);
-  if (preset) return { key: saved, css: preset[1] };
+  if (preset) return withBodyFace(saved, preset[1]);
   if (RETIRED_BODY_FONT_FAMILY_KEYS.includes(saved)) {
     const def = BODY_FONT_FAMILY_OPTIONS[0];
-    return { key: def[0], css: def[1] };
+    return withBodyFace(def[0], def[1]);
   }
   // Custom or missing: fall back to default if no valid custom string.
   if (typeof saved === 'string' && saved.trim().length > 0) {
     return { key: 'custom', css: saved.trim() };
   }
   const def = BODY_FONT_FAMILY_OPTIONS[0];
-  return { key: def[0], css: def[1] };
+  return withBodyFace(def[0], def[1]);
 }
 
 function resolveCodeFontFamily(saved) {
@@ -365,6 +392,7 @@ module.exports = {
   BODY_FONT_SIZE_OPTIONS,
   PALETTE_OPTIONS,
   BODY_FONT_FAMILY_OPTIONS,
+  BODY_FONT_FACE_BY_KEY,
   CODE_FONT_FAMILY_OPTIONS,
   readConfig,
   writeConfig,

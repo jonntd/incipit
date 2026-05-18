@@ -37,11 +37,13 @@
    maintaining two CSS branches.
 
    Implementation contract — DO NOT regress to synthetic bold:
-   - `PaperReading` is registered as font-weight 400 but `src` points to
-     real 500-weight cuts (Plex Serif Medium for Latin, Noto SC Medium for
-     CJK). Consumers stay on `font-weight: 400` and pick up the heavier
-     glyphs without triggering Chromium synthetic bold (fatal for
-     ClearType + serif on Windows).
+   - `PaperReading` / `PaperReadingHei` are registered as font-weight 400
+     but `src` points to real 500-weight cuts (Plex Serif Medium for
+     Latin; CJK Medium = LXGW WenKai 霞鹜文楷 for the kai preset,
+     Noto Sans SC 思源黑体 for the gothic preset). The bodyBold rule
+     picks the matching family via `--incipit-paper-reading-font`.
+     Consumers stay on `font-weight: 400` and pick up the heavier glyphs
+     without triggering Chromium synthetic bold (fatal for ClearType).
    - Selector scope is body text + user bubble only. h1-h6 / strong / b
      stay on `Emphasis` (real Plex Serif SemiBold cuts) via the higher-
      specificity `[data-incipit-message] h1` etc. rules in `theme.css`.
@@ -98,6 +100,30 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
+  src: url('fonts/lxgw-wenkai/LXGWWenKai-500.woff2') format('woff2');
+  unicode-range: U+3000-303F, U+3040-309F, U+30A0-30FF,
+                 U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+                 U+FE30-FE4F, U+FF00-FFEF;
+}
+/* Gothic-preset bodyBold cut: same name-encoded-weight contract, real
+   500-weight masters (Plex Serif Medium + Noto Sans SC Medium). The
+   bodyBold rule below selects `PaperReading` vs `PaperReadingHei` via
+   `--incipit-paper-reading-font`, injected per preset at apply so the
+   warm-white bold body matches whichever CJK face the preset uses. */
+@font-face {
+  font-family: 'PaperReadingHei';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/ibm-plex-serif/IBMPlexSerif-500.woff2') format('woff2');
+  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+2070-209F,
+                 U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF;
+}
+@font-face {
+  font-family: 'PaperReadingHei';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
   src: url('fonts/noto-sans-sc/NotoSansSC-500.woff2') format('woff2');
   unicode-range: U+3000-303F, U+3040-309F, U+30A0-30FF,
                  U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
@@ -112,7 +138,7 @@
 :root[data-incipit-body-bold] [data-incipit-message] blockquote,
 :root[data-incipit-body-bold] [data-incipit-user-bubble],
 :root[data-incipit-body-bold] [data-incipit-user-bubble] [data-incipit-user-content] {
-  font-family: 'PaperReading', var(--incipit-body-font) !important;
+  font-family: var(--incipit-paper-reading-font, 'PaperReading'), var(--incipit-body-font) !important;
 }
 
 /* ---------- Base surface ---------- */

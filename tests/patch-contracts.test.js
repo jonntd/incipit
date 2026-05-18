@@ -20,8 +20,10 @@ const DEFAULT_THEME = Object.freeze({
   palette: 'warm-black',
   bodyBold: false,
   bodyFontFamily: {
-    key: 'plex-serif',
-    css: "'Reading', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, serif",
+    key: 'plex-hei',
+    css: "'ReadingHei', 'IBM Plex Serif', 'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif",
+    emphasisCss: "'EmphasisHei', var(--incipit-body-font)",
+    paperFace: "'PaperReadingHei'",
   },
   codeFontFamily: {
     key: 'rec-mono',
