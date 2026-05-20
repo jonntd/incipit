@@ -2290,7 +2290,7 @@ pre code {
   padding: 0 1px !important;
   gap: 10px !important;
   max-height: min(34vh, 260px) !important;
-  scrollbar-width: thin;
+  scrollbar-width: auto !important;
 }
 
 [data-incipit-ask-request] [class*="questionBlock_"],
@@ -4962,10 +4962,10 @@ pre code {
    recolor via the standard `scrollbar-width` / `scrollbar-color`
    properties. Standard scrollbars stay on Chromium's COMPOSITED
    native path (no per-frame main-thread repaint) while still being
-   thin, terracotta-grey, transparent-track — our refined look, NOT
-   the host default. We lose only pure decoration (pill radius,
-   inner padding, distinct hover/active shades): an accepted trade
-   for smooth middle-click autoscroll.
+   medium-width, terracotta-grey, transparent-track — our refined look,
+   NOT the host default. We lose only pure decoration (pill radius,
+   inner padding, distinct hover/active shades): an accepted trade for
+   smooth middle-click autoscroll.
 
    Monaco widgets use real DOM `.slider` divs (composited, transform
    based) — recolored separately below, unaffected by this.
@@ -4981,22 +4981,8 @@ pre code {
 }
 
 * {
-  scrollbar-width: thin !important;
-  scrollbar-color: var(--incipit-scrollbar-thumb) var(--incipit-scrollbar-track) !important;
-}
-
-/* Main conversation scroller is the one the user looks at and
-   middle-click-autoscrolls all day, so give it the more substantial
-   `auto` width instead of `thin`. The standard `scrollbar-width`
-   property only exposes thin | auto | none — there is no numeric
-   width without going back to the non-composited `::-webkit-scrollbar`
-   path (the autoscroll-jitter root cause, see the note above), so
-   `auto` is the deliberate "a bit thicker, still composited" choice.
-   Still recolored terracotta-grey / transparent-track — NOT the host
-   default scrollbar. */
-[data-incipit-messages-container],
-[class*="messagesContainer_"] {
   scrollbar-width: auto !important;
+  scrollbar-color: var(--incipit-scrollbar-thumb) var(--incipit-scrollbar-track) !important;
 }
 
 .monaco-scrollable-element > .scrollbar > .slider {
