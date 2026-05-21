@@ -1223,23 +1223,38 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
    body's default font family is usually a system sans-serif. */
 [data-incipit-path-tooltip] {
   position: fixed;
-  padding: 0.35em 0.7em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  padding: 0.3em 0.4em 0.3em 0.7em;
+  /* Literary surface, not a CAD frame. Background deliberately tracks the
+     composer's *input-box* surface (#2c2c2a) — NOT the body / input var
+     (#1f1f1e) — so the popover reads as the same lifted paper as the
+     place you type. No border: separation comes only from the same faint
+     two-layer ambient halo the input container uses (theme.css ~2685),
+     restated here verbatim. If the input surface tone ever moves, move
+     this with it. */
   background: #2c2c2a;
-  color: #f8f8f6;
-  border: 1px solid rgba(248, 248, 246, 0.08);
-  border-radius: 3px;
+  color: var(--app-input-foreground, #f8f8f6);
+  border-radius: 5px;
   font-family: var(--incipit-body-font);
   font-size: 12px;
   line-height: 1.4;
-  white-space: nowrap;
+  overflow: visible;
   max-width: 90vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.20),
+              0 1px 3px rgba(0, 0, 0, 0.15);
   direction: ltr;
   unicode-bidi: isolate;
   z-index: 9999;
-  pointer-events: none;
+  /* Hover-stable: unlike a passive label this popover is reachable. The
+     pointer can travel the 4px anchor gap onto it to click the copy
+     button; JS adds a short close-grace so that crossing never dismisses
+     it. The popover floats in the 4px gap above/below the anchor and
+     never overlaps it, so `pointer-events:auto` cannot steal the host
+     link's own click; file-link opening is handled by a separate explicit
+     click handoff in JS. */
+  pointer-events: auto;
   visibility: hidden;
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -1247,6 +1262,99 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 [data-incipit-path-tooltip][data-incipit-path-tooltip-visible="1"] {
   visibility: visible;
   opacity: 1;
+}
+/* Path text clips with an ellipsis; the copy button stays full size. */
+[data-incipit-path-tooltip-text] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+[data-incipit-path-tooltip-copy],
+[data-incipit-path-tooltip-more] {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7em;
+  height: 1.7em;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(248, 248, 246, 0.55);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+[data-incipit-path-tooltip-more][hidden] {
+  display: none;
+}
+[data-incipit-path-tooltip-copy] svg,
+[data-incipit-path-tooltip-more] svg {
+  width: 13px;
+  height: 13px;
+}
+[data-incipit-path-tooltip-copy]:hover,
+[data-incipit-path-tooltip-more]:hover,
+[data-incipit-path-tooltip-more][aria-expanded="true"] {
+  background: rgba(248, 248, 246, 0.1);
+  color: #f8f8f6;
+}
+/* Copied → theme terracotta check, mirroring `.claude-user-copy-btn.copied`
+   (shared `flashCopied` reverts to the copy glyph after 1.2s). */
+[data-incipit-path-tooltip-copy].copied {
+  color: #d97757;
+}
+[data-incipit-path-tooltip-menu] {
+  position: absolute;
+  right: 0;
+  min-width: 205px;
+  padding: 4px;
+  background: #2c2c2a;
+  color: #F5F2E8;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.42),
+              0 2px 8px rgba(0,0,0,0.26);
+  font-family: var(--incipit-body-font) !important;
+  font-size: 12px;
+  line-height: 1.45;
+  z-index: 10000;
+}
+[data-incipit-path-tooltip-menu][hidden] {
+  display: none;
+}
+/* Menu opens away from the anchor so the hover-stable file actions never
+   cover the host link itself. */
+[data-incipit-path-tooltip][data-incipit-path-tooltip-placement="below"] [data-incipit-path-tooltip-menu] {
+  top: calc(100% + 4px);
+}
+[data-incipit-path-tooltip][data-incipit-path-tooltip-placement="above"] [data-incipit-path-tooltip-menu] {
+  bottom: calc(100% + 4px);
+}
+[data-incipit-path-tooltip-menu-item] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 31px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-size: inherit;
+  font-weight: 400;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-incipit-path-tooltip-menu-item]:hover,
+[data-incipit-path-tooltip-menu-item]:focus {
+  background: #121212;
+  outline: none;
 }
 
 /* ============================================================

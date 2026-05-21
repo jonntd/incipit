@@ -183,6 +183,11 @@ import {
     '<path d="m16 8 4 4-4 4"/>' +
     '<path d="m14 6-4 12"/>' +
     '</svg>';
+  const FOLDER_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' +
+    '</svg>';
   // Streaming-disabled variant for edit: original artwork + a single
   // top-left → bottom-right slash painted last so it sits above the
   // icon body. Direction perpendicular to the pen (which runs
@@ -8216,15 +8221,428 @@ import {
     // anchor. An rAF loop runs only while visible, reposition + check
     // `body.contains(target)` so React re-renders auto-dismiss.
     let tipEl = null;
+    let tipTextEl = null;
+    let tipCopyBtn = null;
+    let tipMoreBtn = null;
+    let tipMenuEl = null;
     let tipTarget = null;
+    let tipFullpath = '';
+    let tipFileInfo = null;
     let tipRaf = 0;
+    let tipHideTimer = 0;
+    let tipShowTimer = 0;
+    let tipPendingTarget = null;
+    let tipPendingPath = '';
+    let tipPendingProbe = null;
+    let tipRevealSeq = 0;
+    let tipRevealListenerBound = false;
+    const tipRevealPending = new Map();
+    const BODY_LINK_SCOPE_SELECTOR =
+      '[data-incipit-markdown-root], [data-incipit-message], [class*="root_"]';
+    // Hover-intent dwell (user request, 2026-05-18): the popover only
+    // appears after the pointer rests on a link for this long, so it does
+    // not flash while the eye/cursor merely sweeps across links in prose.
+    // Tunable; the click-to-open handoff is intentionally NOT gated by it.
+    const TIP_SHOW_DELAY = 380;
+    const TIP_PROBE_MOVE_TOLERANCE_PX = 4;
+
+    function cancelScheduledHide() {
+      if (tipHideTimer) { clearTimeout(tipHideTimer); tipHideTimer = 0; }
+    }
+    function clearTipShowTimer() {
+      if (tipShowTimer) { clearTimeout(tipShowTimer); tipShowTimer = 0; }
+      tipPendingTarget = null;
+      tipPendingPath = '';
+      tipPendingProbe = null;
+    }
+    // Short close-grace so the pointer can cross the 4px anchor↔popover
+    // gap to reach the copy button without the popover vanishing.
+    function scheduleHide() {
+      cancelScheduledHide();
+      tipHideTimer = setTimeout(hideTip, 160);
+    }
+
+    function safeDecodeURIComponent(value) {
+      try { return decodeURIComponent(value); } catch (_) { return value; }
+    }
+
+    function eventTargetElement(node) {
+      if (!node) return null;
+      return node.nodeType === 1 ? node : (node.parentElement || null);
+    }
+
+    function isExternalHref(raw) {
+      if (!raw) return false;
+      // Windows `C:\x` / `C:/x` is a filesystem path, not a URL scheme.
+      if (/^[A-Za-z]:[\\/]/.test(raw)) return false;
+      return /^[a-z][a-z0-9+.-]*:/i.test(raw) && !/^file:/i.test(raw);
+    }
+
+    function parseHrefLineLocation(hash) {
+      const m = String(hash || '').match(/^#L?(\d+)(?:-L?(\d+))?$/i);
+      if (!m) return undefined;
+      const startLine = validLineNumber(m[1]);
+      if (!startLine) return undefined;
+      const endLine = validLineNumber(m[2]) || startLine;
+      return { startLine, endLine };
+    }
+
+    function splitFileHref(rawHref) {
+      let raw = String(rawHref || '').trim();
+      if (!raw || raw === '#' || /^javascript:/i.test(raw)) return null;
+      if (raw.charAt(0) === '#') return null;
+      if (isExternalHref(raw)) return null;
+
+      let hash = '';
+      const hashIndex = raw.indexOf('#');
+      if (hashIndex !== -1) {
+        hash = raw.slice(hashIndex);
+        raw = raw.slice(0, hashIndex);
+      }
+      const queryIndex = raw.indexOf('?');
+      if (queryIndex !== -1) raw = raw.slice(0, queryIndex);
+      if (/^file:/i.test(raw)) {
+        try {
+          const url = new URL(raw);
+          raw = url.pathname || '';
+          if (/^\/[A-Za-z]:\//.test(raw)) raw = raw.slice(1);
+          raw = raw.replace(/\//g, '\\');
+        } catch (_) {
+          return null;
+        }
+      }
+      raw = safeDecodeURIComponent(raw).trim();
+      if (!raw) return null;
+      return {
+        filePath: raw,
+        location: parseHrefLineLocation(hash),
+      };
+    }
+
+    function fileInfoFromToolEl(toolEl, pathText) {
+      const filePath = String(pathText || '').trim();
+      if (!filePath) return null;
+      const spec = toolPathOpenSpecs.get(toolEl);
+      const line = validLineNumber(toolEl.dataset && toolEl.dataset.incipitToolGrepLine);
+      return {
+        filePath: spec && spec.path ? spec.path : filePath,
+        location: spec && spec.location ? spec.location : (line ? { startLine: line, endLine: line } : undefined),
+      };
+    }
+
+    function tipHitFromTool(toolEl) {
+      const p = toolEl && toolEl.dataset && toolEl.dataset.incipitToolFullpath;
+      return p ? { target: toolEl, path: p, fileInfo: fileInfoFromToolEl(toolEl, p) } : null;
+    }
+
+    function tipHitFromLink(link) {
+      if (!link) return null;
+      // Use the *authored* href (getAttribute), never `link.href`. The
+      // VSCode webview resolves relative anchors against its own
+      // `vscode-webview://<id>/` origin, so `link.href` for a workspace
+      // file ref like `data/theme.css#L1224` becomes a useless
+      // `vscode-webview://.../data/theme.css#L1224`. The raw attribute is
+      // the faithful value: the workspace-relative path the host maps
+      // back on click, or, for true external links, the full URL.
+      const raw = link.getAttribute('href') || '';
+      if (!raw || raw === '#' || /^javascript:/i.test(raw)) return null;
+      return { target: link, path: raw, fileInfo: splitFileHref(raw) };
+    }
+
+    function cwdForFileAction() {
+      try {
+        const state = kernelGetHostState({ refresh: true, reason: 'link-file-action' });
+        return state && typeof state.cwd === 'string' ? state.cwd : '';
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function setupTipRevealChannel() {
+      if (tipRevealListenerBound) return;
+      tipRevealListenerBound = true;
+      window.addEventListener('message', evt => {
+        const msg = evt && evt.data;
+        if (!msg || msg.__incipit !== true || msg.type !== 'file_reveal_response') return;
+        const pending = tipRevealPending.get(msg.requestId);
+        if (!pending) return;
+        tipRevealPending.delete(msg.requestId);
+        const payload = msg.payload || {};
+        if (payload.ok === false) pending.reject(new Error(payload.error || 'Could not open containing folder.'));
+        else pending.resolve(payload);
+      });
+    }
+
+    function requestOpenContainingFolder(info) {
+      if (!info || !info.filePath) return Promise.reject(new Error('No file path to reveal.'));
+      setupTipRevealChannel();
+      const api = getIncipitVsCodeApi();
+      if (!api || typeof api.postMessage !== 'function') {
+        return Promise.reject(new Error('Could not reach the VS Code webview channel.'));
+      }
+      const requestId = 'reveal-' + (++tipRevealSeq).toString(36);
+      const message = {
+        __incipit: true,
+        type: 'file_reveal_request',
+        requestId,
+        filePath: info.filePath,
+        cwd: cwdForFileAction(),
+      };
+      return new Promise((resolve, reject) => {
+        tipRevealPending.set(requestId, { resolve, reject });
+        try {
+          api.postMessage(message);
+        } catch (error) {
+          tipRevealPending.delete(requestId);
+          reject(error);
+          return;
+        }
+        setTimeout(() => {
+          const pending = tipRevealPending.get(requestId);
+          if (!pending) return;
+          tipRevealPending.delete(requestId);
+          pending.reject(new Error('Open containing folder request timed out.'));
+        }, 6000);
+      });
+    }
+
+    function setTipMenuOpen(open) {
+      if (!tipMenuEl) return;
+      tipMenuEl.hidden = !open;
+      if (tipMoreBtn) tipMoreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
 
     function ensureTipEl() {
       if (tipEl && document.body && document.body.contains(tipEl)) return tipEl;
       tipEl = document.createElement('div');
       tipEl.setAttribute('data-incipit-path-tooltip', '');
+      tipTextEl = document.createElement('span');
+      tipTextEl.setAttribute('data-incipit-path-tooltip-text', '');
+      tipCopyBtn = document.createElement('button');
+      tipCopyBtn.type = 'button';
+      tipCopyBtn.setAttribute('data-incipit-path-tooltip-copy', '');
+      tipCopyBtn.setAttribute('aria-label', 'Copy path');
+      tipCopyBtn.innerHTML = COPY_ICON_SVG;
+      // Copy lives in our body portal, not inside the host anchor, so this
+      // never navigates; stop propagation only to be safe. Reuses the shared
+      // copyText/flashCopied (terra check, reverts after 1.2s).
+      tipCopyBtn.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (tipFullpath) copyText(tipFullpath, tipCopyBtn);
+      });
+      tipMoreBtn = document.createElement('button');
+      tipMoreBtn.type = 'button';
+      tipMoreBtn.setAttribute('data-incipit-path-tooltip-more', '');
+      tipMoreBtn.setAttribute('aria-label', 'More file actions');
+      tipMoreBtn.setAttribute('aria-haspopup', 'menu');
+      tipMoreBtn.setAttribute('aria-expanded', 'false');
+      tipMoreBtn.innerHTML = MORE_ICON_SVG;
+      tipMoreBtn.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (!tipFileInfo) return;
+        ensureTipMenuEl();
+        setTipMenuOpen(tipMenuEl.hidden);
+      });
+      tipEl.addEventListener('mouseenter', cancelScheduledHide);
+      tipEl.addEventListener('mouseleave', scheduleHide);
+      tipEl.appendChild(tipTextEl);
+      tipEl.appendChild(tipCopyBtn);
+      tipEl.appendChild(tipMoreBtn);
       if (document.body) document.body.appendChild(tipEl);
       return tipEl;
+    }
+
+    function ensureTipMenuEl() {
+      const el = ensureTipEl();
+      if (tipMenuEl && el.contains(tipMenuEl)) return tipMenuEl;
+      tipMenuEl = document.createElement('div');
+      tipMenuEl.setAttribute('data-incipit-path-tooltip-menu', '');
+      tipMenuEl.setAttribute('role', 'menu');
+      tipMenuEl.hidden = true;
+
+      const revealBtn = document.createElement('button');
+      revealBtn.type = 'button';
+      revealBtn.setAttribute('data-incipit-path-tooltip-menu-item', '');
+      revealBtn.setAttribute('role', 'menuitem');
+      const icon = document.createElement('span');
+      icon.setAttribute('data-incipit-action-dropdown-icon', '');
+      icon.innerHTML = FOLDER_ICON_SVG;
+      const label = document.createElement('span');
+      label.setAttribute('data-incipit-action-dropdown-label', '');
+      label.textContent = 'Open Containing Folder';
+      revealBtn.appendChild(icon);
+      revealBtn.appendChild(label);
+      revealBtn.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const info = tipFileInfo;
+        setTipMenuOpen(false);
+        requestOpenContainingFolder(info).catch(error => {
+          try { console.warn('[incipit] failed to open containing folder:', error); } catch (_) {}
+          showTranscriptToast('Could not open containing folder', 'error');
+        });
+      });
+      tipMenuEl.appendChild(revealBtn);
+      el.appendChild(tipMenuEl);
+      return tipMenuEl;
+    }
+
+    function bodyLinkScopeFor(node) {
+      const el = eventTargetElement(node);
+      if (!el || !el.closest) return null;
+      const scope = el.closest(BODY_LINK_SCOPE_SELECTOR);
+      if (!scope) return null;
+      const incipitTagged = scope.hasAttribute(ATTR.markdownRoot) || scope.hasAttribute(ATTR.message);
+      const assistantMarkdownFallback = !incipitTagged &&
+        scope.matches &&
+        scope.matches('[class*="root_"]') &&
+        !!findAssistantActionHost(scope);
+      if (!incipitTagged && !assistantMarkdownFallback) return null;
+      if (scope.closest(SEL.userMessageContainer) ||
+          scope.closest(SEL.userBubble) ||
+          scope.closest(SEL.toolUse) ||
+          scope.closest(SEL.thinking) ||
+          scope.closest(SEL.thinkingSummary) ||
+          scope.closest(SEL.thinkingContent) ||
+          scope.closest('[class*="userMessageContainer"]') ||
+          scope.closest('[class*="userMessage_"]') ||
+          scope.closest('[class*="toolUse_"]') ||
+          scope.closest('[class*="thinking"]')) return null;
+      return scope;
+    }
+
+    function closestBodyLink(node) {
+      const el = eventTargetElement(node);
+      const link = el && el.closest ? el.closest('a[href]') : null;
+      return link && bodyLinkScopeFor(link) ? link : null;
+    }
+
+    function pointInsideAnyClientRect(el, x, y) {
+      if (!el || !el.getClientRects) return false;
+      const rects = el.getClientRects();
+      for (let i = 0; i < rects.length; i++) {
+        const r = rects[i];
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+      }
+      return false;
+    }
+
+    function bodyLinkFromPoint(node, evt) {
+      if (!evt || !Number.isFinite(evt.clientX) || !Number.isFinite(evt.clientY)) return null;
+      const direct = typeof document.elementFromPoint === 'function'
+        ? closestBodyLink(document.elementFromPoint(evt.clientX, evt.clientY))
+        : null;
+      if (direct) return direct;
+      const scope = bodyLinkScopeFor(node);
+      if (!scope || !scope.querySelectorAll) return null;
+      const links = scope.querySelectorAll('a[href]');
+      for (let i = 0; i < links.length; i++) {
+        if (pointInsideAnyClientRect(links[i], evt.clientX, evt.clientY)) return links[i];
+      }
+      return null;
+    }
+
+    function snapshotTipEvent(evt) {
+      if (!evt || !Number.isFinite(evt.clientX) || !Number.isFinite(evt.clientY)) return null;
+      return {
+        target: evt.target || null,
+        clientX: evt.clientX,
+        clientY: evt.clientY,
+      };
+    }
+
+    function samePendingProbe(snapshot) {
+      if (!tipPendingProbe || !snapshot) return false;
+      if (tipPendingProbe.target !== snapshot.target) return false;
+      return Math.abs(tipPendingProbe.clientX - snapshot.clientX) <= TIP_PROBE_MOVE_TOLERANCE_PX &&
+        Math.abs(tipPendingProbe.clientY - snapshot.clientY) <= TIP_PROBE_MOVE_TOLERANCE_PX;
+    }
+
+    function resolveTipFast(node, evt) {
+      const el = eventTargetElement(node);
+      if (!el || !el.closest) return null;
+      const toolEl = el.closest('[data-incipit-tool-fullpath]');
+      if (toolEl) return tipHitFromTool(toolEl);
+      const link = closestBodyLink(el);
+      if (link) return tipHitFromLink(link);
+      if (evt && Number.isFinite(evt.clientX) && Number.isFinite(evt.clientY) &&
+          typeof document.elementFromPoint === 'function') {
+        return tipHitFromLink(closestBodyLink(document.elementFromPoint(evt.clientX, evt.clientY)));
+      }
+      return null;
+    }
+
+    // Resolve a hovered node to its tooltip anchor + the full text to show
+    // and copy. Two read-only sources, never host chrome:
+    //   1. tool rows: the `data-incipit-tool-fullpath` attr truncatePathSpan
+    //      already stamped.
+    //   2. assistant body links: scoped strictly to incipit's own markdown /
+    //      message roots, exposing the resolved `href` so a markdown
+    //      `[text](url)` link reveals (and can copy) its real destination.
+    // Hover remains read-only; the separate click handler below only
+    // handles file hrefs when it can delegate to the host's fileOpener.
+    function resolveTip(node, evt) {
+      const el = eventTargetElement(node);
+      if (!el || !el.closest) return null;
+      const toolEl = el.closest('[data-incipit-tool-fullpath]');
+      if (toolEl) return tipHitFromTool(toolEl);
+      const link = closestBodyLink(el) || bodyLinkFromPoint(el, evt);
+      return tipHitFromLink(link);
+    }
+
+    function armTipShow(hit, snapshot) {
+      cancelScheduledHide();
+      clearTipShowTimer();
+      tipPendingTarget = hit ? hit.target : null;
+      tipPendingPath = hit ? hit.path : '';
+      tipPendingProbe = snapshot || null;
+      tipShowTimer = setTimeout(() => {
+        const resolved = hit || (tipPendingProbe ? resolveTip(tipPendingProbe.target, tipPendingProbe) : null);
+        tipShowTimer = 0;
+        tipPendingTarget = null;
+        tipPendingPath = '';
+        tipPendingProbe = null;
+        if (resolved) showTip(resolved.target, resolved.path, resolved.fileInfo);
+      }, TIP_SHOW_DELAY);
+    }
+
+    function handleTipHover(evt) {
+      const hit = resolveTipFast(evt.target, evt);
+      if (hit) {
+        // Already shown for this exact anchor, or a reveal is already
+        // counting down for it: let the dwell accumulate, don't restart.
+        if (hit.target === tipTarget && hit.path === tipFullpath) {
+          cancelScheduledHide();
+          return;
+        }
+        if (hit.target === tipPendingTarget && hit.path === tipPendingPath && tipShowTimer) return;
+        armTipShow(hit, snapshotTipEvent(evt));
+        return;
+      }
+      // Once the popover is visible, no-hit mousemove means the pointer is
+      // leaving the anchor/menu affordance. Do not arm a fresh pending probe
+      // here: that would cancel the scheduled hide on every move and leave
+      // the path popover stuck open after the pointer leaves.
+      if (tipTarget) {
+        const targetEl = eventTargetElement(evt.target);
+        if (tipEl && targetEl && tipEl.contains(targetEl)) {
+          cancelScheduledHide();
+          return;
+        }
+        clearTipShowTimer();
+        scheduleHide();
+        return;
+      }
+      const snapshot = snapshotTipEvent(evt);
+      if (!snapshot) return;
+      // Full coordinate fallback can need a link-list scan plus rect reads for
+      // delayed markdown-root tagging/text-node targets. Keep that off the
+      // mousemove hot path: arm one dwell probe and do the heavier scan only
+      // if the pointer truly rests.
+      if (tipShowTimer && !tipPendingTarget && samePendingProbe(snapshot)) return;
+      armTipShow(null, snapshot);
     }
 
     function positionTip() {
@@ -8237,6 +8655,7 @@ import {
       const left = Math.max(4, Math.min(rect.left, vw - w - 4));
       tipEl.style.left = left + 'px';
       tipEl.style.top = (above ? rect.top - h - 4 : rect.bottom + 4) + 'px';
+      tipEl.dataset.incipitPathTooltipPlacement = above ? 'above' : 'below';
     }
 
     function tickTip() {
@@ -8246,39 +8665,88 @@ import {
       tipRaf = requestAnimationFrame(tickTip);
     }
 
-    function showTip(target) {
-      const fullpath = target.dataset && target.dataset.incipitToolFullpath;
+    function showTip(target, fullpath, fileInfo) {
       if (!fullpath) return;
       const el = ensureTipEl();
       tipTarget = target;
-      el.textContent = fullpath;
+      tipFullpath = fullpath;
+      tipFileInfo = fileInfo || null;
+      tipTextEl.textContent = fullpath;
+      tipCopyBtn.innerHTML = COPY_ICON_SVG;
+      tipCopyBtn.classList.remove('copied');
+      if (tipMoreBtn) tipMoreBtn.hidden = !tipFileInfo;
+      setTipMenuOpen(false);
       el.setAttribute('data-incipit-path-tooltip-visible', '1');
       if (tipRaf) cancelAnimationFrame(tipRaf);
       tipRaf = requestAnimationFrame(tickTip);
     }
 
     function hideTip() {
+      cancelScheduledHide();
+      clearTipShowTimer();
       if (!tipEl) return;
       tipEl.removeAttribute('data-incipit-path-tooltip-visible');
       tipTarget = null;
+      tipFullpath = '';
+      tipFileInfo = null;
+      setTipMenuOpen(false);
       if (tipRaf) { cancelAnimationFrame(tipRaf); tipRaf = 0; }
     }
 
-    document.body.addEventListener('mouseover', evt => {
-      const t = evt.target && evt.target.closest
-        ? evt.target.closest('[data-incipit-tool-fullpath]') : null;
-      if (t) showTip(t);
-    }, true);
+    function bindBodyLinkOpen() {
+      if (document.body.dataset.incipitLinkOpenBound === '1') return;
+      document.body.dataset.incipitLinkOpenBound = '1';
+      // User decision, 2026-05-18: file links in assistant markdown should
+      // open in VS Code on the link itself; the tooltip's More menu is only
+      // for revealing the containing folder. This is a narrow file-href
+      // click handoff to the host's own `context.fileOpener.open`, not a
+      // markdown re-render or a generic link interceptor; external links and
+      // heading anchors keep the host/browser behavior.
+      document.body.addEventListener('click', evt => {
+        const link = closestBodyLink(evt.target) || bodyLinkFromPoint(evt.target, evt);
+        if (!link) return;
+        const info = splitFileHref(link.getAttribute('href') || '');
+        if (!info || !info.filePath) return;
+        const opener = readHostFileOpener(link);
+        if (!opener) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        try {
+          opener.open(info.filePath, info.location || undefined);
+        } catch (error) {
+          try { console.warn('[incipit] failed to open markdown file link:', error); } catch (_) {}
+        }
+      }, true);
+    }
+
+    document.body.addEventListener('mouseover', handleTipHover, true);
+    // Mouseover is not enough for assistant body links: Chromium/React can
+    // deliver the first event against a text node or an untagged parent while
+    // the markdown root is being decorated. Mousemove keeps hover detection
+    // tied to the actual pointer coordinates, so a stable hover over the
+    // visible link still arms the dwell timer.
+    document.body.addEventListener('mousemove', handleTipHover, { capture: true, passive: true });
     document.body.addEventListener('mouseout', evt => {
+      const to = evt.relatedTarget;
+      // Pointer left the anchor before the dwell completed → cancel the
+      // pending reveal so it never pops behind the cursor. A move that
+      // stays inside the same pending anchor (child→child) keeps counting.
+      if ((tipPendingTarget &&
+          !(to && tipPendingTarget.contains && tipPendingTarget.contains(to))) ||
+          (!tipPendingTarget && tipPendingProbe)) {
+        clearTipShowTimer();
+      }
       if (!tipTarget) return;
-      const t = evt.target && evt.target.closest
-        ? evt.target.closest('[data-incipit-tool-fullpath]') : null;
-      if (!t || t !== tipTarget) return;
-      if (t.contains(evt.relatedTarget)) return;
-      hideTip();
+      const hit = resolveTip(evt.target);
+      if (!hit || hit.target !== tipTarget) return;
+      // Moving deeper into the anchor, or onto the popover itself, must
+      // not dismiss — the popover's own mouseleave handles that case.
+      if (to && (tipTarget.contains(to) || (tipEl && tipEl.contains(to)))) return;
+      scheduleHide();
     }, true);
     window.addEventListener('scroll', hideTip, { capture: true, passive: true });
     window.addEventListener('resize', hideTip);
+    bindBodyLinkOpen();
 
     // Idempotent: safe to call repeatedly on the same element. React may
     // re-render the summary subtree (blowing away our stats span) or

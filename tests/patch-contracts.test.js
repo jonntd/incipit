@@ -188,6 +188,7 @@ function assertRuntimeSourceContracts() {
   const fiberFingerprint = fs.readFileSync(path.join(__dirname, '..', 'data', 'capability', 'fingerprints', 'fiber.js'), 'utf8');
   const install = fs.readFileSync(path.join(__dirname, '..', 'src', 'install.js'), 'utf8');
   const patchContractSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'patch-contract.js'), 'utf8');
+  const cssWithoutComments = theme.replace(/\/\*[\s\S]*?\*\//g, '');
 
   assert(
     capability.includes("import { reportCapability, bumpPerfCounter } from './runtime_kernel.js'") &&
@@ -420,6 +421,57 @@ function assertRuntimeSourceContracts() {
   assert(
     !hostBadge.includes('stream.write = function wrappedWrite'),
     'host-badge must not overwrite createWriteStream `stream.write` — that mutates host object identity; only `finish`/`close`/`end` events are subscribed',
+  );
+  assert(
+    legacy.includes("label.textContent = 'Open Containing Folder'") &&
+      !legacy.includes("label.textContent = 'Open in VS Code'") &&
+      legacy.includes('file links in assistant markdown should') &&
+      legacy.includes('opener.open(info.filePath, info.location || undefined)') &&
+      legacy.includes("type: 'file_reveal_request'"),
+    'link tooltip More menu must stay single-purpose: reveal containing folder only, while markdown file-link clicks use host fileOpener.open',
+  );
+  assert(
+    legacy.includes('function eventTargetElement(node)') &&
+      legacy.includes('function closestBodyLink(node)') &&
+      legacy.includes('function bodyLinkFromPoint(node, evt)') &&
+      legacy.includes('function resolveTipFast(node, evt)') &&
+      legacy.includes('function armTipShow(hit, snapshot)') &&
+      legacy.includes('document.elementFromPoint(evt.clientX, evt.clientY)') &&
+      legacy.includes('assistantMarkdownFallback') &&
+      legacy.includes('!!findAssistantActionHost(scope)') &&
+      legacy.includes("document.body.addEventListener('mousemove', handleTipHover, { capture: true, passive: true })") &&
+      legacy.includes('stable hover over the') &&
+      legacy.includes('visible link still arms the dwell timer') &&
+      legacy.includes('mousemove hot path: arm one dwell probe') &&
+      legacy.includes('no-hit mousemove means the pointer is') &&
+      legacy.includes('the path popover stuck open') &&
+      legacy.includes('const resolved = hit || (tipPendingProbe ? resolveTip(tipPendingProbe.target, tipPendingProbe) : null)'),
+    'assistant body link tooltip must use pointer-coordinate hit testing, but full link scans must run after dwell instead of on every mousemove',
+  );
+  const hoverStart = legacy.indexOf('function handleTipHover(evt)');
+  const hoverEnd = legacy.indexOf('function positionTip()', hoverStart);
+  const hoverBlock = hoverStart >= 0 && hoverEnd > hoverStart ? legacy.slice(hoverStart, hoverEnd) : '';
+  assert(
+    hoverBlock.includes('resolveTipFast(evt.target, evt)') &&
+      hoverBlock.includes('if (tipTarget)') &&
+      hoverBlock.includes('tipEl.contains(targetEl)') &&
+      hoverBlock.includes('scheduleHide()') &&
+      !hoverBlock.includes('resolveTip(evt.target, evt)') &&
+      !hoverBlock.includes("querySelectorAll('a[href]')") &&
+      !hoverBlock.includes('getClientRects()'),
+    'mousemove hover handler must stay cheap; full body-link coordinate scans belong behind the hover-intent timer',
+  );
+  assert(
+    !/::[-\w]*scrollbar/.test(cssWithoutComments),
+    'theme.css must not contain live ::-webkit-scrollbar rules; those put the main chat scroller back on the non-composited autoscroll-jitter path',
+  );
+  assert(
+    hostBadge.includes("message.type === 'file_reveal_request'") &&
+      hostBadge.includes("type: 'file_reveal_response'") &&
+      hostBadge.includes("require('vscode')") &&
+      hostBadge.includes('vscode.env.openExternal(vscode.Uri.file(directoryPath))') &&
+      hostBadge.includes('File path is outside the active workspace.'),
+    'host-badge must handle link-popover folder reveal through a real VS Code extension-host openExternal path with workspace validation',
   );
 }
 

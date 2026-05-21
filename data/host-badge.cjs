@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { StringDecoder } = require('string_decoder');
 
 const GLOBAL_KEY = '__cceBadge';
+let vscodeApi = null;
 // `POLL_INTERVAL_MS` matches the 0.1.10 cadence. We layer event-driven
 // `schedulePoll(WRITE_POLL_DEBOUNCE_MS)` on top via wrappers around
 // `fs.appendFile`/`writeFile` callbacks and `createWriteStream`'s
@@ -131,6 +132,10 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'conversation_mutation_request') {
     handleConversationMutationRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'file_reveal_request') {
+    handleFileRevealRequest(comm, state, message);
   }
 }
 
@@ -240,6 +245,92 @@ function handleConversationMutationRequest(comm, state, message) {
     state.log(`conversation mutation error: ${error && error.message ? error.message : error}`);
     reply({ ok: false, error: String(error && error.message ? error.message : error) });
   }
+}
+
+async function handleFileRevealRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'file_reveal_response',
+        requestId,
+        payload,
+      });
+    } catch (_) {}
+  };
+  try {
+    reply(await revealContainingFolder(message));
+  } catch (error) {
+    state.log(`file reveal error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, error: String(error && error.message ? error.message : error) });
+  }
+}
+
+function getVSCodeApi() {
+  if (vscodeApi) return vscodeApi;
+  // Loaded lazily so unit tests can parse this helper outside VS Code.
+  vscodeApi = require('vscode');
+  return vscodeApi;
+}
+
+function decodePathSegment(value) {
+  try { return decodeURIComponent(value); } catch (_) { return value; }
+}
+
+function normalizeFileRevealPath(value) {
+  let raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) throw new Error('No file path supplied.');
+  if (/^file:/i.test(raw)) {
+    const url = new URL(raw);
+    raw = url.pathname || '';
+    if (/^\/[A-Za-z]:\//.test(raw)) raw = raw.slice(1);
+    raw = process.platform === 'win32' ? raw.replace(/\//g, '\\') : raw;
+  }
+  const hashIndex = raw.indexOf('#');
+  if (hashIndex !== -1) raw = raw.slice(0, hashIndex);
+  const queryIndex = raw.indexOf('?');
+  if (queryIndex !== -1) raw = raw.slice(0, queryIndex);
+  raw = decodePathSegment(raw).trim();
+  if (!raw) throw new Error('No file path supplied.');
+  return raw;
+}
+
+function isPathInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+async function revealContainingFolder(message) {
+  const vscode = getVSCodeApi();
+  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : '';
+  const raw = normalizeFileRevealPath(message.filePath);
+  if (!path.isAbsolute(raw) && !cwd) {
+    throw new Error('Relative file path has no workspace cwd.');
+  }
+  const resolved = path.resolve(cwd || process.cwd(), raw);
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch (_) {
+    throw new Error('File path does not exist.');
+  }
+
+  if (cwd) {
+    const realRoot = fs.realpathSync(cwd);
+    const realTarget = fs.realpathSync(resolved);
+    if (!isPathInside(realTarget, realRoot)) {
+      throw new Error('File path is outside the active workspace.');
+    }
+  }
+
+  const directoryPath = stat.isDirectory() ? resolved : path.dirname(resolved);
+  // VS Code public API: open the directory URI with the operating system's
+  // external handler. This is a real OS file-manager reveal of the containing
+  // folder, not a `revealInExplorer` sidebar fallback.
+  const ok = await vscode.env.openExternal(vscode.Uri.file(directoryPath));
+  if (ok === false) throw new Error('VS Code could not open the containing folder.');
+  return { ok: true, directoryPath };
 }
 
 function resolveDiffLineInfo(message) {

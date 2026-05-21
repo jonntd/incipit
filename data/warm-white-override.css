@@ -316,11 +316,41 @@
 }
 
 /* ---------- Path tooltip portal ---------- */
+/* Mirrors the warm-white input-box surface: pure-white card on cream
+   paper. The input container keeps a 1px hairline so its silhouette
+   doesn't dissolve into the cream — but the literary spec drops the
+   frame here, so the ambient halo is bumped one notch above the input's
+   pair to carry the edge on its own. */
 [data-incipit-path-tooltip] {
   background: #ffffff;
   color: #0d0d0d;
-  border: 1px solid rgba(60,55,40,0.12);
-  box-shadow: 0 2px 8px rgba(60,55,40,0.14);
+  border: 0;
+  box-shadow: 0 3px 14px rgba(60,55,40,0.10),
+              0 1px 4px rgba(60,55,40,0.07);
+}
+[data-incipit-path-tooltip-copy],
+[data-incipit-path-tooltip-more] {
+  color: rgba(13,13,13,0.45);
+}
+[data-incipit-path-tooltip-copy]:hover,
+[data-incipit-path-tooltip-more]:hover,
+[data-incipit-path-tooltip-more][aria-expanded="true"] {
+  background: rgba(60,55,40,0.08);
+  color: #0d0d0d;
+}
+[data-incipit-path-tooltip-copy].copied {
+  color: #d97757;
+}
+[data-incipit-path-tooltip-menu] {
+  background: #ffffff;
+  color: #0d0d0d;
+  border: 0;
+  box-shadow: 0 12px 32px rgba(60,55,40,0.14),
+              0 2px 8px rgba(60,55,40,0.08);
+}
+[data-incipit-path-tooltip-menu-item]:hover,
+[data-incipit-path-tooltip-menu-item]:focus {
+  background: rgba(60,55,40,0.08);
 }
 
 /* ---------- Code block ---------- */
