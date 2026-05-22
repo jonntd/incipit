@@ -28,6 +28,7 @@ const PROJECT_INDEX_BATCH_BYTES = 8 * 1024 * 1024;
 const PROJECT_INDEX_BATCH_DELAY_MS = 45;
 const PROJECT_INDEX_SCAN_MIN_INTERVAL_MS = 12000;
 const GLOBAL_INDEX_SCAN_MIN_INTERVAL_MS = 60000;
+const FILE_REVEAL_CWD_SCAN_BYTES = 512 * 1024;
 // Keep rollback tokens long enough to cover Claude Code's 5-minute
 // launch/byte watchdog path, but cap entries because each one keeps
 // the original transcript text in memory until send succeeds or fails.
@@ -260,7 +261,7 @@ async function handleFileRevealRequest(comm, state, message) {
     } catch (_) {}
   };
   try {
-    reply(await revealContainingFolder(message));
+    reply(await revealContainingFolder(state, comm, message));
   } catch (error) {
     state.log(`file reveal error: ${error && error.message ? error.message : error}`);
     reply({ ok: false, error: String(error && error.message ? error.message : error) });
@@ -301,12 +302,113 @@ function isPathInside(child, parent) {
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-async function revealContainingFolder(message) {
+function normalizeWorkspaceCwd(value) {
+  const cwd = typeof value === 'string' && value ? value : '';
+  if (!cwd || !path.isAbsolute(cwd)) return '';
+  try {
+    const stat = fs.statSync(cwd);
+    return stat.isDirectory() ? cwd : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function normalizeRevealSessionId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9-]+$/.test(value) ? value : '';
+}
+
+function revealIdentityForMessage(state, comm, message) {
+  let identity = state && state.commIdentities ? state.commIdentities.get(comm) : null;
+  const sessionId = normalizeRevealSessionId(message && message.sessionId);
+  if (!identity && sessionId) {
+    identity = {
+      sessionId,
+      cwd: typeof message.cwd === 'string' && message.cwd ? message.cwd : null,
+      target: null,
+    };
+    if (state && state.commIdentities && state.comms && state.comms.has(comm)) {
+      state.commIdentities.set(comm, identity);
+    }
+  }
+  return identity || null;
+}
+
+function readTranscriptCwd(filePath) {
+  let stat;
+  try { stat = fs.statSync(filePath); } catch (_) { return ''; }
+  if (!stat.isFile() || stat.size <= 0) return '';
+
+  const head = readFileTextSlice(filePath, 0, Math.min(FILE_REVEAL_CWD_SCAN_BYTES, stat.size));
+  const headCwd = findCwdInJsonLines(head);
+  if (headCwd || stat.size <= FILE_REVEAL_CWD_SCAN_BYTES) return headCwd;
+
+  const tailStart = Math.max(0, stat.size - FILE_REVEAL_CWD_SCAN_BYTES);
+  const tail = readFileTextSlice(filePath, tailStart, stat.size - tailStart);
+  return findCwdInJsonLines(tail);
+}
+
+function readFileTextSlice(filePath, start, length) {
+  if (!Number.isFinite(start) || !Number.isFinite(length) || length <= 0) return '';
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(length);
+    const read = fs.readSync(fd, buffer, 0, length, start);
+    return buffer.subarray(0, read).toString('utf8');
+  } catch (_) {
+    return '';
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+function findCwdInJsonLines(text) {
+  if (!text || text.indexOf('"cwd"') === -1) return '';
+  const lines = String(text).split(/\r?\n/);
+  for (const line of lines) {
+    const entry = parseJsonLine(line);
+    const cwd = normalizeWorkspaceCwd(entry && entry.cwd);
+    if (cwd) return cwd;
+  }
+  return '';
+}
+
+function resolveFileRevealCwd(state, comm, message) {
+  const messageCwd = normalizeWorkspaceCwd(message && message.cwd);
+  if (messageCwd) return messageCwd;
+
+  const identity = revealIdentityForMessage(state, comm, message || {});
+  const identityCwd = normalizeWorkspaceCwd(identity && identity.cwd);
+  if (identityCwd) return identityCwd;
+
+  if (!identity || !identity.sessionId) return '';
+  let target = identity.target;
+  if (!target || !fs.existsSync(target)) {
+    target = resolveTargetFromIdentity(identity.sessionId, identity.cwd || null);
+    identity.target = target;
+  }
+  if (!target) return '';
+
+  const parser = state && state.parsers ? state.parsers.get(target) : null;
+  const parserCwd = normalizeWorkspaceCwd(parser && parser.projectCwd);
+  if (parserCwd) return parserCwd;
+
+  const transcriptCwd = readTranscriptCwd(target);
+  if (transcriptCwd) {
+    if (parser) parser.projectCwd = transcriptCwd;
+    identity.cwd = transcriptCwd;
+  }
+  return transcriptCwd;
+}
+
+async function revealContainingFolder(state, comm, message) {
   const vscode = getVSCodeApi();
-  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : '';
-  const raw = normalizeFileRevealPath(message.filePath);
+  const cwd = resolveFileRevealCwd(state, comm, message || {});
+  const raw = normalizeFileRevealPath(message && message.filePath);
   if (!path.isAbsolute(raw) && !cwd) {
-    throw new Error('Relative file path has no workspace cwd.');
+    throw new Error('Relative file path has no Claude project cwd.');
   }
   const resolved = path.resolve(cwd || process.cwd(), raw);
   let stat;
@@ -325,12 +427,30 @@ async function revealContainingFolder(message) {
   }
 
   const directoryPath = stat.isDirectory() ? resolved : path.dirname(resolved);
-  // VS Code public API: open the directory URI with the operating system's
-  // external handler. This is a real OS file-manager reveal of the containing
-  // folder, not a `revealInExplorer` sidebar fallback.
+  if (!stat.isDirectory()) {
+    try {
+      // VS Code's built-in OS reveal command asks the platform file manager
+      // to open the containing folder with this file selected. Keep it in the
+      // extension host: webviews cannot reliably issue command: URIs here.
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(resolved));
+      return { ok: true, filePath: resolved, directoryPath, selected: true };
+    } catch (error) {
+      stateLogFileRevealFallback(error);
+    }
+  }
+
+  // Fallback / directory path: open the directory URI with the operating
+  // system's external handler. This preserves the old behavior when the target
+  // itself is a directory, and when the OS reveal command is unavailable.
   const ok = await vscode.env.openExternal(vscode.Uri.file(directoryPath));
   if (ok === false) throw new Error('VS Code could not open the containing folder.');
-  return { ok: true, directoryPath };
+  return { ok: true, filePath: stat.isDirectory() ? null : resolved, directoryPath, selected: false };
+}
+
+function stateLogFileRevealFallback(error) {
+  try {
+    console.warn('[cceBadge] revealFileInOS failed; falling back to openExternal:', error && error.message ? error.message : error);
+  } catch (_) {}
 }
 
 function resolveDiffLineInfo(message) {

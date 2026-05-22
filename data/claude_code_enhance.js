@@ -1,4 +1,4 @@
-import { preprocessMarkdownMath } from './math_tokens.js';
+import { preprocessMarkdown } from './markdown_preprocess.js';
 import { startHostProbe } from './host_probe.js';
 import {
   CFG,
@@ -31,10 +31,12 @@ import {
 (() => {
   'use strict';
 
-  window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__ = CFG.math
-    ? preprocessMarkdownMath
-    : (raw => raw);
-  reportHealth('markdown.preprocess', CFG.math ? 'ok' : 'disabled');
+  window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__ =
+    raw => preprocessMarkdown(raw, { math: CFG.math });
+  reportHealth('markdown.preprocess', 'ok', {
+    links: 'enabled',
+    math: CFG.math ? 'enabled' : 'disabled',
+  });
 
   let footerLoadStarted = false;
   function loadFooterBadge(reason) {

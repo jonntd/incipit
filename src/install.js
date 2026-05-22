@@ -53,6 +53,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'enhance_legacy.js'),      'enhance_legacy.js'],
   [path.join('data', 'host_probe.js'),           'host_probe.js'],
   [path.join('data', 'host-badge.cjs'),          'host-badge.cjs'],
+  [path.join('data', 'markdown_preprocess.js'),  'markdown_preprocess.js'],
   [path.join('data', 'math_tokens.js'),         'math_tokens.js'],
   [path.join('data', 'math_rewriter.js'),       'math_rewriter.js'],
   [path.join('data', 'theme.css'),              THEME_TARGET_NAME],

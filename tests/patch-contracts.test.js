@@ -180,6 +180,7 @@ function assertInstallManifestShape(root, patched, contracts) {
 function assertRuntimeSourceContracts() {
   const hostProbe = fs.readFileSync(path.join(__dirname, '..', 'data', 'host_probe.js'), 'utf8');
   const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'data', 'claude_code_enhance.js'), 'utf8');
+  const markdownPreprocess = fs.readFileSync(path.join(__dirname, '..', 'data', 'markdown_preprocess.js'), 'utf8');
   const shared = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_shared.js'), 'utf8');
   const legacy = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_legacy.js'), 'utf8');
   const typography = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_typography.js'), 'utf8');
@@ -228,6 +229,17 @@ function assertRuntimeSourceContracts() {
     install.includes("[path.join('data', 'capability.js'),") &&
       install.includes("'capability.js'"),
     'installer must copy data/capability.js into the webview root assets',
+  );
+  assert(
+    install.includes("[path.join('data', 'markdown_preprocess.js'),") &&
+      bootstrap.includes("import { preprocessMarkdown } from './markdown_preprocess.js'") &&
+      bootstrap.includes('raw => preprocessMarkdown(raw, { math: CFG.math })') &&
+      bootstrap.includes("links: 'enabled'") &&
+      markdownPreprocess.includes('export function preprocessMarkdownBareUrls') &&
+      markdownPreprocess.includes('preprocessMarkdownMath(next)') &&
+      markdownPreprocess.includes('fencedCodeEnd(text, i)') &&
+      markdownPreprocess.includes('inlineCodeEnd(text, i)'),
+    'markdown preprocess must copy the URL-boundary normalizer and run it before the optional math pass without touching code spans',
   );
   assert(
     fiberFingerprint.includes("REACT_FIBER_KEY_PREFIX = '__reactFiber'") &&
@@ -427,8 +439,10 @@ function assertRuntimeSourceContracts() {
       !legacy.includes("label.textContent = 'Open in VS Code'") &&
       legacy.includes('file links in assistant markdown should') &&
       legacy.includes('opener.open(info.filePath, info.location || undefined)') &&
-      legacy.includes("type: 'file_reveal_request'"),
-    'link tooltip More menu must stay single-purpose: reveal containing folder only, while markdown file-link clicks use host fileOpener.open',
+      legacy.includes("type: 'file_reveal_request'") &&
+      legacy.includes('function sessionIdForFileAction()') &&
+      legacy.includes('sessionId: sessionIdForFileAction()'),
+    'link tooltip More menu must stay single-purpose: reveal the file in its containing folder, while markdown file-link clicks use host fileOpener.open',
   );
   assert(
     legacy.includes('function eventTargetElement(node)') &&
@@ -444,7 +458,12 @@ function assertRuntimeSourceContracts() {
       legacy.includes('visible link still arms the dwell timer') &&
       legacy.includes('mousemove hot path: arm one dwell probe') &&
       legacy.includes('no-hit mousemove means the pointer is') &&
-      legacy.includes('the path popover stuck open') &&
+      legacy.includes('TIP_HIDE_GRACE = 60') &&
+      legacy.includes('setTimeout(hideTip, TIP_HIDE_GRACE)') &&
+      legacy.includes('if (tipHideTimer) return') &&
+      legacy.includes('tipEl.addEventListener(\'mouseenter\', cancelScheduledHide)') &&
+      legacy.includes('tipEl.addEventListener(\'mouseleave\', scheduleHide)') &&
+      legacy.includes("tipEl.style.top = (above ? rect.top - h - 4 : rect.bottom + 4) + 'px'") &&
       legacy.includes('const resolved = hit || (tipPendingProbe ? resolveTip(tipPendingProbe.target, tipPendingProbe) : null)'),
     'assistant body link tooltip must use pointer-coordinate hit testing, but full link scans must run after dwell instead of on every mousemove',
   );
@@ -459,7 +478,7 @@ function assertRuntimeSourceContracts() {
       !hoverBlock.includes('resolveTip(evt.target, evt)') &&
       !hoverBlock.includes("querySelectorAll('a[href]')") &&
       !hoverBlock.includes('getClientRects()'),
-    'mousemove hover handler must stay cheap; full body-link coordinate scans belong behind the hover-intent timer',
+    'mousemove hover handler must stay cheap and use a short non-resetting hide grace; full body-link coordinate scans belong behind the hover-intent timer',
   );
   assert(
     !/::[-\w]*scrollbar/.test(cssWithoutComments),
@@ -469,9 +488,17 @@ function assertRuntimeSourceContracts() {
     hostBadge.includes("message.type === 'file_reveal_request'") &&
       hostBadge.includes("type: 'file_reveal_response'") &&
       hostBadge.includes("require('vscode')") &&
+      hostBadge.includes('FILE_REVEAL_CWD_SCAN_BYTES = 512 * 1024') &&
+      hostBadge.includes('function resolveFileRevealCwd(state, comm, message)') &&
+      hostBadge.includes('revealIdentityForMessage(state, comm, message || {})') &&
+      hostBadge.includes('readTranscriptCwd(target)') &&
+      hostBadge.includes('Relative file path has no Claude project cwd.') &&
+      hostBadge.includes("vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(resolved))") &&
       hostBadge.includes('vscode.env.openExternal(vscode.Uri.file(directoryPath))') &&
+      hostBadge.includes('selected: true') &&
+      hostBadge.includes('selected: false') &&
       hostBadge.includes('File path is outside the active workspace.'),
-    'host-badge must handle link-popover folder reveal through a real VS Code extension-host openExternal path with workspace validation',
+    'host-badge must handle link-popover folder reveal through a real VS Code extension-host OS reveal path with openExternal fallback and workspace validation',
   );
 }
 

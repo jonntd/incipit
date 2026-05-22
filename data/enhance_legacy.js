@@ -8244,22 +8244,26 @@ import {
     // not flash while the eye/cursor merely sweeps across links in prose.
     // Tunable; the click-to-open handoff is intentionally NOT gated by it.
     const TIP_SHOW_DELAY = 380;
+    // Short close-grace for crossing the intentional 4px anchor↔popover gap.
+    // 60ms is enough for ordinary mouse travel without making the tooltip
+    // feel sticky after the pointer leaves.
+    const TIP_HIDE_GRACE = 60;
     const TIP_PROBE_MOVE_TOLERANCE_PX = 4;
 
     function cancelScheduledHide() {
       if (tipHideTimer) { clearTimeout(tipHideTimer); tipHideTimer = 0; }
     }
+    function scheduleHide() {
+      clearTipShowTimer();
+      if (tipHideTimer) return;
+      tipHideTimer = setTimeout(hideTip, TIP_HIDE_GRACE);
+    }
+
     function clearTipShowTimer() {
       if (tipShowTimer) { clearTimeout(tipShowTimer); tipShowTimer = 0; }
       tipPendingTarget = null;
       tipPendingPath = '';
       tipPendingProbe = null;
-    }
-    // Short close-grace so the pointer can cross the 4px anchor↔popover
-    // gap to reach the copy button without the popover vanishing.
-    function scheduleHide() {
-      cancelScheduledHide();
-      tipHideTimer = setTimeout(hideTip, 160);
     }
 
     function safeDecodeURIComponent(value) {
@@ -8358,6 +8362,15 @@ import {
       }
     }
 
+    function sessionIdForFileAction() {
+      try {
+        const state = kernelGetHostState({ refresh: true, reason: 'link-file-action' });
+        return state && typeof state.sessionId === 'string' ? state.sessionId : '';
+      } catch (_) {
+        return '';
+      }
+    }
+
     function setupTipRevealChannel() {
       if (tipRevealListenerBound) return;
       tipRevealListenerBound = true;
@@ -8387,6 +8400,7 @@ import {
         requestId,
         filePath: info.filePath,
         cwd: cwdForFileAction(),
+        sessionId: sessionIdForFileAction(),
       };
       return new Promise((resolve, reject) => {
         tipRevealPending.set(requestId, { resolve, reject });
@@ -8622,16 +8636,14 @@ import {
         return;
       }
       // Once the popover is visible, no-hit mousemove means the pointer is
-      // leaving the anchor/menu affordance. Do not arm a fresh pending probe
-      // here: that would cancel the scheduled hide on every move and leave
-      // the path popover stuck open after the pointer leaves.
+      // leaving the anchor/menu affordance. Schedule one short close-grace:
+      // enough to cross the 4px gap, not enough to feel sticky.
       if (tipTarget) {
         const targetEl = eventTargetElement(evt.target);
         if (tipEl && targetEl && tipEl.contains(targetEl)) {
           cancelScheduledHide();
           return;
         }
-        clearTipShowTimer();
         scheduleHide();
         return;
       }
@@ -8698,7 +8710,7 @@ import {
       document.body.dataset.incipitLinkOpenBound = '1';
       // User decision, 2026-05-18: file links in assistant markdown should
       // open in VS Code on the link itself; the tooltip's More menu is only
-      // for revealing the containing folder. This is a narrow file-href
+      // for revealing the file in its containing folder. This is a narrow file-href
       // click handoff to the host's own `context.fileOpener.open`, not a
       // markdown re-render or a generic link interceptor; external links and
       // heading anchors keep the host/browser behavior.
