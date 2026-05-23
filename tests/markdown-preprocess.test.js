@@ -19,6 +19,11 @@ const assert = require('assert');
   );
 
   assert.strictEqual(
+    preprocessMarkdownBareUrls('caps HTTP://EXAMPLE.com/docs'),
+    'caps <HTTP://EXAMPLE.com/docs>',
+  );
+
+  assert.strictEqual(
     preprocessMarkdownBareUrls('wiki https://example.com/Foo_(bar)'),
     'wiki <https://example.com/Foo_(bar)>',
   );
@@ -48,7 +53,7 @@ const assert = require('assert');
     '<http://127.0.0.1:3100/nxhub>（PID）',
   );
 
-  console.log('markdown-preprocess: 8 checks PASSED');
+  console.log('markdown-preprocess: 9 checks PASSED');
 })().catch(error => {
   console.error(error);
   process.exit(1);

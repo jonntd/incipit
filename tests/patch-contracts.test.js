@@ -236,10 +236,15 @@ function assertRuntimeSourceContracts() {
       bootstrap.includes('raw => preprocessMarkdown(raw, { math: CFG.math })') &&
       bootstrap.includes("links: 'enabled'") &&
       markdownPreprocess.includes('export function preprocessMarkdownBareUrls') &&
+      markdownPreprocess.includes('PREPROCESS_CACHE_MAX_ENTRIES') &&
+      markdownPreprocess.includes('PREPROCESS_CACHE_MAX_CHARS') &&
+      markdownPreprocess.includes('preprocessCache.get(text)') &&
+      markdownPreprocess.includes('rememberPreprocessCache(text, math, next)') &&
       markdownPreprocess.includes('preprocessMarkdownMath(next)') &&
       markdownPreprocess.includes('fencedCodeEnd(text, i)') &&
-      markdownPreprocess.includes('inlineCodeEnd(text, i)'),
-    'markdown preprocess must copy the URL-boundary normalizer and run it before the optional math pass without touching code spans',
+      markdownPreprocess.includes('inlineCodeEnd(text, i)') &&
+      markdownPreprocess.includes('startsAsciiFolded(text, i,'),
+    'markdown preprocess must copy the cached URL-boundary normalizer and run it before the optional math pass without touching code spans',
   );
   assert(
     fiberFingerprint.includes("REACT_FIBER_KEY_PREFIX = '__reactFiber'") &&

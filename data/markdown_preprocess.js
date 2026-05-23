@@ -7,12 +7,25 @@ const CLOSING_TO_OPENING = Object.freeze({
   ']': '[',
   '}': '{',
 });
+const PREPROCESS_CACHE_MAX_ENTRIES = 96;
+const PREPROCESS_CACHE_MAX_CHARS = 2 * 1024 * 1024;
+const PREPROCESS_CACHE_MISS = Symbol('incipit-preprocess-cache-miss');
+
+// Send/stop state changes can re-render old assistant markdown. Keep repeated
+// handoffs O(1) so URL normalization does not turn each send into a full
+// transcript rescan on the UI thread.
+const preprocessCache = new Map();
+let preprocessCacheChars = 0;
 
 export function preprocessMarkdown(text, options = {}) {
   if (typeof text !== 'string' || !text) return text;
+  const math = !!options.math;
+  const cached = readPreprocessCache(text, math);
+  if (cached !== PREPROCESS_CACHE_MISS) return cached;
 
   let next = preprocessMarkdownBareUrls(text);
-  if (options.math) next = preprocessMarkdownMath(next);
+  if (math) next = preprocessMarkdownMath(next);
+  rememberPreprocessCache(text, math, next);
   return next;
 }
 
@@ -58,8 +71,19 @@ export function preprocessMarkdownBareUrls(text) {
 }
 
 function startsHttpScheme(text, i) {
-  const lower = text.slice(i, i + 8).toLowerCase();
-  return lower.startsWith('http://') || lower.startsWith('https://');
+  return startsAsciiFolded(text, i, 'http://') ||
+    startsAsciiFolded(text, i, 'https://');
+}
+
+function startsAsciiFolded(text, start, needle) {
+  if (start + needle.length > text.length) return false;
+  for (let i = 0; i < needle.length; i += 1) {
+    let actual = text.charCodeAt(start + i);
+    const wanted = needle.charCodeAt(i);
+    if (actual >= 0x41 && actual <= 0x5A) actual += 0x20;
+    if (actual !== wanted) return false;
+  }
+  return true;
 }
 
 function shouldSkipUrlStart(text, i) {
@@ -199,4 +223,47 @@ function isClosingFenceLine(text, start, end, marker, minLen) {
     k += 1;
   }
   return true;
+}
+
+function readPreprocessCache(text, math) {
+  const entry = preprocessCache.get(text);
+  const field = math ? 'math' : 'plain';
+  if (!entry || !Object.prototype.hasOwnProperty.call(entry, field)) {
+    return PREPROCESS_CACHE_MISS;
+  }
+  preprocessCache.delete(text);
+  preprocessCache.set(text, entry);
+  return entry[field];
+}
+
+function rememberPreprocessCache(text, math, value) {
+  if (typeof text !== 'string') return;
+  const field = math ? 'math' : 'plain';
+  let entry = preprocessCache.get(text);
+  if (entry) {
+    preprocessCache.delete(text);
+    preprocessCacheChars -= entry.__chars || 0;
+    if (!Object.prototype.hasOwnProperty.call(entry, field)) {
+      entry.__chars += String(value || '').length;
+    }
+  } else {
+    entry = { __chars: text.length + String(value || '').length };
+  }
+  entry[field] = value;
+  preprocessCache.set(text, entry);
+  preprocessCacheChars += entry.__chars;
+  trimPreprocessCache();
+}
+
+function trimPreprocessCache() {
+  while (
+    preprocessCache.size > PREPROCESS_CACHE_MAX_ENTRIES ||
+    preprocessCacheChars > PREPROCESS_CACHE_MAX_CHARS
+  ) {
+    const first = preprocessCache.keys().next();
+    if (first.done) break;
+    const entry = preprocessCache.get(first.value);
+    preprocessCache.delete(first.value);
+    preprocessCacheChars -= entry && entry.__chars ? entry.__chars : 0;
+  }
 }
