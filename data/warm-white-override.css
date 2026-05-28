@@ -328,28 +328,15 @@
   box-shadow: 0 3px 14px rgba(60,55,40,0.10),
               0 1px 4px rgba(60,55,40,0.07);
 }
-[data-incipit-path-tooltip-copy],
-[data-incipit-path-tooltip-more] {
-  color: rgba(13,13,13,0.45);
-}
-[data-incipit-path-tooltip-copy]:hover,
-[data-incipit-path-tooltip-more]:hover,
-[data-incipit-path-tooltip-more][aria-expanded="true"] {
-  background: rgba(60,55,40,0.08);
-  color: #0d0d0d;
-}
-[data-incipit-path-tooltip-copy].copied {
-  color: #d97757;
-}
-[data-incipit-path-tooltip-menu] {
+[data-incipit-path-context-menu] {
   background: #ffffff;
   color: #0d0d0d;
   border: 0;
   box-shadow: 0 12px 32px rgba(60,55,40,0.14),
               0 2px 8px rgba(60,55,40,0.08);
 }
-[data-incipit-path-tooltip-menu-item]:hover,
-[data-incipit-path-tooltip-menu-item]:focus {
+[data-incipit-path-context-menu-item]:hover,
+[data-incipit-path-context-menu-item]:focus {
   background: rgba(60,55,40,0.08);
 }
 

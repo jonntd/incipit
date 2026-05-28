@@ -112,6 +112,11 @@ const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
     extensionSha256: '875f3cbefa2eae50ad6e4c33fafeee497157b90fa51c0ff8081ec067850f146d',
     webviewSha256: '4859359df2997722b41ed109cb0217b6b4bfa88646a1c4036f08f1ab130dc687',
   },
+  {
+    version: '2.1.154',
+    extensionSha256: '82cf1477100459cf31f4d5d9e425789d0bee81c32c26cbfa471fceca7a177ae9',
+    webviewSha256: '37193761cc06e9443be9bf99ae3ebd6aeaa7295ac07ae54159a9ce54477e2cd6',
+  },
 ]);
 
 function sanitizeFontFamilyValue(raw) {
@@ -186,12 +191,17 @@ const STREAM_UNHANDLED_CASE_PATCHED_RE =
   /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{try\{var __incipitCase=[\s\S]{0,500}ignored unknown Claude stream case/;
 const STREAM_DELTA_SWITCH_PATTERN =
   /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.delta;switch\([A-Za-z_$][\w$]*\.type\)\{/g;
+// SessionState still exposes the same signals across 2.1.145 -> 2.1.154, but
+// the bundled Preact signal effect helper was renamed (`j4` -> `G4`) and the
+// effect block moved from class-field adjacency into the constructor. Capture
+// the local effect helper from the neighboring settings-error effect instead
+// of pinning one minified helper name.
 const HOST_STATE_BRIDGE_PATTERN =
-  /(j4\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\}/g;
+  /(([A-Za-z_$][\w$]*)\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\}/g;
 const HOST_STATE_BRIDGE_PATCHED_RE =
-  /,j4\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)\}isOffline/;
+  /,[A-Za-z_$][\w$]*\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)\}isOffline/;
 const HOST_STATE_BRIDGE_BROKEN_RE =
-  /(j4\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\},j4\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)(?=isOffline)/g;
+  /(([A-Za-z_$][\w$]*)\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\)),[A-Za-z_$][\w$]*\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)(?=isOffline)/g;
 
 const ENHANCE_SCRIPT_TAG_RE =
   /<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>/g;
@@ -1207,11 +1217,14 @@ function assessHostStateBridgeContact(content) {
   else if (secondaryAnchorCount === 1) anchorReason = 'signal-subscription-anchor';
   else anchorReason = 'signal-subscription-anchor-miss';
   const contractOk = businessOk && patched;
+  const degradedOk = businessOk && !patched;
   return {
-    status: contractOk ? 'patched' : 'failed',
+    status: contractOk ? 'patched' : (degradedOk ? 'degraded' : 'failed'),
     priority: 'high',
     anchorReason,
-    contractReason: contractOk ? 'semantic-bridge-publishes-host-state' : 'semantic-bridge-contract-miss',
+    contractReason: contractOk
+      ? 'semantic-bridge-publishes-host-state'
+      : (degradedOk ? 'semantic-bridge-degraded-to-runtime-fallback' : 'semantic-bridge-contract-miss'),
     fingerprint: {
       ...fingerprint,
       brokenCount,
@@ -1219,6 +1232,10 @@ function assessHostStateBridgeContact(content) {
       patched,
     },
   };
+}
+
+function hostStateBridgeSignalEffect(effectName) {
+  return `${effectName}(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})`;
 }
 
 function patchExtensionJs(content) {
@@ -1592,7 +1609,8 @@ function patchStreamUnhandledCase(content) {
 function patchHostStateSemanticBridge(content) {
   content = content.replace(
     HOST_STATE_BRIDGE_BROKEN_RE,
-    '$1,j4(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}',
+    (_match, anchor, effectName) =>
+      `${anchor},${hostStateBridgeSignalEffect(effectName)}}`,
   );
   if (HOST_STATE_BRIDGE_PATCHED_RE.test(content)) {
     const assessment = assessHostStateBridgeContact(content);
@@ -1605,15 +1623,23 @@ function patchHostStateSemanticBridge(content) {
   const matches = content.match(HOST_STATE_BRIDGE_PATTERN) || [];
   if (matches.length !== 1) {
     const assessment = assessHostStateBridgeContact(content);
-    requireHighRiskContract(
-      installContractFromAssessment('install.hostStateBridge', '', assessment),
-      '宿主语义桥',
-    );
+    // The semantic bridge is a high-value state source, not a correctness
+    // prerequisite. Runtime consumers already fall back to local fiber/DOM
+    // probes when the bridge is absent; only a missing SessionState business
+    // fingerprint is fatal because that means we may not be looking at the
+    // expected host surface at all.
+    if (assessment.status === 'failed') {
+      requireHighRiskContract(
+        installContractFromAssessment('install.hostStateBridge', '', assessment),
+        '宿主语义桥',
+      );
+    }
     return [content, `${padLabel('宿主语义桥')}: 降级 (将使用 fiber/DOM fallback)`, assessment];
   }
   const updated = content.replace(
       HOST_STATE_BRIDGE_PATTERN,
-      '$1,j4(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}',
+      (_match, anchor, effectName) =>
+        `${anchor},${hostStateBridgeSignalEffect(effectName)}}`,
   );
   const assessment = assessHostStateBridgeContact(updated);
   requireHighRiskContract(
@@ -2163,8 +2189,10 @@ module.exports = {
     patchExtensionJs,
     patchExtensionHtmlHead,
     patchWebviewIndex,
+    patchHostStateSemanticBridge,
     buildHostRouteContract,
     assertExtensionPatchContracts,
     assessWebviewPatchContracts,
+    assessHostStateBridgeContact,
   },
 };

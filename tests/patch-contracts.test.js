@@ -440,14 +440,24 @@ function assertRuntimeSourceContracts() {
     'host-badge must not overwrite createWriteStream `stream.write` — that mutates host object identity; only `finish`/`close`/`end` events are subscribed',
   );
   assert(
-    legacy.includes("label.textContent = 'Open Containing Folder'") &&
+    legacy.includes("makeTipContextMenuItem('Open in File Explorer'") &&
+      legacy.includes("makeTipContextMenuItem('Copy Relative Path'") &&
+      legacy.includes("makeTipContextMenuItem('Copy Absolute Path'") &&
       !legacy.includes("label.textContent = 'Open in VS Code'") &&
+      !legacy.includes("data-incipit-path-tooltip-copy") &&
+      !legacy.includes("data-incipit-path-tooltip-more") &&
       legacy.includes('file links in assistant markdown should') &&
       legacy.includes('opener.open(info.filePath, info.location || undefined)') &&
+      legacy.includes("document.body.addEventListener('contextmenu', handleTipContextMenu, true)") &&
+      legacy.includes('function openTipContextMenu(hit, evt)') &&
+      legacy.includes('function relativePathForFileInfo(info)') &&
+      legacy.includes('function absolutePathForFileInfo(info)') &&
+      legacy.includes('locateActiveSessionState()') &&
+      legacy.includes('the semantic bridge is degraded') &&
       legacy.includes("type: 'file_reveal_request'") &&
       legacy.includes('function sessionIdForFileAction()') &&
       legacy.includes('sessionId: sessionIdForFileAction()'),
-    'link tooltip More menu must stay single-purpose: reveal the file in its containing folder, while markdown file-link clicks use host fileOpener.open',
+    'link hover tooltip must stay text-only; right-click menu owns file explorer + relative/absolute path copy while markdown file-link clicks use host fileOpener.open',
   );
   assert(
     legacy.includes('function eventTargetElement(node)') &&
@@ -468,6 +478,7 @@ function assertRuntimeSourceContracts() {
       legacy.includes('if (tipHideTimer) return') &&
       legacy.includes('tipEl.addEventListener(\'mouseenter\', cancelScheduledHide)') &&
       legacy.includes('tipEl.addEventListener(\'mouseleave\', scheduleHide)') &&
+      legacy.includes('Mouse movement should never dismiss it') &&
       legacy.includes("tipEl.style.top = (above ? rect.top - h - 4 : rect.bottom + 4) + 'px'") &&
       legacy.includes('const resolved = hit || (tipPendingProbe ? resolveTip(tipPendingProbe.target, tipPendingProbe) : null)'),
     'assistant body link tooltip must use pointer-coordinate hit testing, but full link scans must run after dwell instead of on every mousemove',
@@ -490,6 +501,16 @@ function assertRuntimeSourceContracts() {
     'theme.css must not contain live ::-webkit-scrollbar rules; those put the main chat scroller back on the non-composited autoscroll-jitter path',
   );
   assert(
+    theme.includes('[data-incipit-path-context-menu]') &&
+      theme.includes('[data-incipit-path-context-menu-visible="1"]') &&
+      theme.includes('[data-incipit-path-context-menu-item]:hover') &&
+      !theme.includes('[data-incipit-path-tooltip-copy]') &&
+      !theme.includes('[data-incipit-path-tooltip-more]') &&
+      !theme.includes('[data-incipit-path-tooltip-menu]') &&
+      fs.readFileSync(path.join(__dirname, '..', 'data', 'warm-white-override.css'), 'utf8').includes('[data-incipit-path-context-menu]'),
+    'path hover surface must be text-only and both themes must style the sticky right-click context menu',
+  );
+  assert(
     hostBadge.includes("message.type === 'file_reveal_request'") &&
       hostBadge.includes("type: 'file_reveal_response'") &&
       hostBadge.includes("require('vscode')") &&
@@ -505,6 +526,89 @@ function assertRuntimeSourceContracts() {
       hostBadge.includes('File path is outside the active workspace.'),
     'host-badge must handle link-popover folder reveal through a real VS Code extension-host OS reveal path with openExternal fallback and workspace validation',
   );
+}
+
+function semanticBridgeFixture(effectName, constructorEffects) {
+  return [
+    'const session_states_update = true;',
+    `function ${effectName}(fn) { fn(); }`,
+    'function w0(value) { return { value }; }',
+    'function p2(fn) { return { get value() { return fn(); } }; }',
+    'class SessionState {',
+    'connection = w0(void 0);',
+    'busy = w0(false);',
+    'pendingInput = w0(false);',
+    'sessionId = w0(void 0);',
+    'messages = w0([]);',
+    'cwd = w0(void 0);',
+    'summary = w0(void 0);',
+    'config = p2(() => ({ claudeSettings: { errors: [] } }));',
+    'dismissedSettingsErrorsKey = w0(null);',
+    `constructor(){${constructorEffects}}`,
+    'isOffline(){return !this.connection.value&&!!this.sessionId.value&&!this.messages.value.length&&!this.loadingPromise}',
+    'loadFromServer(){}',
+    'launchClaude(){}',
+    '}',
+  ].join('');
+}
+
+function assertHostStateBridgePatchVariants() {
+  const settingsEffect = effectName =>
+    `${effectName}(()=>{if((this.config.value?.claudeSettings?.errors??[]).length===0&&this.dismissedSettingsErrorsKey.value)this.dismissedSettingsErrorsKey.value=null})`;
+  const variants = [
+    ['legacy class-field-style helper', 'j4', settingsEffect('j4')],
+    ['constructor helper rename', 'G4',
+      [
+        'G4(()=>{if(!this.busy.value)this.summary.value=void 0})',
+        settingsEffect('G4'),
+      ].join(',')],
+  ];
+
+  for (const [label, effectName, effects] of variants) {
+    const source = semanticBridgeFixture(effectName, effects);
+    const [patched, line, assessment] = __test.patchHostStateSemanticBridge(source);
+    assert(line.includes('ok'), `${label}: bridge should patch cleanly`);
+    assert.strictEqual(assessment.status, 'patched', `${label}: assessment should be patched`);
+    assert(
+      patched.includes(`,${effectName}(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}isOffline`),
+      `${label}: bridge must reuse the host's local signal effect helper`,
+    );
+    assert.doesNotThrow(
+      () => new vm.Script(patched, { filename: `semantic-bridge-${label}.js` }),
+      `${label}: patched bridge fixture must remain valid JavaScript`,
+    );
+  }
+
+  const degradedSource = [
+    'const session_states_update = true;',
+    'class SessionState {',
+    'connection = { value: null };',
+    'busy = { value: false };',
+    'pendingInput = { value: false };',
+    'sessionId = { value: null };',
+    'messages = { value: [] };',
+    'cwd = { value: null };',
+    'summary = { value: null };',
+    'config = { value: { claudeSettings: { errors: [] } } };',
+    'dismissedSettingsErrorsKey = { value: null };',
+    'isOffline(){return false}',
+    'loadFromServer(){}',
+    'launchClaude(){}',
+    '}',
+  ].join('');
+  const [degraded, degradedLine, degradedAssessment] = __test.patchHostStateSemanticBridge(degradedSource);
+  assert.strictEqual(degraded, degradedSource, 'anchor miss must not mutate the webview bundle');
+  assert(/降级/.test(degradedLine), 'anchor miss should degrade instead of aborting apply');
+  assert.strictEqual(degradedAssessment.status, 'degraded',
+    'business-present anchor miss should be reported as high-priority degraded');
+
+  const wrongSurface = 'class NotSessionState { isOffline(){} }';
+  assert.throws(
+    () => __test.patchHostStateSemanticBridge(wrongSurface),
+    /宿主语义桥 \(semantic-bridge-contract-miss\)/,
+    'missing SessionState business fingerprint must still fail closed',
+  );
+  console.log('patch-contracts: ok host-state bridge variants');
 }
 
 function testFixture(root) {
@@ -562,6 +666,7 @@ function testFixture(root) {
 }
 
 assertRuntimeSourceContracts();
+assertHostStateBridgePatchVariants();
 
 const fixtures = collectFixtureRoots();
 if (!fixtures.length) {

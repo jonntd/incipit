@@ -8222,9 +8222,8 @@ import {
     // `body.contains(target)` so React re-renders auto-dismiss.
     let tipEl = null;
     let tipTextEl = null;
-    let tipCopyBtn = null;
-    let tipMoreBtn = null;
-    let tipMenuEl = null;
+    let tipContextMenuEl = null;
+    let tipContextMenuInfo = null;
     let tipTarget = null;
     let tipFullpath = '';
     let tipFileInfo = null;
@@ -8358,6 +8357,14 @@ import {
         const state = kernelGetHostState({ refresh: true, reason: 'link-file-action' });
         return state && typeof state.cwd === 'string' ? state.cwd : '';
       } catch (_) {
+        // Keep file actions useful when the semantic bridge is degraded:
+        // the legacy surface already owns a SessionState fiber fallback.
+        try {
+          const session = locateActiveSessionState();
+          const cwd = session && session.cwd;
+          if (cwd && typeof cwd === 'object' && typeof cwd.value === 'string') return cwd.value;
+          if (typeof cwd === 'string') return cwd;
+        } catch (__) {}
         return '';
       }
     }
@@ -8420,87 +8427,192 @@ import {
       });
     }
 
-    function setTipMenuOpen(open) {
-      if (!tipMenuEl) return;
-      tipMenuEl.hidden = !open;
-      if (tipMoreBtn) tipMoreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    }
-
     function ensureTipEl() {
       if (tipEl && document.body && document.body.contains(tipEl)) return tipEl;
       tipEl = document.createElement('div');
       tipEl.setAttribute('data-incipit-path-tooltip', '');
       tipTextEl = document.createElement('span');
       tipTextEl.setAttribute('data-incipit-path-tooltip-text', '');
-      tipCopyBtn = document.createElement('button');
-      tipCopyBtn.type = 'button';
-      tipCopyBtn.setAttribute('data-incipit-path-tooltip-copy', '');
-      tipCopyBtn.setAttribute('aria-label', 'Copy path');
-      tipCopyBtn.innerHTML = COPY_ICON_SVG;
-      // Copy lives in our body portal, not inside the host anchor, so this
-      // never navigates; stop propagation only to be safe. Reuses the shared
-      // copyText/flashCopied (terra check, reverts after 1.2s).
-      tipCopyBtn.addEventListener('click', evt => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        if (tipFullpath) copyText(tipFullpath, tipCopyBtn);
-      });
-      tipMoreBtn = document.createElement('button');
-      tipMoreBtn.type = 'button';
-      tipMoreBtn.setAttribute('data-incipit-path-tooltip-more', '');
-      tipMoreBtn.setAttribute('aria-label', 'More file actions');
-      tipMoreBtn.setAttribute('aria-haspopup', 'menu');
-      tipMoreBtn.setAttribute('aria-expanded', 'false');
-      tipMoreBtn.innerHTML = MORE_ICON_SVG;
-      tipMoreBtn.addEventListener('click', evt => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        if (!tipFileInfo) return;
-        ensureTipMenuEl();
-        setTipMenuOpen(tipMenuEl.hidden);
-      });
       tipEl.addEventListener('mouseenter', cancelScheduledHide);
       tipEl.addEventListener('mouseleave', scheduleHide);
       tipEl.appendChild(tipTextEl);
-      tipEl.appendChild(tipCopyBtn);
-      tipEl.appendChild(tipMoreBtn);
       if (document.body) document.body.appendChild(tipEl);
       return tipEl;
     }
 
-    function ensureTipMenuEl() {
-      const el = ensureTipEl();
-      if (tipMenuEl && el.contains(tipMenuEl)) return tipMenuEl;
-      tipMenuEl = document.createElement('div');
-      tipMenuEl.setAttribute('data-incipit-path-tooltip-menu', '');
-      tipMenuEl.setAttribute('role', 'menu');
-      tipMenuEl.hidden = true;
+    function pathLooksAbsolute(value) {
+      const s = String(value || '').trim();
+      return /^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s) || /^\//.test(s);
+    }
 
-      const revealBtn = document.createElement('button');
-      revealBtn.type = 'button';
-      revealBtn.setAttribute('data-incipit-path-tooltip-menu-item', '');
-      revealBtn.setAttribute('role', 'menuitem');
+    function preferredPathSeparator(a, b) {
+      return /\\/.test(String(a || '') + String(b || '')) || /^[A-Za-z]:[\\/]/.test(String(a || b || ''))
+        ? '\\'
+        : '/';
+    }
+
+    function stripCurrentDirPrefix(value) {
+      return String(value || '').replace(/^\.[\\/]+/, '');
+    }
+
+    function joinWorkspacePath(cwd, filePath) {
+      const sep = preferredPathSeparator(cwd, filePath);
+      const left = String(cwd || '').replace(/[\\/]+$/, '');
+      const right = stripCurrentDirPrefix(filePath).replace(/^[\\/]+/, '').replace(/[\\/]+/g, sep);
+      return left && right ? left + sep + right : (left || right);
+    }
+
+    function pathRootAndParts(value) {
+      let s = String(value || '').trim().replace(/\\/g, '/');
+      let root = '';
+      if (/^[A-Za-z]:\//.test(s)) {
+        root = s.slice(0, 2).toLowerCase();
+        s = s.slice(3);
+      } else if (s.startsWith('//')) {
+        const parts = s.slice(2).split('/');
+        if (parts.length >= 2) {
+          root = '//' + parts[0].toLowerCase() + '/' + parts[1].toLowerCase();
+          s = parts.slice(2).join('/');
+        }
+      } else if (s.startsWith('/')) {
+        root = '/';
+        s = s.slice(1);
+      }
+      return { root, parts: s.split('/').filter(Boolean) };
+    }
+
+    function relativePathFromCwd(cwd, filePath) {
+      const from = pathRootAndParts(cwd);
+      const to = pathRootAndParts(filePath);
+      if (!from.root || !to.root || from.root !== to.root) return '';
+      const insensitive = /^[a-z]:$/.test(from.root) ||
+        from.root.startsWith('//') ||
+        /\\/.test(String(cwd || '') + String(filePath || ''));
+      let i = 0;
+      while (i < from.parts.length && i < to.parts.length) {
+        const a = insensitive ? from.parts[i].toLowerCase() : from.parts[i];
+        const b = insensitive ? to.parts[i].toLowerCase() : to.parts[i];
+        if (a !== b) break;
+        i++;
+      }
+      const rel = Array(from.parts.length - i).fill('..').concat(to.parts.slice(i));
+      return rel.length ? rel.join(preferredPathSeparator(cwd, filePath)) : '.';
+    }
+
+    function absolutePathForFileInfo(info) {
+      const filePath = info && info.filePath ? String(info.filePath) : '';
+      if (!filePath) return '';
+      if (pathLooksAbsolute(filePath)) return filePath;
+      const cwd = cwdForFileAction();
+      return cwd ? joinWorkspacePath(cwd, filePath) : stripCurrentDirPrefix(filePath);
+    }
+
+    function relativePathForFileInfo(info) {
+      const filePath = info && info.filePath ? String(info.filePath) : '';
+      if (!filePath) return '';
+      if (!pathLooksAbsolute(filePath)) return stripCurrentDirPrefix(filePath);
+      const cwd = cwdForFileAction();
+      return (cwd && relativePathFromCwd(cwd, filePath)) || filePath;
+    }
+
+    function closeTipContextMenu() {
+      if (!tipContextMenuEl) return;
+      tipContextMenuEl.removeAttribute('data-incipit-path-context-menu-visible');
+      tipContextMenuInfo = null;
+      document.removeEventListener('mousedown', handleTipContextMenuDocumentMouseDown, true);
+      document.removeEventListener('keydown', handleTipContextMenuKeyDown, true);
+      window.removeEventListener('scroll', closeTipContextMenu, true);
+      window.removeEventListener('resize', closeTipContextMenu);
+    }
+
+    function handleTipContextMenuDocumentMouseDown(evt) {
+      const target = eventTargetElement(evt.target);
+      if (tipContextMenuEl && target && tipContextMenuEl.contains(target)) return;
+      closeTipContextMenu();
+    }
+
+    function handleTipContextMenuKeyDown(evt) {
+      if (evt.key !== 'Escape') return;
+      evt.preventDefault();
+      closeTipContextMenu();
+    }
+
+    function makeTipContextMenuItem(labelText, iconSvg, action) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-incipit-path-context-menu-item', '');
+      btn.setAttribute('role', 'menuitem');
       const icon = document.createElement('span');
       icon.setAttribute('data-incipit-action-dropdown-icon', '');
-      icon.innerHTML = FOLDER_ICON_SVG;
+      icon.innerHTML = iconSvg;
       const label = document.createElement('span');
       label.setAttribute('data-incipit-action-dropdown-label', '');
-      label.textContent = 'Open Containing Folder';
-      revealBtn.appendChild(icon);
-      revealBtn.appendChild(label);
-      revealBtn.addEventListener('click', evt => {
+      label.textContent = labelText;
+      btn.appendChild(icon);
+      btn.appendChild(label);
+      btn.addEventListener('click', evt => {
         evt.preventDefault();
         evt.stopPropagation();
-        const info = tipFileInfo;
-        setTipMenuOpen(false);
-        requestOpenContainingFolder(info).catch(error => {
-          try { console.warn('[incipit] failed to open containing folder:', error); } catch (_) {}
-          showTranscriptToast('Could not open containing folder', 'error');
-        });
+        const info = tipContextMenuInfo;
+        closeTipContextMenu();
+        if (info && typeof action === 'function') action(info, btn);
       });
-      tipMenuEl.appendChild(revealBtn);
-      el.appendChild(tipMenuEl);
-      return tipMenuEl;
+      return btn;
+    }
+
+    function ensureTipContextMenuEl() {
+      if (tipContextMenuEl && document.body && document.body.contains(tipContextMenuEl)) return tipContextMenuEl;
+      tipContextMenuEl = document.createElement('div');
+      tipContextMenuEl.setAttribute('data-incipit-path-context-menu', '');
+      tipContextMenuEl.setAttribute('role', 'menu');
+      tipContextMenuEl.addEventListener('contextmenu', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+      });
+      tipContextMenuEl.appendChild(makeTipContextMenuItem('Open in File Explorer', FOLDER_ICON_SVG, info => {
+        requestOpenContainingFolder(info).catch(error => {
+          try { console.warn('[incipit] failed to open in file explorer:', error); } catch (_) {}
+          showTranscriptToast('Could not open in file explorer', 'error');
+        });
+      }));
+      tipContextMenuEl.appendChild(makeTipContextMenuItem('Copy Relative Path', COPY_ICON_SVG, info => {
+        const text = relativePathForFileInfo(info);
+        if (text) copyText(text);
+      }));
+      tipContextMenuEl.appendChild(makeTipContextMenuItem('Copy Absolute Path', COPY_ICON_SVG, info => {
+        const text = absolutePathForFileInfo(info);
+        if (text) copyText(text);
+      }));
+      if (document.body) document.body.appendChild(tipContextMenuEl);
+      return tipContextMenuEl;
+    }
+
+    function positionTipContextMenu(evt) {
+      if (!tipContextMenuEl || !evt) return;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      const w = tipContextMenuEl.offsetWidth || 236;
+      const h = tipContextMenuEl.offsetHeight || 112;
+      const left = Math.max(4, Math.min(evt.clientX, vw - w - 4));
+      const top = Math.max(4, Math.min(evt.clientY, vh - h - 4));
+      tipContextMenuEl.style.left = left + 'px';
+      tipContextMenuEl.style.top = top + 'px';
+    }
+
+    function openTipContextMenu(hit, evt) {
+      if (!hit || !hit.fileInfo || !hit.fileInfo.filePath || !evt) return false;
+      closeTipContextMenu();
+      hideTip();
+      clearTipShowTimer();
+      tipContextMenuInfo = hit.fileInfo;
+      const menu = ensureTipContextMenuEl();
+      menu.setAttribute('data-incipit-path-context-menu-visible', '1');
+      positionTipContextMenu(evt);
+      document.addEventListener('mousedown', handleTipContextMenuDocumentMouseDown, true);
+      document.addEventListener('keydown', handleTipContextMenuKeyDown, true);
+      window.addEventListener('scroll', closeTipContextMenu, { capture: true, passive: true });
+      window.addEventListener('resize', closeTipContextMenu);
+      return true;
     }
 
     function bodyLinkScopeFor(node) {
@@ -8684,10 +8796,6 @@ import {
       tipFullpath = fullpath;
       tipFileInfo = fileInfo || null;
       tipTextEl.textContent = fullpath;
-      tipCopyBtn.innerHTML = COPY_ICON_SVG;
-      tipCopyBtn.classList.remove('copied');
-      if (tipMoreBtn) tipMoreBtn.hidden = !tipFileInfo;
-      setTipMenuOpen(false);
       el.setAttribute('data-incipit-path-tooltip-visible', '1');
       if (tipRaf) cancelAnimationFrame(tipRaf);
       tipRaf = requestAnimationFrame(tickTip);
@@ -8701,7 +8809,6 @@ import {
       tipTarget = null;
       tipFullpath = '';
       tipFileInfo = null;
-      setTipMenuOpen(false);
       if (tipRaf) { cancelAnimationFrame(tipRaf); tipRaf = 0; }
     }
 
@@ -8731,6 +8838,14 @@ import {
       }, true);
     }
 
+    function handleTipContextMenu(evt) {
+      const hit = resolveTipFast(evt.target, evt) || resolveTip(evt.target, evt);
+      if (!hit || !hit.fileInfo || !hit.fileInfo.filePath) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      openTipContextMenu(hit, evt);
+    }
+
     document.body.addEventListener('mouseover', handleTipHover, true);
     // Mouseover is not enough for assistant body links: Chromium/React can
     // deliver the first event against a text node or an untagged parent while
@@ -8738,6 +8853,10 @@ import {
     // tied to the actual pointer coordinates, so a stable hover over the
     // visible link still arms the dwell timer.
     document.body.addEventListener('mousemove', handleTipHover, { capture: true, passive: true });
+    // Right-click file actions are a separate sticky surface, not a child of
+    // the hover tooltip. Mouse movement should never dismiss it; ordinary
+    // clicks outside it and successful item clicks do.
+    document.body.addEventListener('contextmenu', handleTipContextMenu, true);
     document.body.addEventListener('mouseout', evt => {
       const to = evt.relatedTarget;
       // Pointer left the anchor before the dwell completed → cancel the
