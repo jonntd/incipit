@@ -106,11 +106,38 @@ function makeEntry(obj) { return JSON.stringify(obj); }
   fs.rmSync(dir, { recursive: true, force: true });
 })();
 
+(function userEditBeforeSignedThinkingIsRejected() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'incipit-edit-thinking-'));
+  const target = path.join(dir, '22222222-3333-4444-5555-666666666666.jsonl');
+  const userUuid = 'u-edited';
+  const lines = [
+    makeEntry({ type: 'user', uuid: userUuid, parentUuid: null,
+      message: { role: 'user', content: [{ type: 'text', text: 'old' }] } }),
+    makeEntry({ type: 'assistant', uuid: 'a-thinking', parentUuid: userUuid,
+      message: { role: 'assistant',
+        content: [{ type: 'thinking', thinking: '', signature: 'SIGabc' }] } }),
+    makeEntry({ type: 'assistant', uuid: 'a-text', parentUuid: 'a-thinking',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } }),
+  ];
+  fs.writeFileSync(target, lines.join('\n') + '\n', 'utf8');
+  const transcript = T.readTranscript(target);
+  assert.strictEqual(T.userEditHasDownstreamSignedThinking(transcript, userUuid), true,
+    'a user edit before signed thinking must be recognized as unsafe');
+  assert.throws(() => T.applyUserBlockEdit(transcript, userUuid, [
+    { kind: 'text', text: 'new' },
+  ]), /signed thinking blocks/,
+  'plain local save must reject instead of poisoning the next API request');
+  fs.rmSync(dir, { recursive: true, force: true });
+  ok('edit guard: upstream user edit before signed thinking is rejected');
+})();
+
 // ---- Layer 2: enhance_legacy serialized hand-off source invariants ----
 
 (function sourceInvariants() {
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'data', 'enhance_legacy.js'), 'utf8');
+  const host = fs.readFileSync(
+    path.join(__dirname, '..', 'data', 'host-badge.cjs'), 'utf8');
 
   const required = [
     // Re-entry latch + the CSS grey-out latch toggle.
@@ -127,6 +154,12 @@ function makeEntry(obj) { return JSON.stringify(obj); }
     "'peek_truncate_state'",
     // Busy→UI hysteresis for the action row / send icon.
     'function busyHysteresisReady',
+    // Signed-thinking local edits must use a safe cut-and-resend path.
+    'function saveAndRerunInlineEditor',
+    'function buildRerunPayloadFromEditorDraft',
+    'async function rerunFromUser(record, button, overridePayload = null)',
+    'overridePayload || buildRerunPayloadFromRecord(record)',
+    'Save and rerun this turn',
   ];
   for (const needle of required) {
     assert.ok(src.includes(needle),
@@ -169,6 +202,10 @@ function makeEntry(obj) { return JSON.stringify(obj); }
     !/transcriptHasToolResult\(record\)\) return;\s*\n\s*if \(conversationIsBusy\(\)\) return;/.test(rerunHead),
     'rerunFromUser must not early-return on conversationIsBusy() before quiesce',
   );
+  assert.ok(host.includes('SIGNED_THINKING_USER_EDIT_ERROR') &&
+      host.includes('userEditHasDownstreamSignedThinking(transcript, uuid)') &&
+      host.includes("block.type === 'thinking' || block.type === 'redacted_thinking'"),
+    'host local-save path must reject upstream edits before signed thinking blocks');
   ok('source: two-phase hand-off present; partial-tail wait + busy early-return removed');
 })();
 

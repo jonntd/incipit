@@ -214,8 +214,15 @@ function assertRuntimeSourceContracts() {
     'installer must collect structured install contracts including hostRoute/I1/I2, inject __incipitInstallManifest, and expose them in the apply report',
   );
   assert(
-    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy']"),
-    'installer must copy capability/ and legacy/ webview asset subtrees',
+    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid']"),
+    'installer must copy capability/, legacy/, and mermaid/ webview asset subtrees',
+  );
+  assert(
+    install.includes("const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({") &&
+      install.includes("legacy: new Set(['session_status.js'])") &&
+      install.includes("filter(rel => !excluded.has(rel.split(path.sep).join('/')))") &&
+      install.includes('syncAssetTree(srcTree, dstTree, DORMANT_WEBVIEW_ASSET_FILES[treeName])'),
+    'installer must keep dormant session_status source out of apply-copied legacy assets',
   );
   assert(
     capability.includes('__incipitInstallManifest') &&
@@ -337,6 +344,75 @@ function assertRuntimeSourceContracts() {
   assert(
     /initLegacyAskRefinement\(legacyContext\);\r?\n\s*initLegacyTranscriptActionDebug\(legacyContext\);/.test(legacy),
     'legacy split must preserve the old init order by running transcript debug tools after ask refinement setup',
+  );
+  const sessionStatus = fs.readFileSync(path.join(__dirname, '..', 'data', 'legacy', 'session_status.js'), 'utf8');
+  assert(
+    sessionStatus.includes('Dormant prototype (2026-06-02)') &&
+      sessionStatus.includes("import { reactFiberForElement } from '../capability/fingerprints/fiber.js'") &&
+      sessionStatus.includes("import { runLegacyInit } from './registry.js'") &&
+      sessionStatus.includes('export function initLegacySessionStatus') &&
+      sessionStatus.includes("runLegacyInit('session_status'") &&
+      sessionStatus.includes('reactFiberForElement(row)') &&
+      sessionStatus.includes('function sessionForRow(row)') &&
+      sessionStatus.includes('function isSessionState(value)') &&
+      sessionStatus.includes("isSignalLike(value.busy)") &&
+      sessionStatus.includes("isSignalLike(value.pendingInput)") &&
+      sessionStatus.includes("isSignalLike(value.isLoading)") &&
+      sessionStatus.includes("isSignalLike(value.sessionId)"),
+    'dormant session status prototype must remain available and keep its row-local SessionState design',
+  );
+  assert(
+    sessionStatus.includes("'[class*=\"sessionsList\"]'") &&
+      sessionStatus.includes("'button[class*=\"sessionItem\"]'") &&
+      sessionStatus.includes("'[class*=\"sessionMeta\"]'") &&
+      sessionStatus.includes("'[class*=\"sessionTime\"]'") &&
+      sessionStatus.includes("'data-incipit-session-state'") &&
+      sessionStatus.includes("'data-incipit-session-spinner'") &&
+      sessionStatus.includes("row.querySelector('[' + SPINNER_ATTR + ']')") &&
+      !sessionStatus.includes("meta.querySelector('[' + SPINNER_ATTR + ']'") &&
+      sessionStatus.includes('row.insertBefore(spinner, meta)') &&
+      !sessionStatus.includes('meta.insertBefore(spinner') &&
+      sessionStatus.includes("return 'waiting'") &&
+      sessionStatus.includes("return 'loading'") &&
+      sessionStatus.includes("return 'running'"),
+    'dormant session status prototype must keep the non-grid row decoration design',
+  );
+  for (const forbidden of [
+    'interruptClaude',
+    'session.send',
+    '.send(',
+    'loadFromServer',
+    'activateSessionFromServer',
+    'activeSession.value',
+    'preventDefault',
+    'stopPropagation',
+    'addEventListener(\'click\'',
+    'addEventListener("click"',
+    'newest',
+    'lastModifiedTime',
+    'subscribeRuntime',
+    'runtime_kernel',
+    'MutationObserver',
+    'subtree',
+    'characterData',
+    'addEventListener(\'scroll\'',
+    'addEventListener("scroll"',
+  ]) {
+    assert(
+      !sessionStatus.includes(forbidden),
+      `dormant session status prototype must stay UI-only and avoid dangerous path: ${forbidden}`,
+    );
+  }
+  const warmWhite = fs.readFileSync(path.join(__dirname, '..', 'data', 'warm-white-override.css'), 'utf8');
+  assert(
+    !legacy.includes("./legacy/session_status.js") &&
+      !legacy.includes('initLegacySessionStatus(legacyContext)') &&
+      !theme.includes('[data-incipit-session-spinner]') &&
+      !theme.includes('[data-incipit-session-state=') &&
+      !theme.includes('@keyframes incipit-session-spin') &&
+      !warmWhite.includes('[data-incipit-session-spinner]') &&
+      !warmWhite.includes('[data-incipit-session-state='),
+    'session status prototype must remain dormant: no legacy import/init or shipped CSS',
   );
   assert(
     capability.includes('const MISS_REASONS = new Set([') &&

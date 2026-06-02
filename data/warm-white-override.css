@@ -84,6 +84,20 @@
   --app-mention-chip-background: #ead8cf !important;
   --app-mention-chip-foreground: #8f452b !important;
   --incipit-mention-chip-background-hover: #e2c8bc !important;
+  --incipit-mermaid-text: #0d0d0d;
+  --incipit-mermaid-muted: #5f5a50;
+  --incipit-mermaid-inverse-text: #f8f8f6;
+  --incipit-mermaid-label-bg: #f8f8f6;
+  --incipit-mermaid-label-border: #c6baab;
+  --incipit-mermaid-surface: #fffaf0;
+  --incipit-mermaid-surface-alt: #f1e8df;
+  --incipit-mermaid-line: #746d64;
+  --incipit-mermaid-line-muted: #c6baab;
+  --incipit-mermaid-accent: #bf5d3a;
+  --incipit-mermaid-accent-soft: #ead2c5;
+  --incipit-mermaid-accent-border: #bf5d3a;
+  --incipit-mermaid-done-soft: #e4ede0;
+  --incipit-mermaid-done-border: #718c5e;
 }
 
 @font-face {

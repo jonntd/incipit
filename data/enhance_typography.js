@@ -1,5 +1,6 @@
 import { SEL } from './host_probe.js';
 import { renderMathInSegment as rewriteMathInSegment } from './math_rewriter.js';
+import { collectMermaidBlocks, renderMermaidIn, MERMAID_GROUP_PALETTE } from './mermaid_render.js';
 import { CFG, assetURL, loadCSS, loadJS, log, reportHealth, warn } from './enhance_shared.js';
 import {
   bumpPerfCounter,
@@ -83,11 +84,213 @@ export function configureTypographyHooks(hooks = {}) {
   }
 }
 
+function mermaidThemeVariables() {
+  const P = MERMAID_GROUP_PALETTE;
+  if (CFG.palette === 'warm-white') {
+    return {
+      darkMode: false,
+      // Smaller than body copy: diagrams read as dense captions, not headings.
+      fontSize: '12px',
+      background: '#f8f8f6',
+      primaryColor: '#fffaf0',
+      primaryTextColor: '#0d0d0d',
+      primaryBorderColor: '#7a7166',
+      secondaryColor: '#f1e8df',
+      secondaryTextColor: '#0d0d0d',
+      secondaryBorderColor: '#948779',
+      tertiaryColor: '#ead8cf',
+      tertiaryTextColor: '#321f18',
+      tertiaryBorderColor: '#bf5d3a',
+      lineColor: '#746d64',
+      textColor: '#0d0d0d',
+      mainBkg: '#fffaf0',
+      nodeBkg: '#fffaf0',
+      nodeBorder: '#7a7166',
+      nodeTextColor: '#0d0d0d',
+      edgeLabelBackground: '#f3eadf',
+      clusterBkg: '#f1e8df',
+      clusterBorder: '#c6baab',
+      titleColor: '#0d0d0d',
+      noteBkgColor: '#f1e1d8',
+      noteTextColor: '#0d0d0d',
+      noteBorderColor: '#bf5d3a',
+      actorBkg: '#fffaf0',
+      actorBorder: '#7a7166',
+      actorTextColor: '#0d0d0d',
+      actorLineColor: '#746d64',
+      labelBoxBkgColor: '#f3eadf',
+      labelBoxBorderColor: '#c6baab',
+      labelTextColor: '#0d0d0d',
+      loopTextColor: '#0d0d0d',
+      signalColor: '#746d64',
+      signalTextColor: '#0d0d0d',
+      activationBkgColor: '#f1e8df',
+      activationBorderColor: '#7a7166',
+      sequenceNumberColor: '#f8f8f6',
+      sectionBkgColor: '#f1e8df',
+      altSectionBkgColor: '#fffaf0',
+      sectionBkgColor2: '#ead8cf',
+      excludeBkgColor: '#e6e4de',
+      taskBkgColor: '#fffaf0',
+      taskBorderColor: '#7a7166',
+      taskTextColor: '#0d0d0d',
+      taskTextOutsideColor: '#0d0d0d',
+      taskTextLightColor: '#0d0d0d',
+      taskTextDarkColor: '#0d0d0d',
+      activeTaskBkgColor: '#ead8cf',
+      activeTaskBorderColor: '#bf5d3a',
+      doneTaskBkgColor: '#e4ede0',
+      doneTaskBorderColor: '#718c5e',
+      critBkgColor: '#ead8cf',
+      critBorderColor: '#bf5d3a',
+      gridColor: '#cfc5b7',
+      pieTitleTextColor: '#0d0d0d',
+      pieSectionTextColor: '#0d0d0d',
+      pieLegendTextColor: '#0d0d0d',
+      pieStrokeColor: '#f8f8f6',
+      pieOuterStrokeColor: '#f8f8f6',
+      pieStrokeWidth: '2px',
+      pieOuterStrokeWidth: '2px',
+      pieOpacity: '0.86',
+      pie0: P[0], pie1: P[1], pie2: P[2], pie3: P[3], pie4: P[4], pie5: P[5],
+      pie6: P[6], pie7: P[7], pie8: P[8], pie9: P[9], pie10: P[10], pie11: P[11],
+      cScale0: P[0], cScale1: P[1], cScale2: P[2], cScale3: P[3], cScale4: P[4],
+      cScale5: P[5], cScale6: P[6], cScale7: P[7], cScale8: P[8], cScale9: P[9],
+      classText: '#0d0d0d',
+      stateLabelColor: '#0d0d0d',
+      transitionLabelColor: '#0d0d0d',
+      relationLabelColor: '#0d0d0d',
+      branchLabelColor: '#0d0d0d',
+      commitLabelColor: '#0d0d0d',
+      commitLabelBackground: '#f1eee8',
+    };
+  }
+  return {
+    darkMode: true,
+    fontSize: '12px',
+    background: '#1f1f1e',
+    primaryColor: '#2d2a26',
+    primaryTextColor: '#f8f8f6',
+    primaryBorderColor: '#a99b8d',
+    secondaryColor: '#34302b',
+    secondaryTextColor: '#f0eee8',
+    secondaryBorderColor: '#8f8579',
+    tertiaryColor: '#4b372f',
+    tertiaryTextColor: '#f8f8f6',
+    tertiaryBorderColor: '#bd7a62',
+    lineColor: '#b8aea2',
+    textColor: '#f8f8f6',
+    mainBkg: '#2d2a26',
+    nodeBkg: '#2d2a26',
+    nodeBorder: '#a99b8d',
+    nodeTextColor: '#f8f8f6',
+    edgeLabelBackground: '#302c27',
+    clusterBkg: '#282622',
+    clusterBorder: '#6f665b',
+    titleColor: '#f8f8f6',
+    noteBkgColor: '#2f2925',
+    noteTextColor: '#f8f8f6',
+    noteBorderColor: '#bd7a62',
+    actorBkg: '#2d2a26',
+    actorBorder: '#a99b8d',
+    actorTextColor: '#f8f8f6',
+    actorLineColor: '#b8aea2',
+    labelBoxBkgColor: '#302c27',
+    labelBoxBorderColor: '#6f665b',
+    labelTextColor: '#f8f8f6',
+    loopTextColor: '#f8f8f6',
+    signalColor: '#b8aea2',
+    signalTextColor: '#f8f8f6',
+    activationBkgColor: '#34302b',
+    activationBorderColor: '#a99b8d',
+    sequenceNumberColor: '#1f1f1e',
+    sectionBkgColor: '#2b2824',
+    altSectionBkgColor: '#34302b',
+    sectionBkgColor2: '#4b372f',
+    excludeBkgColor: '#2f2a25',
+    taskBkgColor: '#2d2a26',
+    taskBorderColor: '#a99b8d',
+    taskTextColor: '#f8f8f6',
+    taskTextOutsideColor: '#f8f8f6',
+    taskTextLightColor: '#f8f8f6',
+    taskTextDarkColor: '#1f1f1e',
+    activeTaskBkgColor: '#493932',
+    activeTaskBorderColor: '#bd7a62',
+    doneTaskBkgColor: '#303a30',
+    doneTaskBorderColor: '#7cb27c',
+    critBkgColor: '#493932',
+    critBorderColor: '#bd7a62',
+    gridColor: '#48433c',
+    pieTitleTextColor: '#f8f8f6',
+    pieSectionTextColor: '#f8f8f6',
+    pieLegendTextColor: '#f8f8f6',
+    pieStrokeColor: '#1f1f1e',
+    pieOuterStrokeColor: '#1f1f1e',
+    pieStrokeWidth: '2px',
+    pieOuterStrokeWidth: '2px',
+    pieOpacity: '0.88',
+    pie0: P[0], pie1: P[1], pie2: P[2], pie3: P[3], pie4: P[4], pie5: P[5],
+    pie6: P[6], pie7: P[7], pie8: P[8], pie9: P[9], pie10: P[10], pie11: P[11],
+    cScale0: P[0], cScale1: P[1], cScale2: P[2], cScale3: P[3], cScale4: P[4],
+    cScale5: P[5], cScale6: P[6], cScale7: P[7], cScale8: P[8], cScale9: P[9],
+    classText: '#f8f8f6',
+    stateLabelColor: '#f8f8f6',
+    transitionLabelColor: '#f8f8f6',
+    relationLabelColor: '#f8f8f6',
+    branchLabelColor: '#1f1f1e',
+    commitLabelColor: '#f8f8f6',
+    commitLabelBackground: '#282826',
+  };
+}
+
 const assets = (() => {
   let katexPromise = null;
   let hljsPromise = null;
+  let mermaidPromise = null;
 
   return {
+    mermaid() {
+      if (!mermaidPromise) {
+        reportHealth('asset.mermaid', 'loading');
+        mermaidPromise = loadJS(assetURL('mermaid/mermaid.min.js')).then(() => {
+          // The vendored esbuild IIFE exposes the module namespace at
+          // `window.__esbuild_esm_mermaid_nm.mermaid`; the live API (with
+          // `.render`/`.initialize`) is its `.default`. Verified against the
+          // pinned 11.15.0 bundle — normalise to a single `window.mermaid`.
+          const ns = window.__esbuild_esm_mermaid_nm && window.__esbuild_esm_mermaid_nm.mermaid;
+          const m = (ns && (ns.default || ns)) || window.mermaid;
+          if (!m || typeof m.render !== 'function') {
+            throw new Error('mermaid loaded but API missing');
+          }
+          window.mermaid = m;
+          let bodyFont = 'inherit';
+          try {
+            const cs = getComputedStyle(document.documentElement);
+            const v = (cs.getPropertyValue('--incipit-body-font') || '').trim();
+            if (v) bodyFont = v;
+          } catch (_) {}
+          m.initialize({
+            startOnLoad: false,
+            // strict: no script exec, sanitized SVG, HTML labels escaped.
+            securityLevel: 'strict',
+            // Never let mermaid draw its own error diagram on parse failure —
+            // we fall back to the raw code block instead.
+            suppressErrorRendering: true,
+            theme: 'base',
+            themeVariables: mermaidThemeVariables(),
+            fontFamily: bodyFont,
+          });
+          log('mermaid ready');
+          reportHealth('asset.mermaid', 'ok');
+          return m;
+        }).catch(e => {
+          reportHealth('asset.mermaid', 'error', { message: e && e.message ? e.message : String(e) });
+          warn('mermaid load failed:', e);
+          throw e;
+        });
+      }
+      return mermaidPromise;
+    },
     katex() {
       if (!katexPromise) {
         reportHealth('asset.katex', 'loading');
@@ -677,6 +880,42 @@ function rememberDeferredCodeBlock(block) {
   bumpPerfCounter('codeHighlight.deferred', 1);
 }
 
+// ---- mermaid ----
+// Diagrams render only after the turn settles (busy=false). The scan is gated
+// twice: scheduled as an idle task (never inline on a stream/mutation hot
+// path), and runMermaidScan bails immediately while busy — the next settle
+// event re-triggers it. The heavy 3.3MB library is loaded lazily and only
+// when an eligible block actually exists, never on bootstrap.
+let mermaidLoadFailed = false;
+
+function mermaidScanRoot() {
+  return attachedMessagesRoot || document.querySelector(MESSAGES_ROOT_SELECTOR) || document.body;
+}
+
+function runMermaidScan() {
+  if (mermaidLoadFailed) return;
+  if (conversationIsBusy()) return; // streaming: settle event will re-trigger
+  const root = mermaidScanRoot();
+  if (!root) return;
+  // Cheap pure-read gate before paying the library load cost.
+  if (!collectMermaidBlocks(root).length) return;
+  assets.mermaid().then(m => {
+    if (conversationIsBusy()) { scheduleMermaidScan('busyAgain'); return; }
+    return renderMermaidIn(m, root, { isBusy: () => conversationIsBusy() });
+  }).catch(() => { mermaidLoadFailed = true; /* blocks stay as code fallback */ });
+}
+
+function scheduleMermaidScan(reason = 'deferred') {
+  if (mermaidLoadFailed) return;
+  scheduleIdleTask('typography.mermaidScan', () => {
+    try { runMermaidScan(); }
+    catch (e) { warn('mermaid scan failed:', e); }
+  }, {
+    delay: reason === 'assistantTurnFinalized' ? 80 : STREAMING_TYPOGRAPHY_RECHECK_MS,
+    timeout: 1500,
+  });
+}
+
 function scheduleDeferredRuntimeFlush(reason = 'deferred') {
   scheduleIdleTask('typography.deferredFlush', () => {
     try { flushDeferredCodeHighlights(); }
@@ -733,6 +972,10 @@ function flush() {
       if (shouldYield(start, processed, FLUSH_ROOT_MIN, FLUSH_ROOT_BUDGET_MS)) break;
     }
     if (swept) sweepStreamingDisableState();
+    // New content settled into the DOM (e.g. opening a transcript or switching
+    // sessions, which fire no streamSettled). Debounced + busy-gated, so this
+    // is a no-op during streaming and only renders once content is static.
+    if (swept) scheduleMermaidScan('flush');
   }
   if (pendingSegments.size || pendingRoots.size) schedule();
   else if (hasDeferredCodeHighlights()) flushDeferredCodeHighlights();
@@ -1045,13 +1288,16 @@ export function highlightAllCode(root) {
   // Match the root itself too — `querySelectorAll` excludes the host node,
   // so a mutation that lands a `<pre><code>` directly would otherwise miss.
   if (scope.matches && scope.matches('pre code:not(.hljs)') &&
-      !scope.classList.contains('language-latex')) {
+      !scope.classList.contains('language-latex') &&
+      !scope.classList.contains('language-mermaid')) {
     highlightOneCodeBlock(scope, { busy });
   }
   if (!scope.querySelectorAll) return;
   const blocks = scope.querySelectorAll('pre code:not(.hljs)');
   for (const block of blocks) {
-    if (block.classList.contains('language-latex')) continue;
+    // language-mermaid is owned by the mermaid render pass, not hljs.
+    if (block.classList.contains('language-latex') ||
+        block.classList.contains('language-mermaid')) continue;
     highlightOneCodeBlock(block, { busy });
   }
 }
@@ -1070,7 +1316,8 @@ export function enqueueCodeHighlight(root) {
     if (!block || pendingCodeHighlightSet.has(block)) return;
     if (block.classList && (
           block.classList.contains('hljs') ||
-          block.classList.contains('language-latex')
+          block.classList.contains('language-latex') ||
+          block.classList.contains('language-mermaid')
         )) return;
     pendingCodeHighlightSet.add(block);
     pendingCodeHighlights.push(block);
@@ -1104,7 +1351,8 @@ function runCodeHighlightChunk() {
     const block = pendingCodeHighlights.shift();
     pendingCodeHighlightSet.delete(block);
     if (block && block.isConnected && !block.classList.contains('hljs') &&
-        !block.classList.contains('language-latex')) {
+        !block.classList.contains('language-latex') &&
+        !block.classList.contains('language-mermaid')) {
       try { highlightOneCodeBlock(block, { busy }); }
       catch (e) { warn('highlight failed:', e); }
     }
@@ -1178,6 +1426,11 @@ export function initTypography(hooks = {}) {
   typographyStarted = true;
   reportHealth('typography', 'starting');
   subscribe('streamSettled', () => scheduleDeferredRuntimeFlush('streamSettled'));
+  // Mermaid renders on turn finalize (the quietest signal — busy=false plus
+  // dirty-quiet); streamSettled is a backstop. Both only schedule; the actual
+  // render is gated on busy=false inside runMermaidScan.
+  subscribe('assistantTurnFinalized', () => scheduleMermaidScan('assistantTurnFinalized'));
+  subscribe('streamSettled', () => scheduleMermaidScan('streamSettled'));
   setupObserver();
 
   assets.hljs().then(() => {
@@ -1188,6 +1441,10 @@ export function initTypography(hooks = {}) {
     const root = attachedMessagesRoot || document.querySelector(MESSAGES_ROOT_SELECTOR) || document.body;
     if (root) enqueueCodeHighlight(root);
   }).catch(() => { /* Already warned. */ });
+
+  // Render any mermaid already present in an opened transcript (no stream, so
+  // no settle event will fire for it).
+  scheduleMermaidScan('init');
 
   reportHealth('typography', 'ok');
   return globalThis.__incipitTypography;

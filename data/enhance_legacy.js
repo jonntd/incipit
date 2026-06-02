@@ -647,6 +647,49 @@ import {
     return { file, dataUrl };
   }
 
+  function imageSourceToAttachment(source) {
+    return imageBlockToAttachment({ type: 'image', source });
+  }
+
+  function keptImageChipToAttachment(record, chip) {
+    if (!record || !chip || chip.blockKind !== 'image') return null;
+    if (!Number.isInteger(chip.index) || chip.index < 0) return null;
+    const content = transcriptContent(record);
+    if (!Array.isArray(content) || chip.index >= content.length) return null;
+    const block = unwrapTranscriptContentBlock(content[chip.index]);
+    return imageBlockToAttachment(block);
+  }
+
+  function savedIdeRefFromEditChips(chips) {
+    if (!Array.isArray(chips)) return null;
+    for (const chip of chips) {
+      if (!chip || chip.kind !== 'keep') continue;
+      if (typeof chip.rawText !== 'string') continue;
+      const ref = parseIdeRefForSend(chip.rawText);
+      if (ref) return ref;
+    }
+    return null;
+  }
+
+  function buildRerunPayloadFromEditorDraft(record, text, chips) {
+    const attachments = [];
+    for (const chip of (Array.isArray(chips) ? chips : [])) {
+      if (!chip) continue;
+      let att = null;
+      if (chip.kind === 'keep' && chip.blockKind === 'image') {
+        att = keptImageChipToAttachment(record, chip);
+      } else if (chip.kind === 'image-new' && chip.source) {
+        att = imageSourceToAttachment(chip.source);
+      }
+      if (att) attachments.push(att);
+    }
+    return {
+      prose: typeof text === 'string' ? text : '',
+      attachments,
+      savedIdeRef: savedIdeRefFromEditChips(chips),
+    };
+  }
+
   // Build the full rerun payload (prose, attachments, savedIdeRef) from
   // a saved user record. Used by rerunFromUser. Mirrors the data model
   // the chip strip + textarea show during edit, but routed through the
@@ -3198,7 +3241,7 @@ import {
   //      via `session.send`. If send fails before any new JSONL append
   //      is observed, ask the host to roll the exact truncated text
   //      back to the original transcript.
-  async function rerunFromUser(record, button) {
+  async function rerunFromUser(record, button, overridePayload = null) {
     if (!record || record.type !== 'user') return;
     // Always read current Ez from messages.value — caller's closure
     // (a button click handler bound at decoration time) holds the
@@ -3225,7 +3268,7 @@ import {
     // `zB1` → API content[]), so the model sees byte-equivalent content
     // to what the bubble shows: text, image base64 blocks, and a
     // single optional `<ide_*>` ref synthesized from the saved selection.
-    const { prose, attachments, savedIdeRef } = buildRerunPayloadFromRecord(record);
+    const { prose, attachments, savedIdeRef } = overridePayload || buildRerunPayloadFromRecord(record);
     if (!prose && !attachments.length) {
       showTranscriptToast('No content to rerun', 'error');
       return;
@@ -3951,6 +3994,52 @@ import {
     }
   }
 
+  function buildUserEditBlocksSpec(state, text) {
+    const blocksSpec = [];
+    for (const chip of (state.chips || [])) {
+      if (chip.kind === 'keep' && Number.isInteger(chip.index)) {
+        blocksSpec.push({ kind: 'keep', index: chip.index });
+      } else if (chip.kind === 'image-new' && chip.source) {
+        blocksSpec.push({ kind: 'image', source: chip.source });
+      }
+    }
+    if (typeof text === 'string' && text.length > 0) {
+      blocksSpec.push({ kind: 'text', text });
+    }
+    return blocksSpec;
+  }
+
+  async function saveAndRerunInlineEditor(uuid, button) {
+    const state = inlineEditByUuid.get(uuid);
+    if (!state) return;
+    if (state.kind !== 'user') {
+      await saveInlineEditor(uuid);
+      return;
+    }
+    if (conversationIsBusy()) return;
+    const text = state.textarea.value;
+    const blocksSpec = buildUserEditBlocksSpec(state, text);
+    const rerunPayload = buildRerunPayloadFromEditorDraft(state.record, text, state.chips);
+    if (blocksSpec.length === 0 || (!rerunPayload.prose && !rerunPayload.attachments.length)) {
+      showTranscriptToast(
+        'Nothing to rerun — type something or keep at least one image attachment.',
+        'error',
+      );
+      return;
+    }
+
+    // Do not persist the edited user row before cutting the old tail:
+    // signed thinking blocks downstream would make that transient JSONL
+    // invalid for the next host resume.
+    if (button) button.dataset.incipitInflight = '1';
+    if (state.saveBtn) state.saveBtn.dataset.incipitInflight = '1';
+    if (state.cancelBtn) state.cancelBtn.dataset.incipitInflight = '1';
+    teardownInlineEditor(uuid);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const live = liveTranscriptRecord(uuid, state.record);
+    await rerunFromUser(live, button || state.saveRerunBtn || state.saveBtn, rerunPayload);
+  }
+
   async function saveInlineEditor(uuid) {
     const state = inlineEditByUuid.get(uuid);
     if (!state) return;
@@ -3970,17 +4059,7 @@ import {
     // by sending an explicit kept-by-index spec.
     let blocksSpec = null;
     if (state.kind === 'user') {
-      blocksSpec = [];
-      for (const chip of (state.chips || [])) {
-        if (chip.kind === 'keep' && Number.isInteger(chip.index)) {
-          blocksSpec.push({ kind: 'keep', index: chip.index });
-        } else if (chip.kind === 'image-new' && chip.source) {
-          blocksSpec.push({ kind: 'image', source: chip.source });
-        }
-      }
-      if (typeof text === 'string' && text.length > 0) {
-        blocksSpec.push({ kind: 'text', text });
-      }
+      blocksSpec = buildUserEditBlocksSpec(state, text);
       if (blocksSpec.length === 0) {
         showTranscriptToast(
           'Nothing to save — type something or keep at least one attachment.',
@@ -4195,8 +4274,17 @@ import {
       SAVE_ICON_SVG,
       () => saveInlineEditor(record.uuid),
     );
+    const saveRerunBtn = kind === 'user'
+      ? makeTranscriptActionButton(
+        'rerun',
+        'Save and rerun this turn',
+        RERUN_ICON_SVG,
+        () => saveAndRerunInlineEditor(record.uuid, saveRerunBtn),
+      )
+      : null;
 
     editActions.append(cancelBtn, saveBtn);
+    if (saveRerunBtn) editActions.appendChild(saveRerunBtn);
 
     // DOM injection.
     // Shell — always adjacent to the content node it replaces.
@@ -4271,6 +4359,7 @@ import {
       shellEl: shell,
       textarea,
       saveBtn,
+      saveRerunBtn,
       cancelBtn,
       editActionsEl: editActions,
       originalActionRow: originalActionRow || null,

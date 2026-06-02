@@ -302,6 +302,29 @@ function isPathInside(child, parent) {
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+function resolveFileRevealPathForCwd(raw, cwd) {
+  const rawIsAbsolute = path.isAbsolute(raw);
+  if (!rawIsAbsolute && !cwd) {
+    throw new Error('Relative file path has no Claude project cwd.');
+  }
+  return {
+    rawIsAbsolute,
+    resolved: rawIsAbsolute ? path.resolve(raw) : path.resolve(cwd, raw),
+  };
+}
+
+function assertFileRevealWorkspace(cwd, resolved, rawIsAbsolute) {
+  if (!cwd) return;
+  const realRoot = fs.realpathSync(cwd);
+  const realTarget = fs.realpathSync(resolved);
+  if (isPathInside(realTarget, realRoot)) return;
+  // Absolute paths in assistant output are already explicit user-facing
+  // file targets. The cwd hint can be stale when viewing/switching sessions,
+  // so it must not veto an existing absolute path from another workspace.
+  if (rawIsAbsolute) return;
+  throw new Error('File path is outside the active workspace.');
+}
+
 function normalizeWorkspaceCwd(value) {
   const cwd = typeof value === 'string' && value ? value : '';
   if (!cwd || !path.isAbsolute(cwd)) return '';
@@ -407,10 +430,7 @@ async function revealContainingFolder(state, comm, message) {
   const vscode = getVSCodeApi();
   const cwd = resolveFileRevealCwd(state, comm, message || {});
   const raw = normalizeFileRevealPath(message && message.filePath);
-  if (!path.isAbsolute(raw) && !cwd) {
-    throw new Error('Relative file path has no Claude project cwd.');
-  }
-  const resolved = path.resolve(cwd || process.cwd(), raw);
+  const { rawIsAbsolute, resolved } = resolveFileRevealPathForCwd(raw, cwd);
   let stat;
   try {
     stat = fs.statSync(resolved);
@@ -418,13 +438,7 @@ async function revealContainingFolder(state, comm, message) {
     throw new Error('File path does not exist.');
   }
 
-  if (cwd) {
-    const realRoot = fs.realpathSync(cwd);
-    const realTarget = fs.realpathSync(resolved);
-    if (!isPathInside(realTarget, realRoot)) {
-      throw new Error('File path is outside the active workspace.');
-    }
-  }
+  assertFileRevealWorkspace(cwd, resolved, rawIsAbsolute);
 
   const directoryPath = stat.isDirectory() ? resolved : path.dirname(resolved);
   if (!stat.isDirectory()) {
@@ -926,6 +940,9 @@ function applyUserEdit(transcript, uuid, text) {
   if (!canEditUserEntry(sample)) {
     throw new Error('Tool result records cannot be edited; rerun the prior user message instead');
   }
+  if (userEditHasDownstreamSignedThinking(transcript, uuid)) {
+    throw new Error(SIGNED_THINKING_USER_EDIT_ERROR);
+  }
   let any = false;
   for (const row of rows) {
     if (replaceTextContent(row.entry, text, { requireExistingText: false })) {
@@ -1008,6 +1025,9 @@ function applyUserBlockEdit(transcript, uuid, blocks) {
   }
   if (!canEditUserEntry(sample)) {
     throw new Error('Tool result records cannot be edited; rerun the prior user message instead');
+  }
+  if (userEditHasDownstreamSignedThinking(transcript, uuid)) {
+    throw new Error(SIGNED_THINKING_USER_EDIT_ERROR);
   }
   if (!Array.isArray(blocks) || blocks.length === 0) {
     throw new Error('Empty blocks list');
@@ -1235,6 +1255,31 @@ function canEditAssistantTextEntry(entry) {
   return Array.isArray(content) && content.some(block =>
     block && block.type === 'text' && typeof block.text === 'string'
   );
+}
+
+const SIGNED_THINKING_USER_EDIT_ERROR =
+  'This message is followed by signed thinking blocks. Use Save and Rerun instead; ' +
+  'a local-only edit would make Claude reject the next request.';
+
+// Anthropic verifies prior `thinking` / `redacted_thinking` blocks against
+// their original turn. Editing an upstream user while keeping those blocks
+// poisons the next resume; rerun must cut the downstream turn first.
+function entryHasSignedThinkingBlock(entry) {
+  if (!entry || entry.type !== 'assistant') return false;
+  const content = entry.message && entry.message.content;
+  if (!Array.isArray(content)) return false;
+  return content.some(block => block && (
+    block.type === 'thinking' || block.type === 'redacted_thinking'
+  ));
+}
+
+function userEditHasDownstreamSignedThinking(transcript, uuid) {
+  const rows = requireTranscriptRows(transcript, uuid);
+  const cutIdx = rows[rows.length - 1].index;
+  for (let i = cutIdx + 1; i < transcript.rows.length; i++) {
+    if (entryHasSignedThinkingBlock(transcript.rows[i].entry)) return true;
+  }
+  return false;
 }
 
 function replaceTextContent(entry, text, options) {
@@ -2965,7 +3010,13 @@ module.exports.__test = {
   readTranscript,
   serializeTranscript,
   atomicWriteTranscript,
+  applyUserEdit,
+  applyUserBlockEdit,
   applyTruncateFromUser,
+  userEditHasDownstreamSignedThinking,
+  normalizeFileRevealPath,
+  resolveFileRevealPathForCwd,
+  assertFileRevealWorkspace,
   registerTruncateRollback,
   peekTruncateState,
 };

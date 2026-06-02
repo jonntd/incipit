@@ -50,6 +50,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'enhance_footer_badge.js'), 'enhance_footer_badge.js'],
   [path.join('data', 'enhance_thinking.js'),    'enhance_thinking.js'],
   [path.join('data', 'enhance_typography.js'),  'enhance_typography.js'],
+  [path.join('data', 'mermaid_render.js'),      'mermaid_render.js'],
   [path.join('data', 'enhance_legacy.js'),      'enhance_legacy.js'],
   [path.join('data', 'host_probe.js'),           'host_probe.js'],
   [path.join('data', 'host-badge.cjs'),          'host-badge.cjs'],
@@ -67,8 +68,11 @@ const CDN_HOST = 'https://cdnjs.cloudflare.com';
 const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
-// Sync the whole subtree so math, highlighting, and fonts work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy'];
+// Sync the whole subtree so math, highlighting, fonts, and mermaid work offline.
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid'];
+const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({
+  legacy: new Set(['session_status.js']),
+});
 // Asset subtrees we used to ship but no longer need. `apply` wipes these on
 // sight so upgrades never leave dead bytes behind in the host webview folder.
 const LEGACY_ASSET_TREES = ['mathjax'];
@@ -116,6 +120,11 @@ const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
     version: '2.1.154',
     extensionSha256: '82cf1477100459cf31f4d5d9e425789d0bee81c32c26cbfa471fceca7a177ae9',
     webviewSha256: '37193761cc06e9443be9bf99ae3ebd6aeaa7295ac07ae54159a9ce54477e2cd6',
+  },
+  {
+    version: '2.1.160',
+    extensionSha256: '01e8fbadf710055b2f678ad413c14ac04b7f41f342b67447d30228874e016f48',
+    webviewSha256: 'c4321ebc89d056588de2d41efaf8fa169909d43875db30fe2aeb67bec245341c',
   },
 ]);
 
@@ -747,11 +756,13 @@ function walkFiles(root) {
   return out;
 }
 
-function syncAssetTree(sourceRoot, targetRoot) {
+function syncAssetTree(sourceRoot, targetRoot, excludedFiles = new Set()) {
   if (!fs.existsSync(sourceRoot)) {
     throw new Error(`未找到内置资源目录:${sourceRoot}`);
   }
-  const rels = walkFiles(sourceRoot);
+  const excluded = excludedFiles || new Set();
+  const rels = walkFiles(sourceRoot)
+    .filter(rel => !excluded.has(rel.split(path.sep).join('/')));
   const wanted = new Set(rels.map(rel => rel.split(path.sep).join('/')));
   let written = 0;
   for (const rel of rels) {
@@ -2033,7 +2044,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
   for (const treeName of LOCAL_ASSET_TREES) {
     const srcTree = path.join(resourceRoot, 'data', treeName);
     const dstTree = path.join(webviewDir, treeName);
-    const [written, total] = syncAssetTree(srcTree, dstTree);
+    const [written, total] = syncAssetTree(srcTree, dstTree, DORMANT_WEBVIEW_ASSET_FILES[treeName]);
     assetWrittenTotal += written;
     assetTotal += total;
     assetTrees.push({

@@ -159,6 +159,20 @@
   --app-mention-chip-background: #3d312d !important;
   --app-mention-chip-foreground: #e0a18b !important;
   --incipit-mention-chip-background-hover: #493932 !important;
+  --incipit-mermaid-text: #f8f8f6;
+  --incipit-mermaid-muted: #d8d6ce;
+  --incipit-mermaid-inverse-text: #1f1f1e;
+  --incipit-mermaid-label-bg: #1f1f1e;
+  --incipit-mermaid-label-border: #6f665b;
+  --incipit-mermaid-surface: #2d2a26;
+  --incipit-mermaid-surface-alt: #34302b;
+  --incipit-mermaid-line: #b8aea2;
+  --incipit-mermaid-line-muted: #6f665b;
+  --incipit-mermaid-accent: #d97757;
+  --incipit-mermaid-accent-soft: #563d32;
+  --incipit-mermaid-accent-border: #bd7a62;
+  --incipit-mermaid-done-soft: #303a30;
+  --incipit-mermaid-done-border: #7cb27c;
   --app-monospace-font-family: var(--incipit-code-font) !important;
   --incipit-body-font: 'Reading', 'IBM Plex Serif', 'LXGW WenKai',
                'Kaiti SC', 'STKaiti', 'KaiTi', serif;
@@ -596,6 +610,158 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 .claude-math[data-render-error] {
   color: #ff6b6b;
   border-bottom: 1px dashed #ff6b6b;
+}
+
+/* ============================================================
+   Mermaid diagrams.
+
+   Rendered post-settle from assistant ```mermaid fences (see
+   data/mermaid_render.js). The original <pre> is kept as the source of truth
+   and the render-failure fallback; on success it is hidden and the SVG figure
+   is inserted as its next sibling. Wide diagrams scroll horizontally rather
+   than stretching the reading column or shrinking to unreadable.
+   ============================================================ */
+.claude-mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1em 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.claude-mermaid svg {
+  max-width: 100%;
+  height: auto;
+  color: var(--incipit-mermaid-text);
+}
+.claude-mermaid svg text,
+.claude-mermaid svg tspan {
+  fill: var(--incipit-mermaid-text) !important;
+}
+/* Borderless. Nodes read as quiet warm-paper chips, never boxed UI — we strip
+   the outline and leave the fill to mermaid: a model's own classDef colour
+   survives untouched, an uncoloured group is painted from the literary palette
+   by colorizeGroups() in mermaid_render.js, and a plain node keeps the default
+   surface (themeVariables.primaryColor). Edges/markers keep their stroke —
+   they are connecting lines, not borders. */
+.claude-mermaid svg .node rect,
+.claude-mermaid svg .node circle,
+.claude-mermaid svg .node ellipse,
+.claude-mermaid svg .node polygon,
+.claude-mermaid svg .node path {
+  stroke: none !important;
+}
+.claude-mermaid svg .cluster rect {
+  fill: var(--incipit-mermaid-surface-alt) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg .edgePath .path,
+.claude-mermaid svg .flowchart-link,
+.claude-mermaid svg .messageLine0,
+.claude-mermaid svg .messageLine1,
+.claude-mermaid svg .actor-line,
+.claude-mermaid svg .loopLine,
+.claude-mermaid svg .relationLine {
+  stroke: var(--incipit-mermaid-line) !important;
+  stroke-width: 1.2px !important;
+}
+.claude-mermaid svg marker path {
+  fill: var(--incipit-mermaid-line) !important;
+  stroke: var(--incipit-mermaid-line) !important;
+}
+.claude-mermaid svg .actor {
+  fill: var(--incipit-mermaid-surface) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg .activation0,
+.claude-mermaid svg .activation1,
+.claude-mermaid svg .activation2 {
+  fill: var(--incipit-mermaid-surface-alt) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg .note,
+.claude-mermaid svg .note rect,
+.claude-mermaid svg .note polygon,
+.claude-mermaid svg .note path,
+.claude-mermaid svg rect.active,
+.claude-mermaid svg rect.crit,
+.claude-mermaid svg polygon.active,
+.claude-mermaid svg path.active,
+.claude-mermaid svg path.crit {
+  fill: var(--incipit-mermaid-accent-soft) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg rect.done,
+.claude-mermaid svg path.done,
+.claude-mermaid svg polygon.done {
+  fill: var(--incipit-mermaid-done-soft) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg .today {
+  stroke: var(--incipit-mermaid-accent) !important;
+}
+.claude-mermaid svg .nodeLabel,
+.claude-mermaid svg .edgeLabel,
+.claude-mermaid svg .label,
+.claude-mermaid svg .messageText,
+.claude-mermaid svg .loopText,
+.claude-mermaid svg .noteText,
+.claude-mermaid svg .legend,
+.claude-mermaid svg .legend text,
+.claude-mermaid svg .legendText,
+.claude-mermaid svg .taskText,
+.claude-mermaid svg .taskTextOutsideRight,
+.claude-mermaid svg .taskTextOutsideLeft,
+.claude-mermaid svg .taskTextClickable,
+.claude-mermaid svg .pieTitleText,
+.claude-mermaid svg .slice,
+.claude-mermaid svg .classText,
+.claude-mermaid svg .stateLabel,
+.claude-mermaid svg .transition,
+.claude-mermaid svg .relation,
+.claude-mermaid svg .mindmap-node,
+.claude-mermaid svg .timeline,
+.claude-mermaid svg foreignObject,
+.claude-mermaid svg foreignObject * {
+  color: var(--incipit-mermaid-text) !important;
+}
+.claude-mermaid svg foreignObject {
+  overflow: visible !important;
+}
+.claude-mermaid svg foreignObject div,
+.claude-mermaid svg foreignObject span,
+.claude-mermaid svg foreignObject p {
+  box-sizing: border-box !important;
+  color: var(--incipit-mermaid-text) !important;
+  font-family: var(--incipit-body-font) !important;
+  overflow: visible !important;
+}
+.claude-mermaid svg foreignObject p {
+  line-height: 1.5 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  white-space: nowrap !important;
+}
+.claude-mermaid svg .sequenceNumber,
+.claude-mermaid svg .gitBranchLabel {
+  fill: var(--incipit-mermaid-inverse-text) !important;
+}
+.claude-mermaid svg .edgeLabel,
+.claude-mermaid svg .edgeLabel p {
+  background: transparent !important;
+}
+.claude-mermaid svg .edgeLabel .labelBkg,
+.claude-mermaid svg .edgeLabel rect,
+.claude-mermaid svg .edgeLabel polygon {
+  fill: var(--incipit-mermaid-label-bg) !important;
+  stroke: none !important;
+}
+.claude-mermaid svg .cluster-label text,
+.claude-mermaid svg .sectionTitle,
+.claude-mermaid svg .titleText {
+  fill: var(--incipit-mermaid-muted) !important;
+}
+pre.incipit-mermaid-source {
+  display: none;
 }
 
 /* ============================================================
