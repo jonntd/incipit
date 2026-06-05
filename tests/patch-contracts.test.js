@@ -100,9 +100,15 @@ function assertWebviewSemanticShape(root, patched, statusLines) {
       patched.includes('__incipitPublishHostState(this,"signal")'),
     `${root}: semantic host-state bridge shape missing`,
   );
-  assert(
-    patched.includes('let ') && patched.includes('=!1;') && /\(\$\.selection\.value,[A-Za-z_$][\w$]*,/.test(patched),
+  const implicitSelection = __test.assessImplicitSelectionSendContact(patched);
+  assert.strictEqual(
+    implicitSelection.status,
+    'patched',
     `${root}: implicit IDE selection send does not appear disabled`,
+  );
+  assert(
+    /if\(!1&&\([^;{}]*\bthis\.lastSentSelection\b[^;{}]*\bthis\.selection\.value\b[^;{}]*\)[A-Za-z_$][\w$]*=this\.selection\.value,this\.lastSentSelection=[A-Za-z_$][\w$]*;/.test(patched),
+    `${root}: implicit IDE selection send patch shape missing`,
   );
   assert(
     statusLines.some(line => /未知流事件保护/.test(line) && /(已写入|已存在|上游已容错)/.test(line)),
@@ -135,6 +141,7 @@ function assertInstallManifestShape(root, patched, contracts) {
     'install.extensionCsp.style',
     'install.hostBadgeCommAttach',
     'install.extensionHtmlHead',
+    'install.workbenchOverlay',
     'install.hostRoute',
     'install.webviewConfig',
     'install.hostStateBridge',
@@ -153,7 +160,9 @@ function assertInstallManifestShape(root, patched, contracts) {
       typeof entry.status === 'string' &&
       typeof entry.priority === 'string' &&
       typeof entry.anchorReason === 'string' &&
-      typeof entry.contractReason === 'string'),
+      typeof entry.contractReason === 'string' &&
+      entry.fingerprint &&
+      typeof entry.fingerprint === 'object'),
     `${root}: install manifest entry shape mismatch`,
   );
   const byName = new Map(manifest.entries.map(entry => [entry.name, entry]));
@@ -162,7 +171,11 @@ function assertInstallManifestShape(root, patched, contracts) {
     `${root}: install.hostRoute must include normal-priority version/content fingerprints`);
   assert.strictEqual(route.status, 'patched',
     `${root}: official restore fixture must match a known version/content route`);
-  for (const highRiskName of ['install.hostStateBridge', 'install.streamUnhandledCase']) {
+  for (const highRiskName of [
+    'install.implicitSelectionSend',
+    'install.hostStateBridge',
+    'install.streamUnhandledCase',
+  ]) {
     const entry = byName.get(highRiskName);
     assert(entry, `${root}: install manifest missing high-risk ${highRiskName}`);
     assert.strictEqual(entry.priority, 'high', `${root}: ${highRiskName} must be high priority`);
@@ -171,10 +184,56 @@ function assertInstallManifestShape(root, patched, contracts) {
     assert.notStrictEqual(entry.anchorReason, entry.contractReason,
       `${root}: ${highRiskName} must distinguish anchorReason from contractReason`);
   }
+  for (const highRiskName of [
+    'install.extensionCsp.style',
+    'install.extensionCsp.script',
+    'install.extensionCsp.font',
+    'install.hostBadgeCommAttach',
+    'install.privateMessageGuard',
+  ]) {
+    const entry = byName.get(highRiskName);
+    assert(entry, `${root}: install manifest missing high-risk extension contact ${highRiskName}`);
+    assert.strictEqual(entry.priority, 'high', `${root}: ${highRiskName} must be high priority`);
+    assert(entry.fingerprint && typeof entry.fingerprint === 'object',
+      `${root}: ${highRiskName} must include a contact fingerprint payload`);
+  }
   assert(
     Array.isArray(contracts) && contracts.length >= manifest.entries.length,
     `${root}: patchWebviewIndex must return the structured install contracts it injected`,
   );
+}
+
+function bodyObserveCalls(source) {
+  const calls = [];
+  let index = 0;
+  while (true) {
+    const hit = source.indexOf('observe(document.body', index);
+    if (hit < 0) return calls;
+    const end = source.indexOf(');', hit);
+    calls.push(source.slice(hit, end > hit ? end + 2 : hit + 220));
+    index = hit + 1;
+  }
+}
+
+function assertBodyObserverPolicy(sources) {
+  const attributeAllowed = {
+    host_probe: ["attributeFilter: ['class', 'style', 'aria-label', 'aria-valuetext', 'title']"],
+    enhance_thinking: ["attributeFilter: ['open']"],
+  };
+  for (const [name, source] of Object.entries(sources)) {
+    for (const call of bodyObserveCalls(source)) {
+      assert(
+        !call.includes('characterData: true'),
+        `${name}: document.body observers must never observe characterData`,
+      );
+      if (!call.includes('attributes: true')) continue;
+      const allowed = attributeAllowed[name] || [];
+      assert(
+        allowed.some(needle => call.includes(needle)),
+        `${name}: document.body attributes observer is not on the audited allowlist:\n${call}`,
+      );
+    }
+  }
 }
 
 function assertRuntimeSourceContracts() {
@@ -183,19 +242,74 @@ function assertRuntimeSourceContracts() {
   const markdownPreprocess = fs.readFileSync(path.join(__dirname, '..', 'data', 'markdown_preprocess.js'), 'utf8');
   const shared = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_shared.js'), 'utf8');
   const legacy = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_legacy.js'), 'utf8');
+  const thinking = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_thinking.js'), 'utf8');
+  const footerBadge = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_footer_badge.js'), 'utf8');
+  const hostBadge = fs.readFileSync(path.join(__dirname, '..', 'data', 'host-badge.cjs'), 'utf8');
   const typography = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_typography.js'), 'utf8');
+  const workbenchOverlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'workbench-overlay.js'), 'utf8');
   const theme = fs.readFileSync(path.join(__dirname, '..', 'data', 'theme.css'), 'utf8');
   const capability = fs.readFileSync(path.join(__dirname, '..', 'data', 'capability.js'), 'utf8');
   const fiberFingerprint = fs.readFileSync(path.join(__dirname, '..', 'data', 'capability', 'fingerprints', 'fiber.js'), 'utf8');
+  const companionSelectionReference = fs.readFileSync(path.join(__dirname, '..', 'companion', 'claude-selection-reference', 'extension.js'), 'utf8');
   const install = fs.readFileSync(path.join(__dirname, '..', 'src', 'install.js'), 'utf8');
   const patchContractSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'patch-contract.js'), 'utf8');
   const cssWithoutComments = theme.replace(/\/\*[\s\S]*?\*\//g, '');
+  const injectionSurfaceAudit = [
+    [
+      'extension.js patch',
+      install.includes('function patchExtensionJs(') &&
+        install.includes("installContractFromAssessment('install.extensionCsp.style'") &&
+        install.includes("installContractFromAssessment('install.hostBadgeCommAttach'") &&
+        install.includes("installContractFromAssessment('install.privateMessageGuard'"),
+    ],
+    [
+      'webview/index.js patch',
+      install.includes('function patchWebviewIndex(') &&
+        install.includes("'install.implicitSelectionSend'") &&
+        install.includes("'install.streamUnhandledCase'") &&
+        install.includes("'install.hostStateBridge'"),
+    ],
+    [
+      'VS Code Workbench overlay patch',
+      workbenchOverlay.includes('function preflightWorkbenchOverlayForTarget(') &&
+        workbenchOverlay.includes('function applyWorkbenchOverlayForTarget(') &&
+        workbenchOverlay.includes('observer.observe(document.body, { childList: true, subtree: true });') &&
+        install.includes("name: 'install.workbenchOverlay'"),
+    ],
+    [
+      'webview runtime DOM/state bridge',
+      capability.includes('export function defineCapability(') &&
+        shared.includes("name: 'runtime.fiber.connection'") &&
+        legacy.includes("name: 'runtime.fiber.toolUseBlock'") &&
+        install.includes('__incipitPublishHostState'),
+    ],
+    [
+      'companion command bridge',
+      companionSelectionReference.includes("const CLAUDE_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention'") &&
+        install.includes('incipit.claudeCode.insertAtMention') &&
+        install.includes('incipit.claudeCode.hasVisibleWebview'),
+    ],
+  ];
 
   assert(
     capability.includes("import { reportCapability, bumpPerfCounter } from './runtime_kernel.js'") &&
       capability.includes('export function defineCapability('),
     'runtime capability layer must export defineCapability on top of runtime_kernel reportCapability/bumpPerfCounter',
   );
+  assert.deepStrictEqual(
+    injectionSurfaceAudit.map(([name]) => name),
+    [
+      'extension.js patch',
+      'webview/index.js patch',
+      'VS Code Workbench overlay patch',
+      'webview runtime DOM/state bridge',
+      'companion command bridge',
+    ],
+    'injection surface audit must enumerate the five planned entry classes',
+  );
+  for (const [name, ok] of injectionSurfaceAudit) {
+    assert(ok, `injection surface audit missing coverage for ${name}`);
+  }
   assert(
     patchContractSource.includes('function patchContract(') &&
       patchContractSource.includes('function buildInstallManifestPreamble(') &&
@@ -203,10 +317,11 @@ function assertRuntimeSourceContracts() {
     'Node install patch contract layer must expose a schema-versioned manifest preamble builder',
   );
   assert(
-      install.includes('buildInstallManifestPreamble(installContracts)') &&
+    install.includes('buildInstallManifestPreamble(installContracts)') &&
       install.includes("name: 'install.webviewConfig'") &&
       install.includes('buildHostRouteContract(target, extJsOriginal, webviewOriginal)') &&
       install.includes("installContractFromAssessment(") &&
+      install.includes("'install.implicitSelectionSend'") &&
       install.includes("'install.streamUnhandledCase'") &&
       install.includes("'install.hostStateBridge'") &&
       install.includes("name: 'install.hostRoute'") &&
@@ -216,6 +331,33 @@ function assertRuntimeSourceContracts() {
   assert(
     install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid']"),
     'installer must copy capability/, legacy/, and mermaid/ webview asset subtrees',
+  );
+  assert(
+    install.includes('function patchCspDirective(') &&
+      install.includes('function assessCspDirectiveContact(') &&
+      install.includes('function assessImplicitSelectionSendContact(') &&
+      install.includes('function patchBadgeCommAttach(') &&
+      install.includes('function assessBadgeCommAttachContact(') &&
+      install.includes('function buildWorkbenchOverlayInstallContract(') &&
+      install.includes("name: 'install.workbenchOverlay'") &&
+      !install.includes('function patchRequiredPattern(') &&
+      !install.includes('function patchUniqueReplace(') &&
+      !install.includes('STYLE_CSP_PATTERN') &&
+      !install.includes('BADGE_COMM_ATTACH_PATTERN') &&
+      !install.includes("label: '徽章注入(comm)',\n    replace(text)") &&
+      install.includes("installContractFromAssessment('install.extensionCsp.style'") &&
+      install.includes("installContractFromAssessment('install.hostBadgeCommAttach'") &&
+      install.includes("installContractFromAssessment('install.privateMessageGuard'"),
+    'high-risk extension.js injection points must use semantic contact assessments, not naked unique regex replacement',
+  );
+  assert(
+    install.includes('incipit.claudeCode.insertAtMention') &&
+      install.includes('incipit.claudeCode.hasVisibleWebview') &&
+      !install.includes("match.replace('async()=>{', 'async(__incipitMention)=>{')") &&
+      !install.includes('AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN') &&
+      companionSelectionReference.includes("const CLAUDE_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention'") &&
+      !companionSelectionReference.includes("const CLAUDE_INSERT_COMMAND = 'claude-vscode.insertAtMention'"),
+    'explicit editor references must use incipit private command bridge, not patch Claude Code official insertAtMention callback arguments',
   );
   assert(
     install.includes("const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({") &&
@@ -252,6 +394,33 @@ function assertRuntimeSourceContracts() {
       markdownPreprocess.includes('inlineCodeEnd(text, i)') &&
       markdownPreprocess.includes('startsAsciiFolded(text, i,'),
     'markdown preprocess must copy the cached URL-boundary normalizer and run it before the optional math pass without touching code spans',
+  );
+  assert(
+    typography.includes('function renderTableBreakTextNodes(') &&
+      typography.includes('const TABLE_BR_TEXT_RE = /<br\\s*\\/?>/i;') &&
+      typography.includes('const TABLE_BR_SPLIT_RE = /<br\\s*\\/?>/ig;') &&
+      typography.includes("const TABLE_BR_NODE_ATTR = 'data-incipit-table-br';") &&
+      typography.includes("const TABLE_BR_SOURCE_ATTR = 'data-incipit-table-br-source';") &&
+      typography.includes("scope.querySelectorAll('td, th')") &&
+      typography.includes('cell.closest(SEL.markdownRoot)') &&
+      typography.includes('SEL.userBubble') &&
+      typography.includes('SEL.toolUse') &&
+      typography.includes('SEL.thinking') &&
+      typography.includes("'CODE', 'PRE'") &&
+      typography.includes("document.createElement('br')") &&
+      typography.includes("source.hidden = true") &&
+      typography.includes("source.textContent = match[0]") &&
+      typography.includes("markStreamDirty('typography', root)") &&
+      typography.includes('function scheduleTableBreakScan(') &&
+      typography.includes("scheduleIdleTask('typography.tableBreakScan'") &&
+      typography.includes('function runTableBreakScan(') &&
+      typography.includes('if (conversationIsBusy()) return') &&
+      typography.includes("subscribe('assistantTurnFinalized', () => scheduleTableBreakScan") &&
+      typography.includes("subscribe('streamSettled', () => scheduleTableBreakScan") &&
+      typography.includes("scheduleTableBreakScan('init')") &&
+      !markdownPreprocess.includes('data-incipit-table-br') &&
+      !markdownPreprocess.includes('<br\\s*\\/?>'),
+    'literal table <br> tokens must be a finalized/idle assistant table visual pass, not a markdown preprocess rewrite',
   );
   assert(
     fiberFingerprint.includes("REACT_FIBER_KEY_PREFIX = '__reactFiber'") &&
@@ -414,6 +583,29 @@ function assertRuntimeSourceContracts() {
       !warmWhite.includes('[data-incipit-session-state='),
     'session status prototype must remain dormant: no legacy import/init or shipped CSS',
   );
+  const legacyInit = legacy.match(/\n  function init\(\) \{([\s\S]*?)\n  \}\n\n  whenDOMReady\(init\);/);
+  assert(legacyInit, 'legacy root init() body must be findable for dormant feature audits');
+  assert(
+    legacy.includes('function setupChangeReviewFileReview()') &&
+      legacy.includes('function renderChangeReviewCard()') &&
+      legacy.includes('function renderChangeReviewTurnBlocks()') &&
+      legacy.includes('function setupChangeReviewChannel()') &&
+      legacyInit[1].includes('setupChangeReviewFileReview,') &&
+      legacyInit[1].includes('change review UI is developed but withheld from release apply') &&
+      !/^\s*setupChangeReviewFileReview\(\);/m.test(legacyInit[1]),
+    'change review UI must remain in source but stay dormant in release apply init',
+  );
+  assert(
+    hostBadge.includes('const CHANGE_REVIEW_RUNTIME_ENABLED = false;') &&
+      hostBadge.includes('function isChangeReviewRuntimeMessage(type)') &&
+      hostBadge.includes('if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;') &&
+      hostBadge.includes('if (CHANGE_REVIEW_RUNTIME_ENABLED) {') &&
+      hostBadge.includes('const changeReviewPayload = buildCachedChangeReviewPayload(state, target, parser);') &&
+      hostBadge.includes('module.exports.__test = {') &&
+      hostBadge.includes('buildChangeReviewPayload,') &&
+      hostBadge.includes('resolveChangeReviewReject,'),
+    'change review host runtime protocol must be disabled for release while keeping backend helpers testable',
+  );
   assert(
     capability.includes('const MISS_REASONS = new Set([') &&
       capability.includes("reason: 'error'") &&
@@ -462,6 +654,17 @@ function assertRuntimeSourceContracts() {
     !typography.includes('pendingRoots.add(document.body)'),
     'highlight.js readiness must not trigger a second document-wide copy/action sweep',
   );
+  assert(
+    typography.includes('function explicitHighlightLanguage(') &&
+      typography.includes('function hljsCanHighlightBlock(') &&
+      typography.includes('window.hljs.getLanguage(lang)') &&
+      typography.includes('block.dataset.incipitHljsUnsupportedLanguage = lang') &&
+      typography.includes("block.classList.add('hljs')") &&
+      typography.includes('if (hljsCanHighlightBlock(block))') &&
+      typography.includes('window.hljs.highlightElement(block)') &&
+      typography.includes('if (isDiffIsland) applyIncipitDiffCharRangesToCode(block);'),
+    'highlight.js must preflight language-* classes and skip unsupported grammars without console-warning floods, while preserving diff char overlays',
+  );
 
   const kernel = fs.readFileSync(path.join(__dirname, '..', 'data', 'runtime_kernel.js'), 'utf8');
   assert(
@@ -509,8 +712,15 @@ function assertRuntimeSourceContracts() {
     1,
     'CSS capability reporting must reuse the existing host_probe MutationObserver',
   );
+  assertBodyObserverPolicy({
+    host_probe: hostProbe,
+    enhance_thinking: thinking,
+    enhance_footer_badge: footerBadge,
+    enhance_legacy: legacy,
+    enhance_typography: typography,
+    workbench_overlay: workbenchOverlay,
+  });
 
-  const hostBadge = fs.readFileSync(path.join(__dirname, '..', 'data', 'host-badge.cjs'), 'utf8');
   assert(
     !hostBadge.includes('stream.write = function wrappedWrite'),
     'host-badge must not overwrite createWriteStream `stream.write` — that mutates host object identity; only `finish`/`close`/`end` events are subscribed',
@@ -526,8 +736,12 @@ function assertRuntimeSourceContracts() {
       legacy.includes('opener.open(info.filePath, info.location || undefined)') &&
       legacy.includes("document.body.addEventListener('contextmenu', handleTipContextMenu, true)") &&
       legacy.includes('function openTipContextMenu(hit, evt)') &&
-      legacy.includes('function relativePathForFileInfo(info)') &&
-      legacy.includes('function absolutePathForFileInfo(info)') &&
+      legacy.includes('function requestResolvedFilePaths(info)') &&
+      legacy.includes("type: 'file_path_copy_request'") &&
+      legacy.includes('copyResolvedPathForFileInfo(\'relative\', info)') &&
+      legacy.includes('copyResolvedPathForFileInfo(\'absolute\', info)') &&
+      legacy.includes('Could not copy absolute path') &&
+      !legacy.includes('return cwd ? joinWorkspacePath(cwd, filePath) : stripCurrentDirPrefix(filePath)') &&
       legacy.includes('locateActiveSessionState()') &&
       legacy.includes('the semantic bridge is degraded') &&
       legacy.includes("type: 'file_reveal_request'") &&
@@ -587,11 +801,17 @@ function assertRuntimeSourceContracts() {
     'path hover surface must be text-only and both themes must style the sticky right-click context menu',
   );
   assert(
-    hostBadge.includes("message.type === 'file_reveal_request'") &&
+      hostBadge.includes("message.type === 'file_reveal_request'") &&
+      hostBadge.includes("message.type === 'file_path_copy_request'") &&
       hostBadge.includes("type: 'file_reveal_response'") &&
+      hostBadge.includes("type: 'file_path_copy_response'") &&
       hostBadge.includes("require('vscode')") &&
       hostBadge.includes('FILE_REVEAL_CWD_SCAN_BYTES = 512 * 1024') &&
       hostBadge.includes('function resolveFileRevealCwd(state, comm, message)') &&
+      hostBadge.includes('function resolveFileCopyPathsForCwd(rawInput, cwd, workspaceRoots)') &&
+      hostBadge.includes('vscode.workspace.workspaceFolders') &&
+      hostBadge.includes('absolutePath') &&
+      hostBadge.includes('relativePathFromWorkspaceRoot') &&
       hostBadge.includes('revealIdentityForMessage(state, comm, message || {})') &&
       hostBadge.includes('readTranscriptCwd(target)') &&
       hostBadge.includes('Relative file path has no Claude project cwd.') &&
@@ -694,7 +914,16 @@ function testFixture(root) {
   const webviewSource = fs.readFileSync(webviewPath, 'utf8');
 
   const [extensionPatched, extensionLines, extensionContracts] = __test.patchExtensionJs(extensionSource);
+  assert.doesNotThrow(
+    () => new vm.Script(extensionPatched, { filename: `${root}/extension.js` }),
+    `${root}: patched extension.js has invalid JavaScript syntax`,
+  );
   assertNoGracefulDegradation(`${root} extension.js`, extensionLines);
+  assert(
+    extensionPatched.includes('commands.registerCommand("incipit.claudeCode.insertAtMention"') &&
+      extensionPatched.includes('commands.registerCommand("incipit.claudeCode.hasVisibleWebview"'),
+    `${root}: extension must expose incipit private @ mention command bridge on known official hosts`,
+  );
   extensionContracts.unshift(__test.buildHostRouteContract(
     { version: versionFromFixtureRoot(root) },
     extensionSource,
@@ -706,6 +935,10 @@ function testFixture(root) {
     line: extensionHeadLine,
     detail: { palette: DEFAULT_THEME.palette },
   }));
+  extensionContracts.push(__test.buildWorkbenchOverlayInstallContract(
+    { status: 'off', enabled: false },
+    false,
+  ));
   const [extensionPatchedAgain] = __test.patchExtensionJs(extensionPatched);
   assert.strictEqual(extensionPatchedAgain, extensionPatched, `${root}: extension patch is not idempotent`);
 
@@ -741,6 +974,164 @@ function testFixture(root) {
   assertInstallManifestShape(root, webviewPatchedAgain, webviewContractsAgain);
 }
 
+function assertLowRiskVisualPatchDegrades(root) {
+  const webviewPath = path.join(root, 'webview', 'index.js');
+  const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+  const mutated = webviewSource.replace('theme:"vs-dark"', 'theme:"__incipit_anchor_miss"');
+  assert.notStrictEqual(mutated, webviewSource, `${root}: test fixture must contain a diff theme anchor`);
+  const [, webviewLines] = __test.patchWebviewIndex(
+    mutated,
+    DEFAULT_FEATURES,
+    DEFAULT_THEME,
+    'en',
+    [],
+  );
+  assert(
+    webviewLines.some(line => /diff 主题/.test(line) && /降级/.test(line)),
+    `${root}: low-risk diff visual patch should degrade instead of aborting apply`,
+  );
+}
+
+function assertMarkdownPreprocessPatchDegrades(root) {
+  const webviewPath = path.join(root, 'webview', 'index.js');
+  const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+  const mutated = webviewSource.replace('expected `string`', 'expected `children-string`');
+  assert.notStrictEqual(mutated, webviewSource, `${root}: test fixture must contain markdown handoff error text`);
+  const [, webviewLines] = __test.patchWebviewIndex(
+    mutated,
+    DEFAULT_FEATURES,
+    DEFAULT_THEME,
+    'en',
+    [],
+  );
+  assert(
+    webviewLines.some(line => /markdown 预处理/.test(line) && /降级/.test(line)),
+    `${root}: markdown preprocess patch should degrade instead of aborting apply`,
+  );
+}
+
+function assertImplicitSelectionUpstreamSafe(root) {
+  const webviewPath = path.join(root, 'webview', 'index.js');
+  const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+  const mutated = webviewSource.replace(
+    /if\([A-Za-z_$][\w$]*&&![A-Za-z_$][\w$]*\(this\.lastSentSelection,this\.selection\.value\)\)[A-Za-z_$][\w$]*=this\.selection\.value,this\.lastSentSelection=[A-Za-z_$][\w$]*;/,
+    'if(!1);',
+  );
+  assert.notStrictEqual(mutated, webviewSource, `${root}: test fixture must contain implicit selection send branch`);
+  const [, webviewLines] = __test.patchWebviewIndex(
+    mutated,
+    DEFAULT_FEATURES,
+    DEFAULT_THEME,
+    'en',
+    [],
+  );
+  assert(
+    webviewLines.some(line => /自动选区发送/.test(line) && /上游已禁用/.test(line)),
+    `${root}: missing selection branch should be accepted only when SessionState.send no longer reads this.selection.value`,
+  );
+}
+
+function assertImplicitSelectionCompareDriftStillPatches(root) {
+  const webviewPath = path.join(root, 'webview', 'index.js');
+  const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+  const mutated = webviewSource.replace(
+    /if\(([A-Za-z_$][\w$]*)&&![A-Za-z_$][\w$]*\(this\.lastSentSelection,this\.selection\.value\)\)([A-Za-z_$][\w$]*)=this\.selection\.value,this\.lastSentSelection=\2;/,
+    'if($1&&__incipitRenamedSelectionCompare(this.lastSentSelection,this.selection.value)===false)$2=this.selection.value,this.lastSentSelection=$2;',
+  );
+  assert.notStrictEqual(mutated, webviewSource, `${root}: test fixture must contain implicit selection compare branch`);
+  const [patched, webviewLines] = __test.patchWebviewIndex(
+    mutated,
+    DEFAULT_FEATURES,
+    DEFAULT_THEME,
+    'en',
+    [],
+  );
+  assert(
+    webviewLines.some(line => /自动选区发送/.test(line) && /已写入/.test(line)),
+    `${root}: compare-helper drift should still patch the SessionState.send selection branch`,
+  );
+  assert.strictEqual(
+    __test.assessImplicitSelectionSendContact(patched).status,
+    'patched',
+    `${root}: compare-helper drift patch must satisfy the implicit selection contract`,
+  );
+}
+
+function assertImplicitSelectionShapeDriftFailsClosed(root) {
+  const webviewPath = path.join(root, 'webview', 'index.js');
+  const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+  const mutated = webviewSource.replaceAll('this.selection.value', 'this.selection?.value');
+  assert.notStrictEqual(mutated, webviewSource, `${root}: test fixture must contain this.selection.value reads`);
+  assert.throws(
+    () => __test.patchWebviewIndex(
+      mutated,
+      DEFAULT_FEATURES,
+      DEFAULT_THEME,
+      'en',
+      [],
+    ),
+    /自动选区发送/,
+    `${root}: reshaped selection reads must fail closed instead of being treated as upstream-disabled`,
+  );
+}
+
+function assertCspDirectiveTokenOrderDriftStillPatches(root) {
+  const extensionPath = path.join(root, 'extension.js');
+  const extensionSource = fs.readFileSync(extensionPath, 'utf8');
+  const mutated = extensionSource
+    .replace(/style-src (\$\{[^}]+\}) 'unsafe-inline'/, "style-src 'unsafe-inline' $1")
+    .replace(/font-src (\$\{[^}]+\})/, 'font-src data: $1');
+  assert.notStrictEqual(mutated, extensionSource, `${root}: test fixture must contain dynamic CSP directives`);
+  const [patched, lines] = __test.patchExtensionJs(mutated);
+  assertNoGracefulDegradation(`${root} extension.js CSP token drift`, lines);
+  assert(
+    /style-src 'unsafe-inline' \$\{[^}]+\} https:\/\/cdnjs\.cloudflare\.com/.test(patched) &&
+      /font-src data: \$\{[^}]+\} https:\/\/cdnjs\.cloudflare\.com/.test(patched),
+    `${root}: CSP patch must add required tokens without depending on original token order`,
+  );
+}
+
+function assertBadgeCommIgnoresUnrelatedWebviewAssignments(root) {
+  const extensionPath = path.join(root, 'extension.js');
+  const extensionSource = fs.readFileSync(extensionPath, 'utf8');
+  const mutated = 'function __incipitFakeWebviewCarrier(){this.webview=__fake;}\n' + extensionSource;
+  const [patched, lines] = __test.patchExtensionJs(mutated);
+  assertNoGracefulDegradation(`${root} extension.js unrelated webview assignment`, lines);
+  assert(
+    !patched.includes('this.webview=__fake;require("./webview/host-badge.cjs").attachComm(this);') &&
+      (patched.match(/require\("\.\/webview\/host-badge\.cjs"\)\.attachComm\(this\);/g) || []).length === 1,
+    `${root}: badge comm attach must target the semantic comm object, not every webview assignment`,
+  );
+}
+
+function assertPrivateMessageGuardIgnoresLogText(root) {
+  const extensionPath = path.join(root, 'extension.js');
+  const extensionSource = fs.readFileSync(extensionPath, 'utf8');
+  const mutated = extensionSource.replaceAll('Received message from webview:', 'Received host message:');
+  assert.notStrictEqual(mutated, extensionSource, `${root}: test fixture must contain host message logging text`);
+  const [patched, lines] = __test.patchExtensionJs(mutated);
+  assert(
+    lines.some(line => /私有消息过滤/.test(line) && /已写入/.test(line)),
+    `${root}: private message guard should not depend on exact host log text`,
+  );
+  assert(
+    /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{if\(\1&&\1\.__incipit===true\)return;[\s\S]{0,500}?[A-Za-z_$][\w$]*\?\.fromClient\(\1\)/.test(patched),
+    `${root}: private incipit messages must be guarded before host fromClient dispatch`,
+  );
+}
+
+function assertAtMentionBridgePatchDegrades(root) {
+  const extensionPath = path.join(root, 'extension.js');
+  const extensionSource = fs.readFileSync(extensionPath, 'utf8');
+  const mutated = extensionSource.replaceAll('claude-vscode.insertAtMention', 'claude-vscode.insertAtMentionRenamed');
+  assert.notStrictEqual(mutated, extensionSource, `${root}: test fixture must contain official insertAtMention command`);
+  const [, lines] = __test.patchExtensionJs(mutated);
+  assert(
+    lines.some(line => /@引用命令桥/.test(line) && /降级/.test(line)),
+    `${root}: incipit @ mention command bridge should degrade instead of aborting apply`,
+  );
+}
+
 assertRuntimeSourceContracts();
 assertHostStateBridgePatchVariants();
 
@@ -749,6 +1140,16 @@ if (!fixtures.length) {
   console.log('patch-contracts: skipped (no Claude Code official restore fixture found)');
   process.exit(0);
 }
+
+assertLowRiskVisualPatchDegrades(fixtures[fixtures.length - 1]);
+assertMarkdownPreprocessPatchDegrades(fixtures[fixtures.length - 1]);
+assertImplicitSelectionUpstreamSafe(fixtures[fixtures.length - 1]);
+assertImplicitSelectionCompareDriftStillPatches(fixtures[fixtures.length - 1]);
+assertImplicitSelectionShapeDriftFailsClosed(fixtures[fixtures.length - 1]);
+assertCspDirectiveTokenOrderDriftStillPatches(fixtures[fixtures.length - 1]);
+assertBadgeCommIgnoresUnrelatedWebviewAssignments(fixtures[fixtures.length - 1]);
+assertPrivateMessageGuardIgnoresLogText(fixtures[fixtures.length - 1]);
+assertAtMentionBridgePatchDegrades(fixtures[fixtures.length - 1]);
 
 for (const fixture of fixtures) {
   testFixture(fixture);

@@ -53,7 +53,13 @@ const assert = require('assert');
     '<http://127.0.0.1:3100/nxhub>（PID）',
   );
 
-  console.log('markdown-preprocess: 9 checks PASSED');
+  const tableWithLiteralBreaks = '| A | B |\n| - | - |\n| one<br>two | three<br />four |';
+  assert.strictEqual(
+    preprocessMarkdown(tableWithLiteralBreaks, { math: false }),
+    tableWithLiteralBreaks,
+  );
+
+  console.log('markdown-preprocess: 10 checks PASSED');
 })().catch(error => {
   console.error(error);
   process.exit(1);

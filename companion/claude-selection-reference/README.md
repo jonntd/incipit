@@ -28,5 +28,5 @@ Select text in an editor, then click `◆ Selection` or `▣ File`.
 
 - It does not write Claude Code transcripts.
 - It does not call `session.send`.
-- It reuses Claude Code's own `claude-vscode.editor.openLast` / `claude-vscode.insertAtMention` commands.
+- It reuses the incipit-patched Claude command bridge (`incipit.claudeCode.insertAtMention`), so it does not depend on Claude Code's own `insertAtMention` callback accepting arguments.
 - The experimental overlay is installed by the incipit CLI, not by this companion extension.

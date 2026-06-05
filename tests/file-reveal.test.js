@@ -12,6 +12,9 @@ const hostBadge = require('../data/host-badge.cjs');
 const {
   normalizeFileRevealPath,
   resolveFileRevealPathForCwd,
+  resolveFileCopyPathsForCwd,
+  relativePathFromWorkspaceRoot,
+  containingWorkspaceRoot,
   assertFileRevealWorkspace,
 } = hostBadge.__test;
 
@@ -86,6 +89,75 @@ function samePath(a, b) {
     assert.doesNotThrow(() => assertFileRevealWorkspace(cwd, resolved, rawIsAbsolute));
   } finally {
     cleanup(cwd);
+  }
+})();
+
+(function copyAbsoluteRelativeInputUsesWorkspaceRootAndMayNotExist() {
+  const workspace = makeDir('incipit-copy-workspace-');
+  try {
+    const raw = 'src/missing-file.md';
+    const result = resolveFileCopyPathsForCwd(raw, '', [workspace]);
+    assert.strictEqual(result.rawIsAbsolute, false);
+    assert.strictEqual(result.relativePath, path.join('src', 'missing-file.md'));
+    assert.ok(path.isAbsolute(result.absolutePath));
+    assert.ok(samePath(result.absolutePath, path.join(workspace, raw)));
+    assert.strictEqual(result.workspaceRoot, workspace);
+  } finally {
+    cleanup(workspace);
+  }
+})();
+
+(function copyAbsoluteNeverFallsBackToRelativeWhenBaseIsMissing() {
+  assert.throws(
+    () => resolveFileCopyPathsForCwd('src/missing-file.md', '', []),
+    /Relative file path has no VS Code workspace folder or Claude project cwd/,
+  );
+})();
+
+(function copyRelativeAbsoluteInputUsesContainingWorkspace() {
+  const workspaceA = makeDir('incipit-copy-workspace-a-');
+  const workspaceB = makeDir('incipit-copy-workspace-b-');
+  try {
+    const target = path.join(workspaceB, 'nested', 'file.md');
+    const result = resolveFileCopyPathsForCwd(target, workspaceA, [workspaceA, workspaceB]);
+    assert.strictEqual(result.rawIsAbsolute, true);
+    assert.ok(samePath(result.absolutePath, target));
+    assert.strictEqual(result.relativePath, path.join('nested', 'file.md'));
+    assert.strictEqual(containingWorkspaceRoot([workspaceA, workspaceB], target), workspaceB);
+  } finally {
+    cleanup(workspaceA);
+    cleanup(workspaceB);
+  }
+})();
+
+(function copyRelativeCanExpressOutsideSameRoot() {
+  const workspace = makeDir('incipit-copy-workspace-');
+  const sibling = makeDir('incipit-copy-sibling-');
+  try {
+    const target = path.join(sibling, 'outside.md');
+    const result = resolveFileCopyPathsForCwd(target, workspace, [workspace]);
+    assert.strictEqual(result.rawIsAbsolute, true);
+    assert.ok(!path.isAbsolute(result.relativePath), 'relative copy must not return an absolute path');
+    assert.ok(result.relativePath.startsWith('..' + path.sep) || result.relativePath === '..');
+  } finally {
+    cleanup(workspace);
+    cleanup(sibling);
+  }
+})();
+
+(function copyTildeExpandsToHomeAbsolutePath() {
+  const result = resolveFileCopyPathsForCwd('~/incipit-copy-test.md', '', []);
+  assert.strictEqual(result.rawIsAbsolute, true);
+  assert.ok(samePath(result.absolutePath, path.join(os.homedir(), 'incipit-copy-test.md')));
+})();
+
+(function relativePathHelperNeverReturnsAbsoluteAcrossRoots() {
+  const workspace = makeDir('incipit-copy-root-');
+  try {
+    const target = path.join(workspace, 'a', 'b.md');
+    assert.strictEqual(relativePathFromWorkspaceRoot(workspace, target), path.join('a', 'b.md'));
+  } finally {
+    cleanup(workspace);
   }
 })();
 

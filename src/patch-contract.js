@@ -33,6 +33,27 @@ function cleanObject(detail, limit = 12, valueLimit = 160) {
   return out;
 }
 
+function stableTextHash(text) {
+  const input = String(text || '');
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function defaultFingerprint(name, line, status) {
+  const text = String(line || '');
+  const normalizedName = String(name || 'install.unknown');
+  return {
+    source: text ? 'status-line' : 'explicit-status',
+    name: normalizedName,
+    status,
+    lineHash: stableTextHash(`${normalizedName}:${status}`),
+  };
+}
+
 function patchContract({
   name,
   layer = 'install',
@@ -55,7 +76,11 @@ function patchContract({
     anchorReason: anchorReason || reason,
     contractReason: contractReason || reason,
   };
-  const cleanedFingerprint = cleanObject(fingerprint, 16, 240);
+  const cleanedFingerprint = cleanObject(
+    fingerprint || defaultFingerprint(name, line, normalizedStatus),
+    16,
+    240,
+  );
   if (cleanedFingerprint) entry.fingerprint = cleanedFingerprint;
   const cleaned = cleanObject(detail);
   if (cleaned) entry.detail = cleaned;

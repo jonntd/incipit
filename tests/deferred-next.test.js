@@ -33,6 +33,24 @@ function functionBody(name, span = 1800) {
   assert.ok(idx >= 0, 'missing function ' + name);
   return legacy.slice(idx, idx + span);
 }
+function cssRuleBody(selector) {
+  const idx = theme.indexOf(selector);
+  assert.ok(idx >= 0, 'missing CSS selector ' + selector);
+  const open = theme.indexOf('{', idx);
+  const close = theme.indexOf('}', open);
+  assert.ok(open >= 0 && close > open, 'missing CSS block for ' + selector);
+  return theme.slice(open + 1, close);
+}
+function cssRuleBodyAfter(selector, afterText) {
+  const start = theme.indexOf(afterText);
+  assert.ok(start >= 0, 'missing CSS anchor ' + afterText);
+  const idx = theme.indexOf(selector, start);
+  assert.ok(idx >= 0, 'missing CSS selector ' + selector + ' after anchor');
+  const open = theme.indexOf('{', idx);
+  const close = theme.indexOf('}', open);
+  assert.ok(open >= 0 && close > open, 'missing CSS block for ' + selector);
+  return theme.slice(open + 1, close);
+}
 
 (function legacyModuleIsSplitAndRegistered() {
   assert.ok(
@@ -46,6 +64,25 @@ function functionBody(name, span = 1800) {
     'enhance_legacy must import and initialize deferred_next',
   );
   ok('legacy module split + init registration');
+})();
+
+(function changeReviewUiIsDormantForReleaseApply() {
+  const initMatch = legacy.match(/\n  function init\(\) \{([\s\S]*?)\n  \}\n\n  whenDOMReady\(init\);/);
+  assert.ok(initMatch, 'missing legacy root init() body');
+  const init = initMatch[1];
+  const setup = functionBody('setupChangeReviewFileReview', 2200);
+  assert.ok(
+    legacy.includes('function setupChangeReviewFileReview()') &&
+      setup.includes("reportHealth('legacy.change_review', 'ok')") &&
+      init.includes('setupChangeReviewFileReview,'),
+    'change-review implementation must remain in source for continued development',
+  );
+  assert.ok(
+    init.includes('change review UI is developed but withheld from release apply') &&
+      !/^\s*setupChangeReviewFileReview\(\);/m.test(init),
+    'release apply must not activate the composer mini bar or transcript review blocks',
+  );
+  ok('change-review UI: source retained, release init dormant');
 })();
 
 (function sendWrapperKeepsOfficialPath() {
@@ -153,15 +190,157 @@ function functionBody(name, span = 1800) {
     hide.includes('askPanelIsActive()') &&
     hide.includes('deferredQueueSessionId()'),
     'card hides with the composer, when Ask is up, or off the queue session');
-  assert.ok(observer.includes('if (!deferredQueue.length && !deferredNextEl) return;') &&
+  assert.ok(observer.includes('!deferredQueue.length && !deferredNextEl && !changeReviewCardEl && !changeReviewActiveTurn()') &&
     observer.includes('deferredNodeTouchesComposerOrAsk') &&
     observer.includes('armNaturalEndConfirm();'),
     'observer is cheap when idle, composer/Ask-scoped, and arms (not flushes) on touch');
+  assert.ok(observer.includes('deferredNextVisibilityObserver.observe(document.body, { childList: true, subtree: true });') &&
+    !observer.includes('attributes: true') &&
+    !observer.includes('attributeFilter') &&
+    !observer.includes("m.type === 'attributes'"),
+    'deferred/change-review visibility must not observe body-wide class/style attributes');
   assert.ok(rowFor.includes('if (hasEditor) refreshDeferredEditorInPlace(row, item)'),
     'a row holding a live editor must be refreshed in place, never rebuilt');
   assert.ok(rowFor.includes('else { row.textContent = \'\'; renderDeferredNextEditor(row, item); }'),
     'the editor is built once (no live editor yet); summary stays stateless');
   ok('card: keyed reconciliation, editor row preserved, Ask-scoped observer');
+})();
+
+(function sharedComposerRailKeepsDeferredQueueClosestToInput() {
+  const rail = functionBody('ensureComposerRail', 1300);
+  const deferredMount = functionBody('deferredCardMountPoint', 500);
+  const changeMount = functionBody('ensureChangeReviewCard', 1300);
+  assert.ok(legacy.includes('let composerRailEl = null') &&
+    rail.includes("composerRailEl.setAttribute('data-incipit-composer-rail', '')"),
+    'incipit composer attachments must share one rail above the official input');
+  assert.ok(rail.includes('data-incipit-composer-rail-hidden') &&
+    rail.includes('!deferredComposerIsVisible(mount.input) || askPanelIsActive()'),
+    'AskUserQuestion / hidden composer must hide the whole composer rail');
+  assert.ok(deferredMount.includes('return { parent: mount.rail, before: null, input: mount.input };'),
+    'deferred-next must mount last in the rail, staying closest to the input');
+  assert.ok(changeMount.includes('rail.rail.insertBefore(changeReviewCardEl, rail.rail.firstChild || null)') &&
+    changeMount.includes('rail.rail.insertBefore(changeReviewCardEl, before)'),
+    'change-review mini bar must stay above deferred-next inside the shared rail');
+  assert.ok(theme.includes('[data-incipit-composer-rail]') &&
+    theme.includes('flex-direction: column') &&
+    theme.includes('[data-incipit-composer-rail-hidden]') &&
+    theme.includes('[data-incipit-deferred-next] {\n  box-sizing: border-box !important;\n  width: 100% !important;\n  margin: 0 !important;'),
+    'rail owns the vertical gap; deferred-next keeps its full card instead of being compressed');
+  ok('shared composer rail: Ask hides all, deferred queue remains closest to input');
+})();
+
+(function changeReviewMiniBarIsSingleLineUntilExpanded() {
+  const state = functionBody('setupChangeReviewFileReview', 1800);
+  const render = functionBody('renderChangeReviewCard', 2400);
+  const active = functionBody('changeReviewActiveTurn', 600);
+  const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
+  const format = functionBody('formatChangeReviewSummary', 700);
+  const row = functionBody('renderChangeReviewFileRow', 1800);
+  assert.ok(legacy.includes('let changeReviewExpanded = false') &&
+    state.includes('changeReviewExpanded = false'),
+    'change-review mini bar defaults to collapsed on session change');
+  assert.ok(render.includes("summary.setAttribute('data-incipit-change-review-summary', '')") &&
+    render.includes("title.textContent = formatChangeReviewSummary(turn)") &&
+    render.includes("summary.appendChild(changeReviewButton(changeReviewText('review')") &&
+    render.includes("const reject = changeReviewButton(changeReviewText('rejectTurn')"),
+    'collapsed mini bar must show only summary + Review + Reject turn');
+  assert.ok(render.includes('if (changeReviewExpanded)') &&
+    render.includes("list.setAttribute('data-incipit-change-review-files', '')"),
+    'file rows inside the composer rail must render only after explicit expansion');
+  assert.ok(active.includes('changeReviewPayload && changeReviewPayload.activeTurn') &&
+    active.includes('changeReviewTurnFiles(turn).length') &&
+    !active.includes('changeReviewTurns()') &&
+    !active.includes('latestTurn'),
+    'mini bar must be driven only by the current active lifecycle, never by finalized history');
+  assert.ok(format.includes('changeReviewTotalsHaveLineStats(turn)') &&
+    format.includes(': label') &&
+    row.includes('changeReviewFileHasLineStats(file)') &&
+    row.includes(": ''"),
+    'unknown line stats must not render as misleading +0/-0 counts');
+  assert.ok(blocks.includes('placeChangeReviewTurnBlock(host, block)') &&
+    !render.includes('renderChangeReviewTurnBlocks()'),
+    'full per-turn review belongs in the transcript body, not expanded above the input');
+  ok('change-review mini bar: single-line default, expands only on demand');
+})();
+
+(function changeReviewTranscriptBlocksWaitForFinalizedTurn() {
+  const setup = functionBody('setupChangeReviewFileReview', 3000);
+  const channel = functionBody('setupChangeReviewChannel', 1800);
+  const schedule = functionBody('scheduleChangeReviewRender', 500);
+  const startNotify = functionBody('notifyChangeReviewTurnStarted', 900);
+  const notify = functionBody('notifyChangeReviewTurnFinalized', 1000);
+  const lifecycle = functionBody('postChangeReviewTurnLifecycle', 1000);
+  const key = functionBody('changeReviewTurnKeyForLastAssistant', 1200);
+  const latestUser = functionBody('changeReviewTurnKeyForLatestRealUser', 1300);
+  const findRecord = functionBody('findAssistantRecordForTurn', 900);
+  const hasText = functionBody('transcriptHasText', 450);
+  const renderBlocks = functionBody('renderChangeReviewTurnBlocks', 1500);
+  const placement = functionBody('placeChangeReviewTurnBlock', 1200);
+  const actionPlacement = functionBody('placeAssistantActionRow', 900);
+  assert.ok(!schedule.includes('renderChangeReviewTurnBlocks()'),
+    'ordinary mini-card render must not insert transcript review blocks');
+  assert.ok(setup.includes("subscribeRuntime('messagesChanged'") &&
+    !setup.slice(setup.indexOf("subscribeRuntime('messagesChanged'"), setup.indexOf("subscribeRuntime('busyChanged'")).includes('scheduleChangeReviewTurnBlocksRender'),
+    'messagesChanged may refresh payload/mini bar but must not append transcript review blocks mid-stream');
+  assert.ok(setup.includes("subscribeRuntime('assistantTurnFinalized'") &&
+    setup.includes('notifyChangeReviewTurnFinalized();') &&
+    setup.includes('scheduleChangeReviewTurnBlocksRender();'),
+    'transcript review blocks are appended after assistantTurnFinalized');
+  assert.ok(notify.includes("change_review_turn_finalized") &&
+    lifecycle.includes('type,') &&
+    lifecycle.includes('turnKey') &&
+    startNotify.includes("change_review_turn_started") &&
+    latestUser.includes("m.type === 'user'") &&
+    latestUser.includes("m.type === 'assistant'") &&
+    latestUser.includes('transcriptHasText(m)') &&
+    latestUser.includes("return ''") &&
+    key.includes("m.type !== 'assistant'") &&
+    key.includes('transcriptHasToolResult(prev)') &&
+    key.includes('return recordUuid(prev)'),
+    'stream start/finalized must notify host with the real user turn key, never the previous completed user');
+  assert.ok(findRecord.includes("m.type === 'assistant' && transcriptHasText(m)") &&
+    hasText.includes("content.trim().length > 0") &&
+    hasText.includes("block.text.trim().length > 0"),
+    'turn review placement must anchor to the final text assistant, never the thinking/tool sibling');
+  assert.ok(setup.includes('if (evt && evt.busy === true) armChangeReviewTurnStarted();') &&
+    setup.includes('if (changeReviewBusySafe()) scheduleChangeReviewTurnStarted(20);') &&
+    !setup.includes('busy === true) notifyChangeReviewTurnStarted()'),
+    'busy=true must arm a delayed current-user probe, not immediately unfinalize the previous completed turn');
+  assert.ok(channel.includes('if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();'),
+    'initial/historical payload can render transcript blocks only when the session is not busy');
+  assert.ok(renderBlocks.includes('findAssistantReviewPlacement(record)') &&
+    renderBlocks.includes('placeChangeReviewTurnBlock(host, block)') &&
+    !renderBlocks.includes('host.insertBefore(block, actionRow || null)') &&
+    placement.includes("host.querySelector(':scope > .incipit-assistant-action-row')") &&
+    placement.includes('actionRow.nextSibling') &&
+    placement.includes('host.insertBefore(block, actionRow.nextSibling)') &&
+    !placement.includes('host.insertBefore(block, actionRow)') &&
+    !placement.includes('host.appendChild(block)'),
+    'transcript review blocks must wait for the incipit action row and sit after it');
+  assert.ok(actionPlacement.includes('host.insertBefore(row, anchor.nextSibling)') &&
+    actionPlacement.includes('scheduleChangeReviewTurnBlocksRender();') &&
+    !actionPlacement.includes("hasAttribute('data-incipit-change-review-turn')"),
+    'assistant action row must stay directly after output, then trigger review block rendering after itself');
+  ok('change-review transcript block: finalized/historical only, not stream-time');
+})();
+
+(function changeReviewDiffIsOnDemandAndReusesDiffIslandShell() {
+  const request = functionBody('openChangeReviewDiff', 900);
+  const modal = functionBody('openChangeReviewDiffModal', 1100);
+  const fill = functionBody('fillChangeReviewDiffBody', 1400);
+  assert.ok(request.includes("postChangeReviewRequest('change_review_diff_request', { fileId: file.id }, 12000)"),
+    'diff text must be requested on demand per file, not shipped in the ordinary payload');
+  assert.ok(modal.includes("island.setAttribute('data-incipit-diff-island', '')") &&
+    modal.includes("island.setAttribute('data-incipit-write-diff', '')") &&
+    modal.includes("body.setAttribute('data-incipit-diff-island-body', '')") &&
+    modal.includes("body.setAttribute('data-incipit-write-diff-body', '')") &&
+    modal.includes('island.appendChild(body)'),
+    'change-review diff modal must reuse the existing diff island outer shell + body structure');
+  assert.ok(fill.includes("rowEl.setAttribute('data-incipit-diff-island-row', row.kind)") &&
+    fill.includes("pre.setAttribute('data-incipit-write-diff-pre', '')") &&
+    fill.includes('code.textContent = row.text'),
+    'diff rows must render as text/code nodes through the diff island hooks');
+  ok('change-review diff: on-demand payload, shared diff island shell');
 })();
 
 (function reorderIsPointerDragNotNativeDnD() {
@@ -219,6 +398,46 @@ function functionBody(name, span = 1800) {
     editor.includes("evt.key === 'Enter' && (evt.metaKey || evt.ctrlKey)"),
     'Esc cancels and Cmd/Ctrl+Enter saves the queued edit');
   ok('editor: text+image editable, shared cap, IME-safe, Esc/⌘↵ shortcuts');
+})();
+
+(function hostMentionMirrorStaysVisibleExceptWhenComposerIsEmpty() {
+  const mirror = cssRuleBodyAfter(
+    '[data-incipit-input-container] [class*="mentionMirror"]',
+    'That mirror is the visual text layer',
+  );
+  const setup = functionBody('setupComposerInputState', 2600);
+  assert.ok(legacy.includes('function setupComposerInputState(') &&
+    legacy.includes('setupComposerInputState();') &&
+    legacy.includes('function composerEditorPlainText(') &&
+    legacy.includes("replace(/[\\u200b\\ufeff]/g, '')") &&
+    legacy.includes("const next = empty ? '1' : '0'") &&
+    legacy.includes("container.getAttribute('data-incipit-composer-empty') !== next") &&
+    legacy.includes("container.setAttribute('data-incipit-composer-empty', next)"),
+    'legacy must mark the real composer empty/non-empty from the contenteditable text');
+  assert.ok(setup.includes("document.addEventListener('input'") &&
+    setup.includes("document.addEventListener('beforeinput'") &&
+    setup.includes("document.addEventListener('compositionend'") &&
+    setup.includes('new MutationObserver') &&
+    setup.includes('childList: true') &&
+    setup.includes('subtree: true') &&
+    !setup.includes('characterData'),
+    'composer state tracking must be input/composer-scoped and avoid characterData observation');
+  assert.ok(mirror.includes('color: var(--app-input-foreground, #f8f8f6) !important;') &&
+    !/^\s*color:\s*transparent\b/m.test(mirror) &&
+    mirror.includes('caret-color: transparent !important;') &&
+    mirror.includes('-webkit-user-select: none !important;'),
+    'the aria-hidden host mentionMirror is the active visual text layer and must not be made transparent');
+  assert.ok(theme.includes('[data-incipit-input-container][data-incipit-composer-empty="1"] [class*="mentionMirror"]') &&
+    theme.includes('[data-incipit-input-container] [class*="messageInput"][contenteditable]:empty + [class*="mentionMirror"]') &&
+    theme.includes('visibility: hidden !important;') &&
+    theme.includes('opacity: 0 !important;'),
+    'only an empty real composer may hide stale mirror text left after send');
+  assert.ok(theme.includes('[data-incipit-input-container] [class*="mentionMirror"] [class*="inputMentionChip"]') &&
+    theme.includes('[data-incipit-input-container] [class*="mentionMirror"] [class*="voiceInterim"]') &&
+    theme.includes('var(--app-mention-chip-foreground)') &&
+    theme.includes('var(--app-input-foreground, #f8f8f6)'),
+    'mirror child adornments keep their dedicated colors while ordinary mirrored input stays visible');
+  ok('composer mirror: typed text visible, stale empty-state mirror hidden');
 })();
 
 (function attachmentChipsReuseBubbleVisualAndPreview() {

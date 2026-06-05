@@ -855,7 +855,11 @@ ${PATCH_START}
       refreshClaudeVisibility(true);
       schedule();
       const observer = new MutationObserver(schedule);
-      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+      // Keep the Workbench-wide observer childList-only. Selection movement is
+      // already covered by selectionchange/mouse/keyboard/scroll events; a
+      // body-level class/style observer turns every editor chrome repaint into
+      // overlay work and couples this experiment to Monaco's private classes.
+      observer.observe(document.body, { childList: true, subtree: true });
       document.addEventListener('selectionchange', schedule, true);
       document.addEventListener('mousedown', handleMouseDown, true);
       window.addEventListener('resize', schedule, true);

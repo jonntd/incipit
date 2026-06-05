@@ -149,4 +149,19 @@ function mkAppRoot(parent, product) {
   ok('file-dialog: UseDescriptionForTitle assignment is property-guarded (#6)');
 })();
 
+// ---- Workbench overlay: body observer stays childList-only ----
+
+(function overlayObserverIsChildListOnly() {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'workbench-overlay.js'), 'utf8');
+  assert.ok(
+    src.includes('observer.observe(document.body, { childList: true, subtree: true });'),
+    'editor overlay body observer must stay childList-only',
+  );
+  assert.ok(
+    !src.includes("observer.observe(document.body, { childList: true, subtree: true, attributes: true"),
+    'editor overlay must not observe Workbench-wide class/style attributes',
+  );
+  ok('workbench overlay: body observer is childList-only');
+})();
+
 console.log('\neditor-overlay-insiders: ' + passed + ' checks PASSED');

@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { fileURLToPath } = require('url');
 const { StringDecoder } = require('string_decoder');
 
 const GLOBAL_KEY = '__cceBadge';
@@ -18,11 +19,19 @@ let vscodeApi = null;
 const POLL_INTERVAL_MS = 1500;
 const WRITE_POLL_DEBOUNCE_MS = 120;
 const JSONL_SUFFIX = '.jsonl';
-const USAGE_CACHE_SCHEMA_VERSION = 1;
-const USAGE_CACHE_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-usage-cache-v1');
+const USAGE_CACHE_SCHEMA_VERSION = 2;
+const USAGE_CACHE_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-usage-cache-v2');
 const USAGE_CACHE_HASH_BYTES = 4096;
 const EDIT_ACTIVITY_SCHEMA_VERSION = 1;
 const EDIT_ACTIVITY_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-edit-activity-v1');
+const CHANGE_REVIEW_SCHEMA_VERSION = 1;
+const CHANGE_REVIEW_INDEX_DIR = path.join(os.homedir(), '.incipit', 'change-review-v1');
+const CHANGE_REVIEW_DIFF_MAX_BYTES = 768 * 1024;
+const CHANGE_REVIEW_LINE_STATS_VERSION = 2;
+// 2026-06-05: change review is still under development. Keep the backend
+// helpers testable, but do not run its runtime protocol in release apply.
+const CHANGE_REVIEW_RUNTIME_ENABLED = false;
+const LINE_DIFF_EXACT_CELL_LIMIT = 12 * 1000 * 1000;
 const PROJECT_INDEX_BATCH_FILES = 2;
 const PROJECT_INDEX_BATCH_BYTES = 8 * 1024 * 1024;
 const PROJECT_INDEX_BATCH_DELAY_MS = 45;
@@ -81,6 +90,7 @@ function createState() {
     editProjectScanAt: new Map(),
     editGlobalJob: null,
     editGlobalScanAt: 0,
+    changeReviewStates: new Map(),
     truncateRollbacks: new Map(),
     log(message) {
       try { console.log(`[cceBadge] ${message}`); } catch (_) {}
@@ -119,6 +129,7 @@ function attachMessageHandler(comm, state) {
 
 function handleWebviewMessage(comm, state, message) {
   if (!message || message.__incipit !== true) return;
+  if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;
   if (message.type === 'badge_identity_update') {
     handleBadgeIdentityUpdate(comm, state, message);
     return;
@@ -127,8 +138,28 @@ function handleWebviewMessage(comm, state, message) {
     handleEditActivityIdentityUpdate(comm, state, message);
     return;
   }
+  if (message.type === 'change_review_identity_update') {
+    handleChangeReviewIdentityUpdate(comm, state, message);
+    return;
+  }
   if (message.type === 'diff_line_info_request') {
     handleDiffLineInfoRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'change_review_diff_request') {
+    handleChangeReviewDiffRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'change_review_turn_finalized') {
+    handleChangeReviewTurnFinalized(comm, state, message);
+    return;
+  }
+  if (message.type === 'change_review_turn_started') {
+    handleChangeReviewTurnStarted(comm, state, message);
+    return;
+  }
+  if (message.type === 'change_review_reject_request') {
+    handleChangeReviewRejectRequest(comm, state, message);
     return;
   }
   if (message.type === 'conversation_mutation_request') {
@@ -137,7 +168,19 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'file_reveal_request') {
     handleFileRevealRequest(comm, state, message);
+    return;
   }
+  if (message.type === 'file_path_copy_request') {
+    handleFilePathCopyRequest(comm, state, message);
+  }
+}
+
+function isChangeReviewRuntimeMessage(type) {
+  return type === 'change_review_identity_update' ||
+    type === 'change_review_diff_request' ||
+    type === 'change_review_turn_finalized' ||
+    type === 'change_review_turn_started' ||
+    type === 'change_review_reject_request';
 }
 
 function handleBadgeIdentityUpdate(comm, state, message) {
@@ -208,6 +251,30 @@ function handleEditActivityIdentityUpdate(comm, state, message) {
   sendCurrentEditActivityPayload(state, comm, target, sessionId, includeProject);
 }
 
+function handleChangeReviewIdentityUpdate(comm, state, message) {
+  const sessionId = typeof message.sessionId === 'string' ? message.sessionId : '';
+  if (!sessionId) {
+    state.commIdentities.delete(comm);
+    sendChangeReviewPayload(comm, emptyChangeReviewPayload(null, null));
+    return;
+  }
+  const previous = state.commIdentities.get(comm);
+  const incomingCwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+  const cwd = incomingCwd || (previous && previous.sessionId === sessionId ? previous.cwd : null);
+  if (previous && previous.sessionId === sessionId && previous.cwd === cwd && previous.target) {
+    sendCurrentChangeReviewPayload(state, comm, previous.target, sessionId);
+    return;
+  }
+  const target = resolveTargetFromIdentity(sessionId, cwd);
+  const identity = { sessionId, cwd, target };
+  state.commIdentities.set(comm, identity);
+  if (!target) {
+    sendChangeReviewPayload(comm, emptyChangeReviewPayload(sessionId, null));
+    return;
+  }
+  sendCurrentChangeReviewPayload(state, comm, target, sessionId);
+}
+
 function handleDiffLineInfoRequest(comm, state, message) {
   const requestId = message.requestId;
   const reply = payload => {
@@ -268,6 +335,101 @@ async function handleFileRevealRequest(comm, state, message) {
   }
 }
 
+function handleFilePathCopyRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'file_path_copy_response',
+        requestId,
+        payload,
+      });
+    } catch (_) {}
+  };
+  try {
+    let vscode = null;
+    try { vscode = getVSCodeApi(); } catch (_) {}
+    reply({ ok: true, ...resolveFileCopyPaths(state, comm, message, vscode) });
+  } catch (error) {
+    state.log(`file path copy error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, error: String(error && error.message ? error.message : error) });
+  }
+}
+
+function handleChangeReviewDiffRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'change_review_diff_response',
+        requestId,
+        payload,
+      });
+    } catch (_) {}
+  };
+  try {
+    reply(resolveChangeReviewDiff(state, comm, message || {}));
+  } catch (error) {
+    state.log(`change review diff error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, error: String(error && error.message ? error.message : error) });
+  }
+}
+
+function handleChangeReviewTurnFinalized(comm, state, message) {
+  try {
+    const payload = resolveChangeReviewTurnFinalized(state, comm, message || {});
+    if (payload && payload.src) {
+      sendChangeReviewTarget(state, payload.src, payload.sessionId);
+    }
+  } catch (error) {
+    state.log(`change review finalize error: ${error && error.message ? error.message : error}`);
+  }
+}
+
+function handleChangeReviewTurnStarted(comm, state, message) {
+  try {
+    const payload = resolveChangeReviewTurnStarted(state, comm, message || {});
+    if (payload && payload.src) {
+      sendChangeReviewTarget(state, payload.src, payload.sessionId);
+    }
+  } catch (error) {
+    state.log(`change review start error: ${error && error.message ? error.message : error}`);
+  }
+}
+
+function handleChangeReviewRejectRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'change_review_reject_response',
+        requestId,
+        payload,
+      });
+    } catch (_) {}
+  };
+  try {
+    const payload = resolveChangeReviewReject(state, comm, message || {});
+    reply(payload);
+    const identity = revealIdentityForMessage(state, comm, message || {});
+    const target = identity && identity.target
+      ? identity.target
+      : resolveTargetFromIdentity(message.sessionId, identity && identity.cwd);
+    if (target) {
+      const sessionId = typeof message.sessionId === 'string' && message.sessionId
+        ? message.sessionId
+        : (identity && identity.sessionId);
+      sendChangeReviewTarget(state, target, sessionId);
+    }
+  } catch (error) {
+    state.log(`change review reject error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, error: String(error && error.message ? error.message : error) });
+  }
+}
+
 function getVSCodeApi() {
   if (vscodeApi) return vscodeApi;
   // Loaded lazily so unit tests can parse this helper outside VS Code.
@@ -279,20 +441,29 @@ function decodePathSegment(value) {
   try { return decodeURIComponent(value); } catch (_) { return value; }
 }
 
+function expandHomePath(value) {
+  const raw = typeof value === 'string' ? value : '';
+  if (raw === '~') return os.homedir();
+  if (/^~[\\/]/.test(raw)) return path.join(os.homedir(), raw.slice(2));
+  return raw;
+}
+
 function normalizeFileRevealPath(value) {
   let raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) throw new Error('No file path supplied.');
   if (/^file:/i.test(raw)) {
     const url = new URL(raw);
-    raw = url.pathname || '';
-    if (/^\/[A-Za-z]:\//.test(raw)) raw = raw.slice(1);
-    raw = process.platform === 'win32' ? raw.replace(/\//g, '\\') : raw;
+    url.hash = '';
+    url.search = '';
+    raw = fileURLToPath(url);
+  } else {
+    const hashIndex = raw.search(/#L?\d+(?:-L?\d+)?$/i);
+    if (hashIndex !== -1) raw = raw.slice(0, hashIndex);
+    const queryIndex = raw.indexOf('?');
+    if (queryIndex !== -1) raw = raw.slice(0, queryIndex);
+    raw = decodePathSegment(raw).trim();
   }
-  const hashIndex = raw.indexOf('#');
-  if (hashIndex !== -1) raw = raw.slice(0, hashIndex);
-  const queryIndex = raw.indexOf('?');
-  if (queryIndex !== -1) raw = raw.slice(0, queryIndex);
-  raw = decodePathSegment(raw).trim();
+  raw = expandHomePath(raw).trim();
   if (!raw) throw new Error('No file path supplied.');
   return raw;
 }
@@ -302,14 +473,41 @@ function isPathInside(child, parent) {
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-function resolveFileRevealPathForCwd(raw, cwd) {
+function resolveFileRevealPathForCwd(raw, cwd, workspaceRoots) {
   const rawIsAbsolute = path.isAbsolute(raw);
-  if (!rawIsAbsolute && !cwd) {
+  const baseCwd = rawIsAbsolute ? '' : preferredWorkspaceRoot(workspaceRoots || [], cwd);
+  if (!rawIsAbsolute && !baseCwd) {
     throw new Error('Relative file path has no Claude project cwd.');
   }
   return {
     rawIsAbsolute,
-    resolved: rawIsAbsolute ? path.resolve(raw) : path.resolve(cwd, raw),
+    resolved: rawIsAbsolute ? path.resolve(raw) : path.resolve(baseCwd, raw),
+    baseCwd,
+  };
+}
+
+function resolveFileCopyPathsForCwd(rawInput, cwd, workspaceRoots) {
+  const raw = normalizeFileRevealPath(rawInput);
+  const roots = normalizeWorkspaceRoots(workspaceRoots || []);
+  const cwdRoot = normalizeWorkspaceCwd(cwd);
+  const rawIsAbsolute = path.isAbsolute(raw);
+  const baseRoot = rawIsAbsolute ? '' : preferredWorkspaceRoot(roots, cwdRoot);
+  if (!rawIsAbsolute && !baseRoot) {
+    throw new Error('Relative file path has no VS Code workspace folder or Claude project cwd.');
+  }
+
+  const absolutePath = rawIsAbsolute ? path.resolve(raw) : path.resolve(baseRoot, raw);
+  const relativeRoot = containingWorkspaceRoot(roots, absolutePath) ||
+    (!rawIsAbsolute ? baseRoot : preferredWorkspaceRoot(roots, cwdRoot));
+  const relativePath = relativePathFromWorkspaceRoot(relativeRoot, absolutePath);
+
+  return {
+    raw,
+    rawIsAbsolute,
+    absolutePath,
+    relativePath,
+    workspaceRoot: relativeRoot || '',
+    cwd: cwdRoot || '',
   };
 }
 
@@ -334,6 +532,74 @@ function normalizeWorkspaceCwd(value) {
   } catch (_) {
     return '';
   }
+}
+
+function workspaceFolderPath(folder) {
+  if (typeof folder === 'string') return folder;
+  const uri = folder && folder.uri;
+  return uri && typeof uri.fsPath === 'string' ? uri.fsPath : '';
+}
+
+function uniquePathKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function normalizeWorkspaceRoots(values) {
+  const roots = [];
+  const seen = new Set();
+  const input = Array.isArray(values) ? values : [];
+  for (const value of input) {
+    const root = normalizeWorkspaceCwd(workspaceFolderPath(value));
+    if (!root) continue;
+    const key = uniquePathKey(root);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(root);
+  }
+  return roots;
+}
+
+function vscodeWorkspaceRoots(vscode) {
+  const folders = vscode && vscode.workspace && vscode.workspace.workspaceFolders;
+  return normalizeWorkspaceRoots(Array.isArray(folders) ? folders : []);
+}
+
+function containingWorkspaceRoot(roots, filePath) {
+  const resolved = path.resolve(filePath);
+  let best = '';
+  for (const root of normalizeWorkspaceRoots(roots)) {
+    if (!isPathInside(resolved, path.resolve(root))) continue;
+    if (!best || path.resolve(root).length > path.resolve(best).length) best = root;
+  }
+  return best;
+}
+
+function preferredWorkspaceRoot(roots, cwd) {
+  const normalizedRoots = normalizeWorkspaceRoots(roots);
+  const normalizedCwd = normalizeWorkspaceCwd(cwd);
+  if (normalizedCwd) {
+    const containing = containingWorkspaceRoot(normalizedRoots, normalizedCwd);
+    if (containing) return containing;
+  }
+  if (normalizedRoots.length) return normalizedRoots[0];
+  return normalizedCwd;
+}
+
+function samePathRoot(a, b) {
+  if (!a || !b) return false;
+  const ar = path.parse(path.resolve(a)).root;
+  const br = path.parse(path.resolve(b)).root;
+  if (!ar || !br) return false;
+  return process.platform === 'win32' ? ar.toLowerCase() === br.toLowerCase() : ar === br;
+}
+
+function relativePathFromWorkspaceRoot(root, filePath) {
+  const normalizedRoot = normalizeWorkspaceCwd(root);
+  if (!normalizedRoot || !filePath || !path.isAbsolute(filePath)) return '';
+  if (!samePathRoot(normalizedRoot, filePath)) return '';
+  const rel = path.relative(normalizedRoot, path.resolve(filePath)) || '.';
+  return path.isAbsolute(rel) ? '' : rel;
 }
 
 function normalizeRevealSessionId(value) {
@@ -430,7 +696,8 @@ async function revealContainingFolder(state, comm, message) {
   const vscode = getVSCodeApi();
   const cwd = resolveFileRevealCwd(state, comm, message || {});
   const raw = normalizeFileRevealPath(message && message.filePath);
-  const { rawIsAbsolute, resolved } = resolveFileRevealPathForCwd(raw, cwd);
+  const workspaceRoots = vscodeWorkspaceRoots(vscode);
+  const { rawIsAbsolute, resolved, baseCwd } = resolveFileRevealPathForCwd(raw, cwd, workspaceRoots);
   let stat;
   try {
     stat = fs.statSync(resolved);
@@ -438,7 +705,7 @@ async function revealContainingFolder(state, comm, message) {
     throw new Error('File path does not exist.');
   }
 
-  assertFileRevealWorkspace(cwd, resolved, rawIsAbsolute);
+  assertFileRevealWorkspace(baseCwd || cwd, resolved, rawIsAbsolute);
 
   const directoryPath = stat.isDirectory() ? resolved : path.dirname(resolved);
   if (!stat.isDirectory()) {
@@ -459,6 +726,15 @@ async function revealContainingFolder(state, comm, message) {
   const ok = await vscode.env.openExternal(vscode.Uri.file(directoryPath));
   if (ok === false) throw new Error('VS Code could not open the containing folder.');
   return { ok: true, filePath: stat.isDirectory() ? null : resolved, directoryPath, selected: false };
+}
+
+function resolveFileCopyPaths(state, comm, message, vscode) {
+  const cwd = resolveFileRevealCwd(state, comm, message || {});
+  return resolveFileCopyPathsForCwd(
+    message && message.filePath,
+    cwd,
+    vscodeWorkspaceRoots(vscode),
+  );
 }
 
 function stateLogFileRevealFallback(error) {
@@ -1484,6 +1760,8 @@ function poll(state) {
         usageVersion: before.usageVersion,
         editPayload: before.editPayload,
         editVersion: before.editVersion,
+        changeReviewPayload: before.changeReviewPayload,
+        changeReviewVersion: before.changeReviewVersion,
       } : null;
       const payload = buildCachedPayload(state, target, stat, false);
       const after = state.targetCache.get(target);
@@ -1494,6 +1772,11 @@ function poll(state) {
         persistProjectEditActivitySession(state, target, parser, stat);
         const afterEdit = state.targetCache.get(target);
         if (editCacheChanged(beforeSnapshot, afterEdit)) broadcastEditActivityTarget(state, target, editPayload);
+        if (CHANGE_REVIEW_RUNTIME_ENABLED) {
+          const changeReviewPayload = buildCachedChangeReviewPayload(state, target, parser);
+          const afterReview = state.targetCache.get(target);
+          if (changeReviewCacheChanged(beforeSnapshot, afterReview)) broadcastChangeReviewTarget(state, target, changeReviewPayload);
+        }
       }
     }
   } catch (error) {
@@ -1588,6 +1871,12 @@ function editCacheChanged(before, after) {
   return before.editVersion !== after.editVersion;
 }
 
+function changeReviewCacheChanged(before, after) {
+  if (!after || !after.changeReviewPayload) return false;
+  if (!before || !before.changeReviewPayload) return true;
+  return before.changeReviewVersion !== after.changeReviewVersion;
+}
+
 function buildCachedPayload(state, target, stat, includeHistory) {
   const cached = state.targetCache.get(target);
   const sameFileStat = cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs;
@@ -1603,9 +1892,11 @@ function buildCachedPayload(state, target, stat, includeHistory) {
     mtimeMs: stat.mtimeMs,
     usageVersion: parser.usageVersion,
     editVersion: cached ? cached.editVersion : undefined,
+    changeReviewVersion: cached ? cached.changeReviewVersion : undefined,
     payload: sameUsageVersion ? cached.payload : null,
     historyPayload: sameUsageVersion ? cached.historyPayload : null,
     editPayload: cached ? cached.editPayload : null,
+    changeReviewPayload: cached ? cached.changeReviewPayload : null,
   };
   next.size = stat.size;
   next.mtimeMs = stat.mtimeMs;
@@ -1633,6 +1924,32 @@ function buildCachedEditActivityPayload(state, target, parser) {
   cached.editPayload = buildEditActivityPayload(parser);
   state.targetCache.set(target, cached);
   return cached.editPayload;
+}
+
+function buildCachedChangeReviewPayload(state, target, parser) {
+  const cached = state.targetCache.get(target) || {
+    size: parser.size || 0,
+    mtimeMs: parser.mtimeMs || 0,
+    usageVersion: parser.usageVersion || 0,
+    payload: null,
+    historyPayload: null,
+    editPayload: null,
+  };
+  const reviewState = loadChangeReviewState(state, path.basename(parser.path, JSONL_SUFFIX));
+  const parserChanged = captureChangeReviewGuards(parser, reviewState, { onlyFinalized: true });
+  if (reviewState.dirty) saveChangeReviewState(state, reviewState);
+  if (parserChanged) saveUsageCacheParser(state, parser, {
+    size: parser.size || 0,
+    mtimeMs: parser.mtimeMs || 0,
+  });
+  const version = parser.changeReviewVersion + ':' + (reviewState.version || 0);
+  if (cached.changeReviewPayload && cached.changeReviewVersion === version) {
+    return cached.changeReviewPayload;
+  }
+  cached.changeReviewVersion = version;
+  cached.changeReviewPayload = buildChangeReviewPayload(parser, reviewState);
+  state.targetCache.set(target, cached);
+  return cached.changeReviewPayload;
 }
 
 function sendCurrentBadgePayload(state, comm, target, sessionId, includeHistory) {
@@ -1675,6 +1992,25 @@ function sendCurrentEditActivityPayload(state, comm, target, sessionId, includeP
   }
 }
 
+function sendCurrentChangeReviewPayload(state, comm, target, sessionId) {
+  if (!target || !fs.existsSync(target)) {
+    sendChangeReviewPayload(comm, emptyChangeReviewPayload(sessionId, target || null));
+    return;
+  }
+  try {
+    const stat = fs.statSync(target);
+    const parser = updateParser(state, target, stat);
+    const payload = annotateChangeReviewPayload(
+      buildCachedChangeReviewPayload(state, target, parser),
+      sessionId,
+      target
+    );
+    sendChangeReviewPayload(comm, payload);
+  } catch (_) {
+    sendChangeReviewPayload(comm, emptyChangeReviewPayload(sessionId, target));
+  }
+}
+
 function emptyBadgePayload(sessionId, target) {
   return {
     empty: true,
@@ -1697,6 +2033,20 @@ function emptyEditActivityPayload(sessionId, target) {
   };
 }
 
+function emptyChangeReviewPayload(sessionId, target) {
+  return {
+    empty: true,
+    sessionId: sessionId || null,
+    src: target || null,
+    cwd: null,
+    ts: Date.now(),
+    activeTurn: null,
+    latestTurn: null,
+    turns: [],
+    totals: { files: 0, added: 0, removed: 0 },
+  };
+}
+
 function annotateBadgePayload(payload, sessionId, target) {
   if (!payload || typeof payload !== 'object') return emptyBadgePayload(sessionId, target);
   if (!sessionId || payload.sessionId === sessionId) return payload;
@@ -1705,6 +2055,15 @@ function annotateBadgePayload(payload, sessionId, target) {
 
 function annotateEditActivityPayload(payload, sessionId, target) {
   if (!payload || typeof payload !== 'object') return emptyEditActivityPayload(sessionId, target);
+  return {
+    ...payload,
+    sessionId: sessionId || payload.sessionId || null,
+    src: target || payload.src || null,
+  };
+}
+
+function annotateChangeReviewPayload(payload, sessionId, target) {
+  if (!payload || typeof payload !== 'object') return emptyChangeReviewPayload(sessionId, target);
   return {
     ...payload,
     sessionId: sessionId || payload.sessionId || null,
@@ -1773,6 +2132,11 @@ function createParser(filePath, options = {}) {
     editCounted: new Map(),
     editDays: new Map(),
     editSums: { added: 0, removed: 0, edits: 0 },
+    changeReviewTurns: new Map(),
+    changeReviewAssistantTurns: new Map(),
+    changeReviewSnapshotUpdates: new Map(),
+    changeReviewCurrentTurnKey: null,
+    changeReviewVersion: 0,
     usageVersion: 0,
     editVersion: 0,
     persistDirty: false,
@@ -1857,9 +2221,65 @@ function compactEditItem(item) {
     name: typeof item.name === 'string' ? item.name : '',
     ts: typeof item.ts === 'string' ? item.ts : '',
     day: typeof item.day === 'string' && item.day ? item.day : localDayKey(item.ts),
+    filePath: typeof item.filePath === 'string' ? item.filePath : '',
+    turnKey: typeof item.turnKey === 'string' ? item.turnKey : null,
+    assistantUuid: typeof item.assistantUuid === 'string' && item.assistantUuid ? item.assistantUuid : null,
     added: safeTokenNumber(item.added),
     removed: safeTokenNumber(item.removed),
   };
+}
+
+function compactChangeReviewFile(file) {
+  if (!file || typeof file.filePath !== 'string' || !file.filePath) return null;
+  const out = {
+    rawPath: typeof file.rawPath === 'string' ? file.rawPath : '',
+    filePath: file.filePath,
+    displayPath: typeof file.displayPath === 'string' ? file.displayPath : '',
+    version: Number.isFinite(file.version) ? file.version : null,
+    backupTime: typeof file.backupTime === 'string' ? file.backupTime : '',
+    added: safeTokenNumber(file.added),
+    removed: safeTokenNumber(file.removed),
+    hasLineStats: file.hasLineStats === true,
+    toolIds: Array.from(file.toolIds instanceof Set ? file.toolIds : []).filter(id => typeof id === 'string' && id),
+    firstSeenAt: Number.isFinite(file.firstSeenAt) ? file.firstSeenAt : 0,
+    lastSeenAt: Number.isFinite(file.lastSeenAt) ? file.lastSeenAt : 0,
+  };
+  if (Object.prototype.hasOwnProperty.call(file, 'backupFileName')) {
+    out.backupFileName = file.backupFileName === null ? null
+      : (typeof file.backupFileName === 'string' ? file.backupFileName : undefined);
+  }
+  return out;
+}
+
+function compactChangeReviewTurn(turn) {
+  if (!turn || typeof turn.turnKey !== 'string' || !turn.turnKey || !(turn.files instanceof Map)) return null;
+  const files = Array.from(turn.files.values()).map(compactChangeReviewFile).filter(Boolean);
+  if (!files.length) return null;
+  return {
+    turnKey: turn.turnKey,
+    cwd: typeof turn.cwd === 'string' ? turn.cwd : '',
+    timestamp: typeof turn.timestamp === 'string' ? turn.timestamp : '',
+    lifecycleStartedAt: Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0,
+    order: Number.isFinite(turn.order) ? turn.order : 0,
+    files,
+  };
+}
+
+function compactChangeReviewSnapshotUpdate(update) {
+  if (!update || typeof update.rawPath !== 'string' || !update.rawPath) return null;
+  const out = {
+    rawPath: update.rawPath,
+    filePath: typeof update.filePath === 'string' ? update.filePath : '',
+    cwd: typeof update.cwd === 'string' ? update.cwd : '',
+    timestamp: typeof update.timestamp === 'string' ? update.timestamp : '',
+    version: Number.isFinite(update.version) ? update.version : null,
+    backupTime: typeof update.backupTime === 'string' ? update.backupTime : '',
+  };
+  if (Object.prototype.hasOwnProperty.call(update, 'backupFileName')) {
+    out.backupFileName = update.backupFileName === null ? null
+      : (typeof update.backupFileName === 'string' ? update.backupFileName : undefined);
+  }
+  return out;
 }
 
 function serializeUsageCacheParser(parser, stat) {
@@ -1897,6 +2317,25 @@ function serializeUsageCacheParser(parser, stat) {
       editVersion: parser.editVersion || 0,
       pending: Array.from(parser.editPending.values()).map(compactEditItem).filter(Boolean),
       counted: Array.from(parser.editCounted.values()).map(compactEditItem).filter(Boolean),
+    },
+    changeReview: {
+      changeReviewVersion: parser.changeReviewVersion || 0,
+      currentTurnKey: parser.changeReviewCurrentTurnKey || null,
+      assistantTurns: Array.from(parser.changeReviewAssistantTurns instanceof Map
+        ? parser.changeReviewAssistantTurns.entries()
+        : [])
+        .filter(([assistantUuid, turnKey]) => typeof assistantUuid === 'string' && assistantUuid && typeof turnKey === 'string' && turnKey),
+      snapshotUpdates: Array.from(parser.changeReviewSnapshotUpdates instanceof Map
+        ? parser.changeReviewSnapshotUpdates.entries()
+        : [])
+        .map(([assistantUuid, updates]) => [
+          assistantUuid,
+          (Array.isArray(updates) ? updates : [])
+            .map(compactChangeReviewSnapshotUpdate)
+            .filter(Boolean),
+        ])
+        .filter(([assistantUuid, updates]) => typeof assistantUuid === 'string' && assistantUuid && updates.length),
+      turns: Array.from(parser.changeReviewTurns.values()).map(compactChangeReviewTurn).filter(Boolean),
     },
   };
 }
@@ -2008,6 +2447,85 @@ function hydrateUsageCacheParser(parser, index) {
   parser.editVersion = Number.isFinite(edit.editVersion)
     ? edit.editVersion
     : parser.editCounted.size;
+
+  const review = index.changeReview && typeof index.changeReview === 'object' ? index.changeReview : {};
+  parser.changeReviewTurns = new Map();
+  parser.changeReviewAssistantTurns = new Map();
+  parser.changeReviewSnapshotUpdates = new Map();
+  parser.changeReviewCurrentTurnKey = typeof review.currentTurnKey === 'string' && review.currentTurnKey
+    ? review.currentTurnKey
+    : null;
+  const assistantTurns = Array.isArray(review.assistantTurns) ? review.assistantTurns : [];
+  for (const pair of assistantTurns) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const assistantUuid = typeof pair[0] === 'string' ? pair[0] : '';
+    const turnKey = typeof pair[1] === 'string' ? pair[1] : '';
+    if (assistantUuid && turnKey) parser.changeReviewAssistantTurns.set(assistantUuid, turnKey);
+  }
+  const snapshotUpdates = Array.isArray(review.snapshotUpdates) ? review.snapshotUpdates : [];
+  for (const pair of snapshotUpdates) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const assistantUuid = typeof pair[0] === 'string' && pair[0] ? pair[0] : '';
+    const updates = Array.isArray(pair[1]) ? pair[1] : [];
+    if (!assistantUuid || !updates.length) continue;
+    const compacted = updates.map(compactChangeReviewSnapshotUpdate).filter(Boolean);
+    if (compacted.length) parser.changeReviewSnapshotUpdates.set(assistantUuid, compacted);
+  }
+  const expectedSessionId = path.basename(parser.path, JSONL_SUFFIX);
+  const rawTurns = Array.isArray(review.turns) ? review.turns : [];
+  const seenTurns = new Set();
+  for (const rawTurn of rawTurns) {
+    if (!rawTurn || typeof rawTurn.turnKey !== 'string' || !rawTurn.turnKey || seenTurns.has(rawTurn.turnKey)) continue;
+    seenTurns.add(rawTurn.turnKey);
+    const turn = {
+      id: rawTurn.turnKey,
+      turnKey: rawTurn.turnKey,
+      sessionId: expectedSessionId,
+      cwd: typeof rawTurn.cwd === 'string' ? rawTurn.cwd : '',
+      timestamp: typeof rawTurn.timestamp === 'string' ? rawTurn.timestamp : '',
+      files: new Map(),
+      lifecycleStartedAt: Number.isFinite(rawTurn.lifecycleStartedAt) ? rawTurn.lifecycleStartedAt : 0,
+      order: Number.isFinite(rawTurn.order) ? rawTurn.order : parser.changeReviewTurns.size,
+    };
+    const rawFiles = Array.isArray(rawTurn.files) ? rawTurn.files : [];
+    for (const rawFile of rawFiles) {
+      if (!rawFile || typeof rawFile !== 'object') continue;
+      const filePath = typeof rawFile.filePath === 'string' && rawFile.filePath
+        ? path.resolve(rawFile.filePath)
+        : resolveChangeReviewPath(rawFile.rawPath || '', turn.cwd || parser.projectCwd);
+      if (!filePath) continue;
+      const key = changeReviewFileKey(filePath);
+      if (!key || turn.files.has(key)) continue;
+      const file = {
+        id: changeReviewEntryId(expectedSessionId, turn.turnKey, filePath),
+        sessionId: expectedSessionId,
+        turnKey: turn.turnKey,
+        rawPath: typeof rawFile.rawPath === 'string' && rawFile.rawPath ? rawFile.rawPath : filePath,
+        filePath,
+        displayPath: typeof rawFile.displayPath === 'string' && rawFile.displayPath
+          ? rawFile.displayPath
+          : displayChangeReviewPath(filePath, turn.cwd || parser.projectCwd, rawFile.rawPath),
+        backupFileName: undefined,
+        version: Number.isFinite(rawFile.version) ? rawFile.version : null,
+        backupTime: typeof rawFile.backupTime === 'string' ? rawFile.backupTime : '',
+        added: safeTokenNumber(rawFile.added),
+        removed: safeTokenNumber(rawFile.removed),
+        hasLineStats: rawFile.hasLineStats === true,
+        toolIds: new Set(Array.isArray(rawFile.toolIds) ? rawFile.toolIds.filter(id => typeof id === 'string' && id) : []),
+        firstSeenAt: Number.isFinite(rawFile.firstSeenAt) ? rawFile.firstSeenAt : 0,
+        lastSeenAt: Number.isFinite(rawFile.lastSeenAt) ? rawFile.lastSeenAt : 0,
+      };
+      if (Object.prototype.hasOwnProperty.call(rawFile, 'backupFileName')) {
+        file.backupFileName = rawFile.backupFileName === null ? null
+          : (typeof rawFile.backupFileName === 'string' ? rawFile.backupFileName : undefined);
+      }
+      turn.files.set(key, file);
+    }
+    if (turn.files.size) parser.changeReviewTurns.set(turn.turnKey, turn);
+  }
+  parser.changeReviewVersion = Number.isFinite(review.changeReviewVersion)
+    ? review.changeReviewVersion
+    : parser.changeReviewTurns.size;
   return true;
 }
 
@@ -2074,6 +2592,7 @@ function processLine(parser, line) {
     parser.projectCwd = entry.cwd;
     parser.persistDirty = true;
   }
+  processChangeReviewEntry(parser, entry);
   processUsageEntry(parser, entry);
   processEditActivityEntry(parser, entry);
 }
@@ -2125,10 +2644,14 @@ function processEditActivityEntry(parser, entry) {
   if (!blocks.length) return;
 
   if (entry.type === 'assistant') {
+    const assistantUuid = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : '';
     for (const block of blocks) {
       if (!block || block.type !== 'tool_use') continue;
       const item = editActivityFromToolUse(block, entry.timestamp || '');
       if (!item || !item.id) continue;
+      item.turnKey = parser.changeReviewCurrentTurnKey || null;
+      item.assistantUuid = assistantUuid || null;
+      if (assistantUuid && item.turnKey) parser.changeReviewAssistantTurns.set(assistantUuid, item.turnKey);
       if (parser.editCounted.has(item.id)) continue;
       parser.editPending.set(item.id, item);
       parser.persistDirty = true;
@@ -2145,11 +2668,345 @@ function processEditActivityEntry(parser, entry) {
     parser.persistDirty = true;
     if (toolResultIsError(block)) continue;
     countEditActivity(parser, item);
+    countChangeReviewTool(parser, item);
   }
 }
 
 function toolResultIsError(block) {
   return block && block.is_error === true;
+}
+
+function processChangeReviewEntry(parser, entry) {
+  if (!entry || typeof entry !== 'object') return;
+  const expectedSessionId = path.basename(parser.path, JSONL_SUFFIX);
+  if (entry.sessionId && entry.sessionId !== expectedSessionId) return;
+
+  if (isRealUserPromptEntry(entry)) {
+    parser.changeReviewCurrentTurnKey = entry.uuid;
+    ensureChangeReviewTurn(parser, entry.uuid, {
+      timestamp: entry.timestamp || '',
+      cwd: parser.projectCwd || entry.cwd || '',
+    });
+    return;
+  }
+
+  if (entry.type !== 'file-history-snapshot') return;
+  const snapshot = entry.snapshot && typeof entry.snapshot === 'object' ? entry.snapshot : null;
+  if (!snapshot || !snapshot.trackedFileBackups || typeof snapshot.trackedFileBackups !== 'object') return;
+  // Plain snapshots are the host's baseline file-history state for a user
+  // prompt. They include files changed by earlier turns, so they must never
+  // create a "this turn changed files" review row. Only successful
+  // Write/Edit/MultiEdit tool results create rows; snapshot updates merely
+  // attach the official backup metadata needed for Reject.
+  if (entry.isSnapshotUpdate !== true) return;
+  const assistantUuid = typeof entry.messageId === 'string' && entry.messageId
+    ? entry.messageId
+    : '';
+  if (!assistantUuid) return;
+  const meta = {
+    timestamp: snapshot.timestamp || entry.timestamp || '',
+    cwd: parser.projectCwd || entry.cwd || '',
+  };
+  for (const [rawPath, backup] of Object.entries(snapshot.trackedFileBackups || {})) {
+    if (!rawPath || !backup || typeof backup !== 'object') continue;
+    rememberChangeReviewSnapshotUpdate(parser, assistantUuid, rawPath, {
+      backupFileName: Object.prototype.hasOwnProperty.call(backup, 'backupFileName')
+        ? backup.backupFileName
+        : undefined,
+      version: Number.isFinite(backup.version) ? backup.version : null,
+      backupTime: typeof backup.backupTime === 'string' ? backup.backupTime : '',
+    }, meta);
+  }
+}
+
+function changeReviewToolItemForSnapshotFile(parser, assistantUuid, rawPath, cwd) {
+  if (!assistantUuid || !parser) return null;
+  const visit = item => {
+    if (!item || item.assistantUuid !== assistantUuid || !item.turnKey || !item.filePath) return null;
+    const turn = parser.changeReviewTurns && parser.changeReviewTurns.get(item.turnKey);
+    const base = (turn && turn.cwd) || cwd || parser.projectCwd;
+    const snapshotPath = resolveChangeReviewPath(rawPath, base);
+    const itemPath = resolveChangeReviewPath(item.filePath, base);
+    if (!snapshotPath || !itemPath || changeReviewFileKey(itemPath) !== changeReviewFileKey(snapshotPath)) return null;
+    return item;
+  };
+  for (const item of parser.editPending.values()) {
+    const match = visit(item);
+    if (match) return match;
+  }
+  for (const item of parser.editCounted.values()) {
+    const match = visit(item);
+    if (match) return match;
+  }
+  return null;
+}
+
+function changeReviewAssistantHasFileTools(parser, assistantUuid) {
+  if (!assistantUuid || !parser) return false;
+  for (const item of parser.editPending.values()) {
+    if (item && item.assistantUuid === assistantUuid && item.filePath) return true;
+  }
+  for (const item of parser.editCounted.values()) {
+    if (item && item.assistantUuid === assistantUuid && item.filePath) return true;
+  }
+  return false;
+}
+
+function changeReviewSnapshotUpdateKey(update) {
+  return changeReviewFileKey(update && update.filePath ? update.filePath : '');
+}
+
+function makeChangeReviewSnapshotUpdate(parser, rawPath, patch, meta) {
+  const cwd = (meta && meta.cwd) || parser.projectCwd || '';
+  const filePath = resolveChangeReviewPath(rawPath, cwd) || '';
+  const out = {
+    rawPath,
+    filePath,
+    cwd,
+    timestamp: (meta && meta.timestamp) || '',
+    version: Number.isFinite(patch && patch.version) ? patch.version : null,
+    backupTime: typeof (patch && patch.backupTime) === 'string' ? patch.backupTime : '',
+  };
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'backupFileName')) {
+    out.backupFileName = patch.backupFileName === null ? null
+      : (typeof patch.backupFileName === 'string' ? patch.backupFileName : undefined);
+  }
+  return out;
+}
+
+function patchChangeReviewFileBackup(file, update) {
+  if (!file || !update) return false;
+  let changed = false;
+  // Keep the first official backup for a turn. Later snapshots may describe an
+  // intermediate version; Reject must return to the state before the turn's
+  // first successful file edit.
+  if (Object.prototype.hasOwnProperty.call(update, 'backupFileName') &&
+      file.backupFileName === undefined) {
+    file.backupFileName = update.backupFileName === null ? null
+      : (typeof update.backupFileName === 'string' ? update.backupFileName : file.backupFileName);
+    changed = true;
+  }
+  if ((file.version === null || file.version === undefined) && Number.isFinite(update.version)) {
+    file.version = update.version;
+    changed = true;
+  }
+  if (!file.backupTime && typeof update.backupTime === 'string' && update.backupTime) {
+    file.backupTime = update.backupTime;
+    changed = true;
+  }
+  return changed;
+}
+
+function applyChangeReviewSnapshotUpdateForToolItem(parser, item, update) {
+  if (!parser || !item || !item.turnKey || !update) return false;
+  const turn = parser.changeReviewTurns && parser.changeReviewTurns.get(item.turnKey);
+  if (!turn) return false;
+  const base = turn.cwd || update.cwd || parser.projectCwd;
+  const snapshotPath = resolveChangeReviewPath(update.rawPath, base);
+  const itemPath = resolveChangeReviewPath(item.filePath, base);
+  if (!snapshotPath || !itemPath || changeReviewFileKey(snapshotPath) !== changeReviewFileKey(itemPath)) return false;
+  const file = turn.files.get(changeReviewFileKey(itemPath));
+  if (!file) return false;
+  if (patchChangeReviewFileBackup(file, update)) {
+    parser.changeReviewVersion += 1;
+    parser.persistDirty = true;
+  }
+  return true;
+}
+
+function rememberChangeReviewSnapshotUpdate(parser, assistantUuid, rawPath, patch, meta = {}) {
+  if (!parser || !assistantUuid || !rawPath) return false;
+  const toolItem = changeReviewToolItemForSnapshotFile(parser, assistantUuid, rawPath, meta.cwd);
+  if (toolItem && applyChangeReviewSnapshotUpdateForToolItem(
+    parser,
+    toolItem,
+    makeChangeReviewSnapshotUpdate(parser, rawPath, patch, meta)
+  )) {
+    return true;
+  }
+  // Once this assistant's file tools are known, unmatched snapshot paths are
+  // just carried-over file-history state. Do not cache them for a future turn.
+  if (!toolItem && changeReviewAssistantHasFileTools(parser, assistantUuid)) return false;
+
+  const update = makeChangeReviewSnapshotUpdate(parser, rawPath, patch, meta);
+  const key = changeReviewSnapshotUpdateKey(update) || String(rawPath);
+  const list = parser.changeReviewSnapshotUpdates.get(assistantUuid) || [];
+  const idx = list.findIndex(item => (changeReviewSnapshotUpdateKey(item) || item.rawPath) === key);
+  if (idx === -1) list.push(update);
+  else if (!Object.prototype.hasOwnProperty.call(list[idx], 'backupFileName') &&
+      Object.prototype.hasOwnProperty.call(update, 'backupFileName')) {
+    list[idx] = update;
+  }
+  parser.changeReviewSnapshotUpdates.set(assistantUuid, list);
+  parser.persistDirty = true;
+  return true;
+}
+
+function consumeChangeReviewSnapshotUpdatesForItem(parser, item) {
+  if (!parser || !item || !item.assistantUuid) return;
+  const list = parser.changeReviewSnapshotUpdates.get(item.assistantUuid);
+  if (!Array.isArray(list) || !list.length) return;
+  const keep = [];
+  for (const update of list) {
+    if (!applyChangeReviewSnapshotUpdateForToolItem(parser, item, update)) keep.push(update);
+  }
+  const stillRelevant = keep.filter(update =>
+    changeReviewToolItemForSnapshotFile(
+      parser,
+      item.assistantUuid,
+      update.rawPath,
+      update.cwd || parser.projectCwd
+    )
+  );
+  if (stillRelevant.length) parser.changeReviewSnapshotUpdates.set(item.assistantUuid, stillRelevant);
+  else parser.changeReviewSnapshotUpdates.delete(item.assistantUuid);
+  parser.persistDirty = true;
+}
+
+function isRealUserPromptEntry(entry) {
+  if (!entry || entry.type !== 'user' || typeof entry.uuid !== 'string' || !entry.uuid) return false;
+  const blocks = Array.isArray(entry.message?.content) ? entry.message.content : [];
+  if (!blocks.length) return true;
+  return !blocks.some(block => block && block.type === 'tool_result');
+}
+
+function ensureChangeReviewTurn(parser, turnKey, meta = {}) {
+  let turn = parser.changeReviewTurns.get(turnKey);
+  if (!turn) {
+    turn = {
+      id: turnKey,
+      turnKey,
+      sessionId: path.basename(parser.path, JSONL_SUFFIX),
+      cwd: meta.cwd || parser.projectCwd || '',
+      timestamp: meta.timestamp || '',
+      files: new Map(),
+      order: parser.changeReviewTurns.size,
+    };
+    parser.changeReviewTurns.set(turnKey, turn);
+    parser.changeReviewVersion += 1;
+  } else {
+    if (!turn.cwd && (meta.cwd || parser.projectCwd)) turn.cwd = meta.cwd || parser.projectCwd || '';
+    if (!turn.timestamp && meta.timestamp) turn.timestamp = meta.timestamp;
+  }
+  return turn;
+}
+
+function changeReviewFileKey(filePath) {
+  if (!filePath) return '';
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function changeReviewEntryId(sessionId, turnKey, filePath) {
+  const key = changeReviewFileKey(filePath);
+  return crypto.createHash('sha256')
+    .update(String(sessionId || ''))
+    .update('\0')
+    .update(String(turnKey || ''))
+    .update('\0')
+    .update(key)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function isAbsoluteAnyPlatform(value) {
+  const raw = String(value || '');
+  return path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw) || /^\\\\/.test(raw);
+}
+
+function resolveChangeReviewPath(rawPath, cwd) {
+  const raw = expandHomePath(String(rawPath || '').trim());
+  if (!raw) return null;
+  if (isAbsoluteAnyPlatform(raw)) return path.resolve(raw);
+  const base = normalizeWorkspaceCwd(cwd);
+  if (!base) return null;
+  return path.resolve(base, raw);
+}
+
+function displayChangeReviewPath(filePath, cwd, rawPath) {
+  const rel = relativePathFromWorkspaceRoot(cwd, filePath);
+  if (rel) return rel;
+  return rawPath || filePath || '';
+}
+
+function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
+  const resolved = resolveChangeReviewPath(rawPath, turn.cwd || parser.projectCwd);
+  if (!resolved) return null;
+  const key = changeReviewFileKey(resolved);
+  let file = turn.files.get(key);
+  if (!file) {
+    file = {
+      id: changeReviewEntryId(turn.sessionId, turn.turnKey, resolved),
+      sessionId: turn.sessionId,
+      turnKey: turn.turnKey,
+      rawPath,
+      filePath: resolved,
+      displayPath: displayChangeReviewPath(resolved, turn.cwd || parser.projectCwd, rawPath),
+      backupFileName: undefined,
+      version: null,
+      backupTime: '',
+      added: 0,
+      removed: 0,
+      hasLineStats: false,
+      toolIds: new Set(),
+      firstSeenAt: Date.now(),
+      lastSeenAt: Date.now(),
+    };
+    turn.files.set(key, file);
+  } else if (Number.isFinite(turn.lifecycleStartedAt) &&
+      turn.lifecycleStartedAt > 0 &&
+      Number.isFinite(file.lastSeenAt) &&
+      file.lastSeenAt < turn.lifecycleStartedAt) {
+    file.rawPath = rawPath;
+    file.filePath = resolved;
+    file.displayPath = displayChangeReviewPath(resolved, turn.cwd || parser.projectCwd, rawPath);
+    file.backupFileName = undefined;
+    file.version = null;
+    file.backupTime = '';
+    file.added = 0;
+    file.removed = 0;
+    file.hasLineStats = false;
+    file.toolIds = new Set();
+    file.firstSeenAt = Date.now();
+  }
+  file.rawPath = file.rawPath || rawPath;
+  file.filePath = resolved;
+  file.displayPath = displayChangeReviewPath(resolved, turn.cwd || parser.projectCwd, rawPath);
+  if (Object.prototype.hasOwnProperty.call(patch, 'backupFileName') &&
+      file.backupFileName === undefined) {
+    file.backupFileName = patch.backupFileName === null ? null
+      : (typeof patch.backupFileName === 'string' ? patch.backupFileName : file.backupFileName);
+  }
+  if ((file.version === null || file.version === undefined) && Number.isFinite(patch.version)) file.version = patch.version;
+  if (!file.backupTime && typeof patch.backupTime === 'string' && patch.backupTime) file.backupTime = patch.backupTime;
+  if (Number.isFinite(patch.added)) file.added += Math.max(0, patch.added);
+  if (Number.isFinite(patch.removed)) file.removed += Math.max(0, patch.removed);
+  if (patch.toolId) {
+    file.toolIds.add(patch.toolId);
+    file.hasLineStats = true;
+  }
+  file.lastSeenAt = Date.now();
+  return file;
+}
+
+function countChangeReviewTool(parser, item) {
+  if (!item || !item.turnKey || !item.filePath) return;
+  if (item.assistantUuid) parser.changeReviewAssistantTurns.set(item.assistantUuid, item.turnKey);
+  const turn = ensureChangeReviewTurn(parser, item.turnKey, { timestamp: item.ts || '' });
+  const resolved = resolveChangeReviewPath(item.filePath, turn.cwd || parser.projectCwd);
+  const key = resolved ? changeReviewFileKey(resolved) : '';
+  const existing = key ? turn.files.get(key) : null;
+  if (changeReviewItemBeforeLifecycle(turn, item, existing)) return;
+  const file = upsertChangeReviewFile(parser, turn, item.filePath, {
+    added: item.added || 0,
+    removed: item.removed || 0,
+    toolId: item.id,
+  });
+  if (file) {
+    parser.changeReviewVersion += 1;
+    parser.persistDirty = true;
+    consumeChangeReviewSnapshotUpdatesForItem(parser, item);
+  }
 }
 
 function editActivityFromToolUse(block, ts) {
@@ -2160,11 +3017,13 @@ function editActivityFromToolUse(block, ts) {
   if (!input) return null;
   const stats = computeEditActivityStats(name, input);
   if (!stats) return null;
+  const filePath = typeof input.file_path === 'string' && input.file_path ? input.file_path : '';
   return {
     id: block.id,
     name,
     ts: ts || '',
     day: localDayKey(ts),
+    filePath,
     added: stats.added || 0,
     removed: stats.removed || 0,
   };
@@ -2214,26 +3073,50 @@ function countTextLines(text) {
 function lineDiffStats(oldText, newText) {
   const a = String(oldText == null ? '' : oldText).split('\n');
   const b = String(newText == null ? '' : newText).split('\n');
-  const m = a.length;
-  const n = b.length;
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length - 1;
+  let endB = b.length - 1;
+  while (endA >= start && endB >= start && a[endA] === b[endB]) {
+    endA--;
+    endB--;
+  }
+  const m = Math.max(0, endA - start + 1);
+  const n = Math.max(0, endB - start + 1);
   if (m === 0 && n === 0) return { added: 0, removed: 0 };
-  if (m * n > 500000) {
-    return {
-      added: Math.max(0, n - m),
-      removed: Math.max(0, m - n),
-    };
+  if (m === 0) return { added: n, removed: 0 };
+  if (n === 0) return { added: 0, removed: m };
+  if (m * n > LINE_DIFF_EXACT_CELL_LIMIT) {
+    return lineDiffStatsByCommonMultiset(a, b, start, endA, endB);
   }
   const prev = new Array(n + 1).fill(0);
   const curr = new Array(n + 1).fill(0);
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) curr[j] = prev[j - 1] + 1;
+      if (a[start + i - 1] === b[start + j - 1]) curr[j] = prev[j - 1] + 1;
       else curr[j] = curr[j - 1] > prev[j] ? curr[j - 1] : prev[j];
     }
     for (let j = 0; j <= n; j++) prev[j] = curr[j];
   }
   const lcs = prev[n];
   return { added: n - lcs, removed: m - lcs };
+}
+
+function lineDiffStatsByCommonMultiset(a, b, start, endA, endB) {
+  const counts = new Map();
+  for (let i = start; i <= endA; i++) counts.set(a[i], (counts.get(a[i]) || 0) + 1);
+  let common = 0;
+  for (let i = start; i <= endB; i++) {
+    const count = counts.get(b[i]) || 0;
+    if (!count) continue;
+    common++;
+    if (count === 1) counts.delete(b[i]);
+    else counts.set(b[i], count - 1);
+  }
+  return {
+    added: Math.max(0, endB - start + 1 - common),
+    removed: Math.max(0, endA - start + 1 - common),
+  };
 }
 
 function localDayKey(iso) {
@@ -2399,6 +3282,684 @@ function buildEditActivityPayload(parser) {
       activeDays: days.length,
     },
     days,
+  };
+}
+
+function buildChangeReviewPayload(parser, reviewState) {
+  if (!parser) return emptyChangeReviewPayload(null, null);
+  const activeSource = parser.changeReviewCurrentTurnKey
+    ? parser.changeReviewTurns.get(parser.changeReviewCurrentTurnKey)
+    : null;
+  const activeTurn = activeSource &&
+    isChangeReviewTurnActive(reviewState, activeSource.turnKey)
+    ? changeReviewTurnPayload(activeSource, reviewState)
+    : null;
+  const visibleActiveTurn = activeTurn && activeTurn.files.length ? activeTurn : null;
+  const turns = Array.from(parser.changeReviewTurns.values())
+    .filter(turn => turn && turn.files && turn.files.size)
+    .filter(turn => isChangeReviewTurnFinalized(reviewState, turn.turnKey))
+    .sort((a, b) => a.order - b.order)
+    .map(turn => changeReviewTurnPayload(turn, reviewState))
+    .filter(turn => turn.files.length);
+  const latestTurn = turns.length ? turns[turns.length - 1] : null;
+  const totals = turns.reduce((sum, turn) => {
+    for (const file of turn.files) {
+      sum.files += 1;
+      sum.added += file.added || 0;
+      sum.removed += file.removed || 0;
+    }
+    return sum;
+  }, { files: 0, added: 0, removed: 0 });
+  return {
+    empty: turns.length === 0 && !visibleActiveTurn,
+    sessionId: path.basename(parser.path, JSONL_SUFFIX),
+    src: parser.path,
+    cwd: parser.projectCwd || null,
+    ts: Date.now(),
+    activeTurn: visibleActiveTurn,
+    latestTurn,
+    turns,
+    totals,
+  };
+}
+
+function changeReviewTurnPayload(turn, reviewState) {
+  const files = changeReviewFilesForTurn(turn, reviewState)
+    .sort((a, b) => a.displayPath.localeCompare(b.displayPath))
+    .map(file => changeReviewFilePayload(file, reviewState));
+  const totals = files.reduce((sum, file) => {
+    sum.files += 1;
+    sum.added += file.added || 0;
+    sum.removed += file.removed || 0;
+    return sum;
+  }, { files: 0, added: 0, removed: 0 });
+  return {
+    id: turn.turnKey,
+    turnKey: turn.turnKey,
+    sessionId: turn.sessionId,
+    cwd: turn.cwd || null,
+    timestamp: turn.timestamp || '',
+    files,
+    totals,
+  };
+}
+
+function changeReviewLifecycleStartedAt(reviewState, turnKey) {
+  const entry = reviewState && reviewState.turns && reviewState.turns[turnKey];
+  return entry && Number.isFinite(entry.startedAt) ? entry.startedAt : 0;
+}
+
+function changeReviewFilesForTurn(turn, reviewState) {
+  if (!turn || !turn.files) return [];
+  const startedAt = changeReviewLifecycleStartedAt(reviewState, turn.turnKey);
+  return Array.from(turn.files.values())
+    .filter(file => !startedAt || (Number.isFinite(file.lastSeenAt) && file.lastSeenAt >= startedAt));
+}
+
+function changeReviewFilePayload(file, reviewState) {
+  const stateEntry = reviewState && reviewState.files ? reviewState.files[file.id] : null;
+  const status = stateEntry && typeof stateEntry.status === 'string'
+    ? stateEntry.status
+    : 'pending';
+  return {
+    id: file.id,
+    sessionId: file.sessionId,
+    turnKey: file.turnKey,
+    filePath: file.filePath,
+    displayPath: file.displayPath || file.rawPath || file.filePath,
+    backupFileName: file.backupFileName === undefined ? null : file.backupFileName,
+    hasBackup: typeof file.backupFileName === 'string' && !!file.backupFileName,
+    isCreated: file.backupFileName === null,
+    version: Number.isFinite(file.version) ? file.version : null,
+    backupTime: file.backupTime || '',
+    added: file.added || 0,
+    removed: file.removed || 0,
+    hasLineStats: file.hasLineStats === true,
+    status,
+  };
+}
+
+function timestampMs(value) {
+  if (typeof value !== 'string' || !value) return 0;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function changeReviewItemBeforeLifecycle(turn, item, existingFile = null) {
+  const startedAt = turn && Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0;
+  if (!startedAt || !item) return false;
+  if (existingFile &&
+      existingFile.toolIds instanceof Set &&
+      typeof item.id === 'string' &&
+      existingFile.toolIds.has(item.id)) {
+    return true;
+  }
+  const itemMs = timestampMs(item.ts);
+  return !!(itemMs && itemMs + 1000 < startedAt);
+}
+
+function changeReviewStatePath(sessionId) {
+  const safe = String(sessionId || '').replace(/[^A-Za-z0-9-]/g, '');
+  if (!safe) throw new Error('Missing change review session id.');
+  return path.join(CHANGE_REVIEW_INDEX_DIR, safe + '.json');
+}
+
+function loadChangeReviewState(state, sessionId) {
+  if (!sessionId) return { schemaVersion: CHANGE_REVIEW_SCHEMA_VERSION, sessionId: null, version: 0, turns: {}, files: {}, dirty: false };
+  const cached = state.changeReviewStates.get(sessionId);
+  if (cached) return cached;
+  let out = null;
+  try {
+    const filePath = changeReviewStatePath(sessionId);
+    if (fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (parsed && parsed.schemaVersion === CHANGE_REVIEW_SCHEMA_VERSION && parsed.sessionId === sessionId) {
+        out = {
+          schemaVersion: CHANGE_REVIEW_SCHEMA_VERSION,
+          sessionId,
+          version: Number.isFinite(parsed.version) ? parsed.version : 0,
+          turns: parsed.turns && typeof parsed.turns === 'object' ? parsed.turns : {},
+          files: parsed.files && typeof parsed.files === 'object' ? parsed.files : {},
+          dirty: false,
+        };
+      }
+    }
+  } catch (_) {
+    out = null;
+  }
+  if (!out) out = { schemaVersion: CHANGE_REVIEW_SCHEMA_VERSION, sessionId, version: 0, turns: {}, files: {}, dirty: false };
+  state.changeReviewStates.set(sessionId, out);
+  return out;
+}
+
+function markChangeReviewStateDirty(reviewState) {
+  if (!reviewState) return;
+  reviewState.version = (reviewState.version || 0) + 1;
+  reviewState.dirty = true;
+}
+
+function saveChangeReviewState(state, reviewState) {
+  if (!reviewState || !reviewState.sessionId || !reviewState.dirty) return;
+  try {
+    fs.mkdirSync(CHANGE_REVIEW_INDEX_DIR, { recursive: true });
+    const finalPath = changeReviewStatePath(reviewState.sessionId);
+    const tmpPath = finalPath + '.tmp-' + process.pid + '-' + Date.now();
+    const serializable = {
+      schemaVersion: CHANGE_REVIEW_SCHEMA_VERSION,
+      sessionId: reviewState.sessionId,
+      version: reviewState.version || 0,
+      updatedAt: Date.now(),
+      turns: reviewState.turns || {},
+      files: reviewState.files || {},
+    };
+    fs.writeFileSync(tmpPath, JSON.stringify(serializable));
+    fs.renameSync(tmpPath, finalPath);
+    reviewState.dirty = false;
+  } catch (error) {
+    if (state && typeof state.log === 'function') {
+      state.log(`change review state save skipped: ${error && error.message ? error.message : error}`);
+    }
+  }
+}
+
+function changeReviewTurnStateEntry(reviewState, turnKey) {
+  if (!reviewState || !turnKey) return null;
+  if (!reviewState.turns || typeof reviewState.turns !== 'object') reviewState.turns = {};
+  let entry = reviewState.turns[turnKey];
+  if (!entry || typeof entry !== 'object') {
+    entry = { finalized: false };
+    reviewState.turns[turnKey] = entry;
+    markChangeReviewStateDirty(reviewState);
+  }
+  return entry;
+}
+
+function isChangeReviewTurnFinalized(reviewState, turnKey) {
+  const entry = reviewState && reviewState.turns && reviewState.turns[turnKey];
+  return !!(entry && entry.finalized === true);
+}
+
+function isChangeReviewTurnActive(reviewState, turnKey) {
+  const entry = reviewState && reviewState.turns && reviewState.turns[turnKey];
+  return !!(entry &&
+    entry.finalized !== true &&
+    Object.prototype.hasOwnProperty.call(entry, 'startedAt'));
+}
+
+function markChangeReviewTurnFinalized(reviewState, turnKey) {
+  const entry = changeReviewTurnStateEntry(reviewState, turnKey);
+  if (!entry) return false;
+  if (entry.finalized === true) return false;
+  entry.finalized = true;
+  entry.finalizedAt = Date.now();
+  markChangeReviewStateDirty(reviewState);
+  return true;
+}
+
+function markChangeReviewTurnStarted(reviewState, turnKey) {
+  const entry = changeReviewTurnStateEntry(reviewState, turnKey);
+  if (!entry) return false;
+  if (entry.finalized !== true) {
+    if (!Object.prototype.hasOwnProperty.call(entry, 'startedAt')) {
+      entry.startedAt = 0;
+      markChangeReviewStateDirty(reviewState);
+      return 0;
+    }
+    return false;
+  }
+  const previousFinalizedAt = Number.isFinite(entry.finalizedAt) ? entry.finalizedAt : 0;
+  entry.finalized = false;
+  delete entry.finalizedAt;
+  entry.startedAt = previousFinalizedAt || Date.now();
+  markChangeReviewStateDirty(reviewState);
+  return entry.startedAt;
+}
+
+function restoreEmptyChangeReviewTurnStart(reviewState, turn) {
+  if (!reviewState || !turn || !turn.turnKey) return false;
+  const entry = reviewState.turns && reviewState.turns[turn.turnKey];
+  if (!entry || entry.finalized === true || !Object.prototype.hasOwnProperty.call(entry, 'startedAt')) return false;
+  if (changeReviewFilesForTurn(turn, reviewState).length > 0) return false;
+  entry.finalized = true;
+  entry.finalizedAt = Date.now();
+  delete entry.startedAt;
+  turn.lifecycleStartedAt = 0;
+  markChangeReviewStateDirty(reviewState);
+  return true;
+}
+
+function changeReviewStateEntry(reviewState, file) {
+  if (!reviewState || !file || !file.id) return null;
+  let entry = reviewState.files[file.id];
+  if (!entry || typeof entry !== 'object') {
+    entry = { status: 'pending' };
+    reviewState.files[file.id] = entry;
+    markChangeReviewStateDirty(reviewState);
+  }
+  return entry;
+}
+
+function hashFileSync(filePath) {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    while (true) {
+      const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!read) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest('hex');
+}
+
+function currentFileGuard(filePath) {
+  const lst = fs.lstatSync(filePath);
+  if (!lst.isFile() || lst.isSymbolicLink()) {
+    return { ok: false, reason: 'not-regular-file' };
+  }
+  const stat = fs.statSync(filePath);
+  return {
+    ok: true,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    hash: hashFileSync(filePath),
+  };
+}
+
+function guardSignatureForFile(file) {
+  return [
+    file.sessionId || '',
+    file.turnKey || '',
+    file.filePath || '',
+    file.backupFileName === null ? '<created>' : String(file.backupFileName || ''),
+    Number.isFinite(file.version) ? file.version : '',
+  ].join('\0');
+}
+
+function captureChangeReviewGuards(parser, reviewState, options = {}) {
+  if (!parser || !reviewState) return false;
+  const onlyTurnKey = typeof options.turnKey === 'string' && options.turnKey ? options.turnKey : '';
+  const onlyFinalized = options.onlyFinalized === true;
+  const force = options.force === true;
+  let parserChanged = false;
+  for (const turn of parser.changeReviewTurns.values()) {
+    if (onlyTurnKey && turn.turnKey !== onlyTurnKey) continue;
+    if (onlyFinalized && !isChangeReviewTurnFinalized(reviewState, turn.turnKey)) continue;
+    for (const file of changeReviewFilesForTurn(turn, reviewState)) {
+      if (file.backupFileName === undefined) continue;
+      const entry = changeReviewStateEntry(reviewState, file);
+      if (!entry || entry.status === 'rejected') continue;
+      const sig = guardSignatureForFile(file);
+      if (!force &&
+          entry.guard &&
+          entry.guard.signature === sig &&
+          entry.guard.lineStatsVersion === CHANGE_REVIEW_LINE_STATS_VERSION) continue;
+      try {
+        const guard = currentFileGuard(file.filePath);
+        if (!guard.ok) {
+          entry.status = 'unavailable';
+          entry.error = guard.reason || 'not available';
+        } else {
+          const oldAdded = file.added || 0;
+          const oldRemoved = file.removed || 0;
+          const oldHasLineStats = file.hasLineStats === true;
+          if (deriveChangeReviewLineStats(file) &&
+              (file.added !== oldAdded ||
+               file.removed !== oldRemoved ||
+               file.hasLineStats !== oldHasLineStats)) {
+            parser.changeReviewVersion += 1;
+            parser.persistDirty = true;
+            parserChanged = true;
+          }
+          if (force) {
+            entry.status = 'pending';
+            delete entry.error;
+            delete entry.rejectedAt;
+            delete entry.staleAt;
+          }
+          entry.status = entry.status === 'stale' ? 'stale' : 'pending';
+          entry.guard = {
+            signature: sig,
+            size: guard.size,
+            mtimeMs: guard.mtimeMs,
+            hash: guard.hash,
+            observedAt: Date.now(),
+            lineStatsVersion: CHANGE_REVIEW_LINE_STATS_VERSION,
+          };
+          delete entry.error;
+        }
+      } catch (error) {
+        entry.status = 'unavailable';
+        entry.error = error && error.message ? error.message : String(error);
+      }
+      markChangeReviewStateDirty(reviewState);
+    }
+  }
+  return parserChanged;
+}
+
+function changeReviewTextForStats(filePath) {
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size > CHANGE_REVIEW_DIFF_MAX_BYTES) return null;
+  const bytes = fs.readFileSync(filePath);
+  if (bufferLooksBinary(bytes)) return null;
+  return bytes.toString('utf8');
+}
+
+function setChangeReviewFileLineStats(file, added, removed) {
+  file.added = Math.max(0, safeTokenNumber(added));
+  file.removed = Math.max(0, safeTokenNumber(removed));
+  file.hasLineStats = true;
+}
+
+function deriveChangeReviewLineStats(file) {
+  if (!file || file.backupFileName === undefined) return false;
+  try {
+    const currentText = changeReviewTextForStats(file.filePath);
+    if (currentText == null) return false;
+    if (file.backupFileName === null) {
+      setChangeReviewFileLineStats(file, countTextLines(currentText), 0);
+      return true;
+    }
+    const backupPath = changeReviewBackupPath(file);
+    if (!fs.existsSync(backupPath)) return false;
+    const oldText = changeReviewTextForStats(backupPath);
+    if (oldText == null) return false;
+    const stats = lineDiffStats(oldText, currentText);
+    setChangeReviewFileLineStats(file, stats.added || 0, stats.removed || 0);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function guardMatchesCurrent(filePath, guard) {
+  if (!guard || typeof guard !== 'object') return { ok: false, reason: 'missing guard' };
+  try {
+    const current = currentFileGuard(filePath);
+    if (!current.ok) return current;
+    if (current.size !== guard.size) return { ok: false, reason: 'file size changed' };
+    if (current.mtimeMs !== guard.mtimeMs) return { ok: false, reason: 'file mtime changed' };
+    if (current.hash !== guard.hash) return { ok: false, reason: 'file content changed' };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error && error.message ? error.message : String(error) };
+  }
+}
+
+function markChangeReviewFileStatus(reviewState, file, status, detail = {}) {
+  const entry = changeReviewStateEntry(reviewState, file);
+  if (!entry) return;
+  entry.status = status;
+  if (detail.error) entry.error = detail.error;
+  else delete entry.error;
+  if (status === 'rejected') entry.rejectedAt = Date.now();
+  if (status === 'stale') entry.staleAt = Date.now();
+  markChangeReviewStateDirty(reviewState);
+}
+
+function clearChangeReviewTurnFileState(reviewState, turn) {
+  if (!reviewState || !turn || !turn.files || !reviewState.files) return;
+  for (const file of turn.files.values()) {
+    if (file && file.id && reviewState.files[file.id]) {
+      delete reviewState.files[file.id];
+      markChangeReviewStateDirty(reviewState);
+    }
+  }
+}
+
+function fileHistoryRootForSession(sessionId) {
+  return path.join(os.homedir(), '.claude', 'file-history', sessionId);
+}
+
+function changeReviewBackupPath(file) {
+  const name = typeof file.backupFileName === 'string' ? file.backupFileName : '';
+  if (!name || path.basename(name) !== name || name.includes('/') || name.includes('\\')) {
+    throw new Error('Invalid file history backup name.');
+  }
+  return path.join(fileHistoryRootForSession(file.sessionId), name);
+}
+
+function atomicWriteFileBuffer(filePath, buffer) {
+  const tmp = `${filePath}.incipit-${process.pid}-${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, buffer);
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+    throw error;
+  }
+}
+
+function changeReviewContext(state, comm, message) {
+  const identity = revealIdentityForMessage(state, comm, message || {});
+  const sessionId = typeof message.sessionId === 'string' && message.sessionId
+    ? message.sessionId
+    : (identity && identity.sessionId);
+  const cwd = typeof message.cwd === 'string' && message.cwd
+    ? message.cwd
+    : (identity && identity.cwd);
+  const target = identity && identity.target
+    ? identity.target
+    : resolveTargetFromIdentity(sessionId, cwd || null);
+  if (!sessionId || !target || !fs.existsSync(target)) throw new Error('Could not resolve this Claude Code session.');
+  const stat = fs.statSync(target);
+  const parser = updateParser(state, target, stat);
+  const reviewState = loadChangeReviewState(state, sessionId);
+  const parserChanged = captureChangeReviewGuards(parser, reviewState, { onlyFinalized: true });
+  if (reviewState.dirty) saveChangeReviewState(state, reviewState);
+  if (parserChanged) saveUsageCacheParser(state, parser, stat);
+  return { sessionId, cwd, target, stat, parser, reviewState };
+}
+
+function resolveChangeReviewTurnKey(parser, turnKey) {
+  if (!parser || !turnKey) return turnKey || '';
+  const mapped = parser.changeReviewAssistantTurns && parser.changeReviewAssistantTurns.get(turnKey);
+  return mapped || turnKey;
+}
+
+function findChangeReviewTurn(parser, turnKey) {
+  const resolvedTurnKey = resolveChangeReviewTurnKey(parser, turnKey);
+  return parser && parser.changeReviewTurns
+    ? parser.changeReviewTurns.get(resolvedTurnKey)
+    : null;
+}
+
+function findChangeReviewFile(parser, fileId) {
+  if (!parser || !fileId) return null;
+  for (const turn of parser.changeReviewTurns.values()) {
+    for (const file of turn.files.values()) {
+      if (file.id === fileId) return file;
+    }
+  }
+  return null;
+}
+
+function changeReviewFilesForRequest(parser, reviewState, message) {
+  if (message.fileId) {
+    const file = findChangeReviewFile(parser, message.fileId);
+    return file ? [file] : [];
+  }
+  if (message.turnKey) {
+    const turn = findChangeReviewTurn(parser, message.turnKey);
+    return turn ? changeReviewFilesForTurn(turn, reviewState) : [];
+  }
+  return [];
+}
+
+function latestChangeReviewTurnWithFiles(parser) {
+  if (!parser || !parser.changeReviewTurns) return null;
+  const turns = Array.from(parser.changeReviewTurns.values())
+    .filter(turn => turn && turn.files && turn.files.size)
+    .sort((a, b) => a.order - b.order);
+  return turns.length ? turns[turns.length - 1] : null;
+}
+
+function resolveChangeReviewTurnStarted(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  const turnKey = typeof message.turnKey === 'string' && message.turnKey
+    ? resolveChangeReviewTurnKey(ctx.parser, message.turnKey)
+    : '';
+  if (!turnKey) return null;
+  if (ctx.parser.changeReviewCurrentTurnKey && turnKey !== ctx.parser.changeReviewCurrentTurnKey) {
+    return annotateChangeReviewPayload(
+      buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+      ctx.sessionId,
+      ctx.target
+    );
+  }
+  const startedAt = markChangeReviewTurnStarted(ctx.reviewState, turnKey);
+  if (Number.isFinite(startedAt) && startedAt > 0) {
+    const turn = findChangeReviewTurn(ctx.parser, turnKey) || ensureChangeReviewTurn(ctx.parser, turnKey, { cwd: ctx.cwd || '' });
+    turn.lifecycleStartedAt = startedAt;
+    clearChangeReviewTurnFileState(ctx.reviewState, turn);
+    ctx.parser.changeReviewVersion += 1;
+    ctx.parser.persistDirty = true;
+    saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  }
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  return annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+}
+
+function resolveChangeReviewTurnFinalized(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  const turnKey = typeof message.turnKey === 'string' && message.turnKey
+    ? message.turnKey
+    : '';
+  let turn = turnKey ? findChangeReviewTurn(ctx.parser, turnKey) : null;
+  const visibleFiles = turn ? changeReviewFilesForTurn(turn, ctx.reviewState) : [];
+  if (turnKey && (!turn || !turn.files || !turn.files.size || !visibleFiles.length)) {
+    if (turn && turn.turnKey) {
+      if (!restoreEmptyChangeReviewTurnStart(ctx.reviewState, turn)) {
+        markChangeReviewTurnFinalized(ctx.reviewState, turn.turnKey);
+      }
+    }
+    if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+    ctx.parser.persistDirty = true;
+    saveUsageCacheParser(state, ctx.parser, ctx.stat);
+    return annotateChangeReviewPayload(
+      buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+      ctx.sessionId,
+      ctx.target
+    );
+  }
+  if (!turn) turn = latestChangeReviewTurnWithFiles(ctx.parser);
+  if (!turn || !turn.turnKey) {
+    return annotateChangeReviewPayload(
+      buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+      ctx.sessionId,
+      ctx.target
+    );
+  }
+  markChangeReviewTurnFinalized(ctx.reviewState, turn.turnKey);
+  captureChangeReviewGuards(ctx.parser, ctx.reviewState, { turnKey: turn.turnKey, force: true });
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  ctx.parser.persistDirty = true;
+  saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  return annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+}
+
+function rejectOneChangeReviewFile(reviewState, file) {
+  const stateEntry = changeReviewStateEntry(reviewState, file);
+  if (stateEntry && stateEntry.status === 'rejected') {
+    return { id: file.id, ok: true, status: 'rejected', skipped: true };
+  }
+  if (file.backupFileName === undefined) {
+    markChangeReviewFileStatus(reviewState, file, 'unavailable', { error: 'No file history snapshot is available yet.' });
+    return { id: file.id, ok: false, status: 'unavailable', error: 'No file history snapshot is available yet.' };
+  }
+  const guardCheck = guardMatchesCurrent(file.filePath, stateEntry && stateEntry.guard);
+  if (!guardCheck.ok) {
+    markChangeReviewFileStatus(reviewState, file, 'stale', { error: guardCheck.reason || 'file changed' });
+    return { id: file.id, ok: false, status: 'stale', error: guardCheck.reason || 'file changed' };
+  }
+  try {
+    if (file.backupFileName === null) {
+      const lst = fs.lstatSync(file.filePath);
+      if (!lst.isFile() || lst.isSymbolicLink()) throw new Error('Refusing to delete a non-regular file.');
+      fs.unlinkSync(file.filePath);
+    } else {
+      const backupPath = changeReviewBackupPath(file);
+      if (!fs.existsSync(backupPath)) throw new Error('Claude file-history backup is missing.');
+      const bytes = fs.readFileSync(backupPath);
+      atomicWriteFileBuffer(file.filePath, bytes);
+    }
+    markChangeReviewFileStatus(reviewState, file, 'rejected');
+    return { id: file.id, ok: true, status: 'rejected' };
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error);
+    markChangeReviewFileStatus(reviewState, file, 'stale', { error: msg });
+    return { id: file.id, ok: false, status: 'stale', error: msg };
+  }
+}
+
+function resolveChangeReviewReject(state, comm, message) {
+  if (message.busy === true) throw new Error('Wait for the current reply to finish before rejecting file changes.');
+  const ctx = changeReviewContext(state, comm, message);
+  const files = changeReviewFilesForRequest(ctx.parser, ctx.reviewState, message);
+  if (!files.length) throw new Error('No matching file changes were found.');
+  const results = files.map(file => rejectOneChangeReviewFile(ctx.reviewState, file));
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  const ok = results.every(item => item.ok);
+  const payload = annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+  return { ok, results, payload };
+}
+
+function bufferLooksBinary(buffer) {
+  if (!buffer || !buffer.length) return false;
+  const len = Math.min(buffer.length, 4096);
+  for (let i = 0; i < len; i++) {
+    if (buffer[i] === 0) return true;
+  }
+  return false;
+}
+
+function readReviewTextFile(filePath, role) {
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) throw new Error(`${role} is not a regular file.`);
+  if (stat.size > CHANGE_REVIEW_DIFF_MAX_BYTES) {
+    throw new Error(`${role} is too large for inline review.`);
+  }
+  const bytes = fs.readFileSync(filePath);
+  if (bufferLooksBinary(bytes)) throw new Error(`${role} appears to be binary.`);
+  return bytes.toString('utf8');
+}
+
+function resolveChangeReviewDiff(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  const file = findChangeReviewFile(ctx.parser, message.fileId);
+  if (!file) throw new Error('No matching file change was found.');
+  const currentText = readReviewTextFile(file.filePath, 'Current file');
+  let oldText = '';
+  if (file.backupFileName !== null) {
+    const backupPath = changeReviewBackupPath(file);
+    if (!fs.existsSync(backupPath)) throw new Error('Claude file-history backup is missing.');
+    oldText = readReviewTextFile(backupPath, 'Backup file');
+  }
+  return {
+    ok: true,
+    file: changeReviewFilePayload(file, ctx.reviewState),
+    diff: {
+      filePath: file.filePath,
+      displayPath: file.displayPath,
+      oldText,
+      newText: currentText,
+    },
   };
 }
 
@@ -2970,6 +4531,31 @@ function broadcastEditActivityTarget(state, target, payload) {
   }
 }
 
+function broadcastChangeReviewTarget(state, target, payload) {
+  for (const comm of state.comms) {
+    const identity = state.commIdentities.get(comm);
+    if (!identity || !identity.sessionId) continue;
+    if (identity.target !== target) {
+      if (!identity.target) identity.target = resolveTargetFromIdentity(identity.sessionId, identity.cwd);
+      if (identity.target !== target) continue;
+    }
+    sendChangeReviewPayload(comm, annotateChangeReviewPayload(payload, identity.sessionId, target));
+  }
+}
+
+function sendChangeReviewTarget(state, target, sessionId) {
+  for (const comm of state.comms) {
+    const identity = state.commIdentities.get(comm);
+    if (!identity || !identity.sessionId) continue;
+    if (sessionId && identity.sessionId !== sessionId) continue;
+    if (identity.target !== target) {
+      if (!identity.target) identity.target = resolveTargetFromIdentity(identity.sessionId, identity.cwd);
+      if (identity.target !== target) continue;
+    }
+    sendCurrentChangeReviewPayload(state, comm, target, identity.sessionId);
+  }
+}
+
 function sendPayload(comm, payload) {
   try {
     if (!comm.webview || typeof comm.webview.postMessage !== 'function') {
@@ -2985,6 +4571,15 @@ function sendEditActivityPayload(comm, payload) {
       throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
     }
     comm.webview.postMessage({ __incipitEditActivity: true, payload });
+  } catch (_) {}
+}
+
+function sendChangeReviewPayload(comm, payload) {
+  try {
+    if (!comm.webview || typeof comm.webview.postMessage !== 'function') {
+      throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
+    }
+    comm.webview.postMessage({ __incipitChangeReview: true, payload });
   } catch (_) {}
 }
 
@@ -3014,8 +4609,30 @@ module.exports.__test = {
   applyUserBlockEdit,
   applyTruncateFromUser,
   userEditHasDownstreamSignedThinking,
+  processChangeReviewEntry,
+  processEditActivityEntry,
+  handleChangeReviewIdentityUpdate,
+  buildChangeReviewPayload,
+  countChangeReviewTool,
+  serializeUsageCacheParser,
+  hydrateUsageCacheParser,
+  resolveChangeReviewTurnStarted,
+  resolveChangeReviewTurnFinalized,
+  markChangeReviewTurnStarted,
+  markChangeReviewTurnFinalized,
+  loadChangeReviewState,
+  saveChangeReviewState,
+  resolveChangeReviewDiff,
+  resolveChangeReviewReject,
+  captureChangeReviewGuards,
+  changeReviewEntryId,
+  resolveChangeReviewPath,
   normalizeFileRevealPath,
   resolveFileRevealPathForCwd,
+  resolveFileCopyPathsForCwd,
+  relativePathFromWorkspaceRoot,
+  normalizeWorkspaceRoots,
+  containingWorkspaceRoot,
   assertFileRevealWorkspace,
   registerTruncateRollback,
   peekTruncateState,

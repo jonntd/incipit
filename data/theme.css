@@ -813,6 +813,31 @@ pre.incipit-mermaid-source {
   font-family: var(--incipit-body-font) !important;
   font-size: var(--incipit-body-size, 13px) !important;
 }
+/* The host keeps an aria-hidden `mentionMirror` beside the real
+   contenteditable editor. That mirror is the visual text layer for ordinary
+   input as well as @mention chips and dictation interim spans; hiding its
+   text makes the composer look empty while the caret still moves. Only hide
+   it when JS has confirmed the real editor is empty, which catches stale
+   mirror text after send/clear races without breaking active input. */
+[data-incipit-input-container] [class*="mentionMirror"] {
+  color: var(--app-input-foreground, #f8f8f6) !important;
+  caret-color: transparent !important;
+  text-shadow: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+[data-incipit-input-container][data-incipit-composer-empty="1"] [class*="mentionMirror"],
+[data-incipit-input-container] [class*="messageInput"][contenteditable]:empty + [class*="mentionMirror"] {
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+[data-incipit-input-container] [class*="mentionMirror"] [class*="inputMentionChip"] {
+  color: var(--app-mention-chip-foreground) !important;
+}
+[data-incipit-input-container] [class*="mentionMirror"] [class*="voiceInterim"] {
+  color: var(--app-input-foreground, #f8f8f6) !important;
+  opacity: 0.64 !important;
+}
 [data-incipit-input-container] [class*="messageInput"][contenteditable]:empty::before,
 [data-incipit-input-container] [class*="messageInput"][contenteditable]::placeholder {
   font-family: var(--incipit-body-font) !important;
@@ -2962,16 +2987,184 @@ pre code {
   color: inherit !important;
 }
 
+/* Composer attachment rail.
+
+   All incipit-owned surfaces that sit above the official composer share this
+   mount. AskUserQuestion hides the composer, so the rail hides with it; the
+   transcript-level review blocks stay in the chat body. */
+[data-incipit-composer-rail] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  margin: 0 0 6px !important;
+}
+[data-incipit-composer-rail-hidden] {
+  display: none !important;
+}
+
+/* Change review card. */
+[data-incipit-change-review-card],
+[data-incipit-change-review-turn] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  border-radius: 10px !important;
+  background: #2f2f2c !important;
+  color: rgba(248, 248, 246, 0.82) !important;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.18),
+              0 1px 3px rgba(0,0,0,0.14) !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1.35 !important;
+}
+[data-incipit-change-review-card] {
+  padding: 5px 7px !important;
+  margin: 0 !important;
+}
+[data-incipit-change-review-summary],
+[data-incipit-change-review-turn-header],
+[data-incipit-change-review-file] {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+}
+[data-incipit-change-review-toggle],
+[data-incipit-change-review-file-name] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.78) !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: inherit !important;
+  line-height: 1.35 !important;
+  text-align: left !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  padding: 2px 3px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+}
+[data-incipit-change-review-toggle]::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: rgba(248, 248, 246, 0.34);
+}
+[data-incipit-change-review-card][data-incipit-change-review-expanded] [data-incipit-change-review-toggle]::before {
+  content: "▾";
+}
+[data-incipit-change-review-review],
+[data-incipit-change-review-reject-turn],
+[data-incipit-change-review-reject-file] {
+  flex: 0 0 auto !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 7px !important;
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.62) !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: 12px !important;
+  line-height: 1 !important;
+  min-height: 24px !important;
+  padding: 0 7px !important;
+  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease !important;
+}
+[data-incipit-change-review-review]:hover,
+[data-incipit-change-review-reject-turn]:hover,
+[data-incipit-change-review-reject-file]:hover,
+[data-incipit-change-review-toggle]:hover,
+[data-incipit-change-review-file-name]:hover {
+  background: rgba(248, 248, 246, 0.08) !important;
+  color: rgba(248, 248, 246, 0.94) !important;
+}
+[data-incipit-change-review-reject-turn],
+[data-incipit-change-review-reject-file] {
+  color: #d97757 !important;
+}
+[data-incipit-change-review-reject-turn][data-incipit-disabled="1"],
+[data-incipit-change-review-reject-file][data-incipit-disabled="1"],
+[data-incipit-change-review-reject-turn]:disabled,
+[data-incipit-change-review-reject-file]:disabled {
+  opacity: 0.38 !important;
+  pointer-events: none !important;
+}
+[data-incipit-change-review-error] {
+  margin: 5px 0 0 !important;
+  padding: 3px 8px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  line-height: 1.35 !important;
+  color: #e6a08c !important;
+  background: rgba(217, 119, 87, 0.12) !important;
+}
+[data-incipit-change-review-files],
+[data-incipit-change-review-turn-files] {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+  margin-top: 5px !important;
+}
+[data-incipit-change-review-file] {
+  border-top: 1px solid rgba(248, 248, 246, 0.06) !important;
+  padding-top: 4px !important;
+}
+[data-incipit-change-review-counts] {
+  flex: 0 0 auto !important;
+  color: rgba(248, 248, 246, 0.5) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+[data-incipit-change-review-status] {
+  flex: 0 0 auto !important;
+  color: rgba(248, 248, 246, 0.52) !important;
+  font-size: 11px !important;
+}
+[data-incipit-change-review-turn] {
+  margin: 8px 0 4px !important;
+  padding: 7px 8px !important;
+}
+[data-incipit-change-review-turn-title] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  color: rgba(248, 248, 246, 0.78) !important;
+}
+[data-incipit-change-review-flash] {
+  box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.42),
+              0 6px 18px rgba(0,0,0,0.26) !important;
+}
+[data-incipit-change-review-modal] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 9999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 28px !important;
+  background: rgba(0, 0, 0, 0.48) !important;
+}
+[data-incipit-change-review-modal-message] {
+  padding: 18px !important;
+  color: rgba(248, 248, 246, 0.78) !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: 13px !important;
+}
+
 /* Deferred next-message card.
 
-   Mounted as a sibling directly above the official composer fieldset, so it
-   disappears with the input when AskUserQuestion hides the composer. The card
-   only previews the latest follow-up captured during streaming; "Guide" calls
-   the original host send immediately. */
+   Mounted inside the shared composer rail, as the closest incipit surface to
+   the official composer. It stays full fidelity; the change-review mini card
+   above it is the surface that collapses by default. */
 [data-incipit-deferred-next] {
   box-sizing: border-box !important;
   width: 100% !important;
-  margin: 0 0 6px !important;
+  margin: 0 !important;
   padding: 6px 8px !important;
   border-radius: 10px !important;
   background: #2f2f2c !important;

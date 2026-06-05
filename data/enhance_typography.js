@@ -493,7 +493,176 @@ function isDiffSurfaceNode(node) {
   return !!(modal && modal.querySelector && modal.querySelector(HOST_DIFF_MODAL_CONTENT_SELECTOR));
 }
 
-// ========== 4b. CJK ↔ ASCII punctuation spacing ==========
+// ========== 4b. Table `<br>` visual breaks ==========
+//
+// Markdown tables cannot receive real newlines in the source preprocessor:
+// that would split the row. Treat literal <br> tokens as a narrow visual
+// affordance only, and keep a hidden source token so DOM text fallbacks still
+// read like the original markdown.
+const TABLE_BR_TEXT_RE = /<br\s*\/?>/i;
+const TABLE_BR_SPLIT_RE = /<br\s*\/?>/ig;
+const TABLE_BR_NODE_ATTR = 'data-incipit-table-br';
+const TABLE_BR_SOURCE_ATTR = 'data-incipit-table-br-source';
+const TABLE_BR_SKIP_TAGS = new Set([
+  'SCRIPT', 'STYLE', 'CODE', 'PRE', 'TEXTAREA', 'INPUT', 'BUTTON',
+  'SVG', 'MATH',
+]);
+
+function shouldSkipTableBreakSubtree(el) {
+  if (!el || el.nodeType !== 1) return true;
+  if (TABLE_BR_SKIP_TAGS.has(el.tagName)) return true;
+  if (el.isContentEditable) return true;
+  if (isDiffSurfaceNode(el)) return true;
+  if (el.hasAttribute && (
+        el.hasAttribute(TABLE_BR_NODE_ATTR) ||
+        el.hasAttribute(TABLE_BR_SOURCE_ATTR) ||
+        el.hasAttribute('data-tex-source')
+      )) return true;
+  if (el.classList) {
+    if (el.classList.contains('katex')) return true;
+    if (el.classList.contains('claude-math')) return true;
+  }
+  return false;
+}
+
+function isAssistantTableBreakCell(cell) {
+  if (!cell || cell.nodeType !== 1) return false;
+  if (cell.tagName !== 'TD' && cell.tagName !== 'TH') return false;
+  if (!cell.closest || !cell.closest('table')) return false;
+  const markdownRoot = cell.closest(SEL.markdownRoot);
+  if (!markdownRoot) return false;
+  if (cell.isContentEditable || cell.closest('[contenteditable="true"]')) return false;
+  if (isDiffSurfaceNode(cell)) return false;
+  return !cell.closest([
+    SEL.userBubble,
+    SEL.toolUse,
+    SEL.toolBody,
+    SEL.thinking,
+    SEL.thinkingSummary,
+    SEL.thinkingContent,
+  ].join(', '));
+}
+
+function collectTableBreakCells(root) {
+  let scope = root;
+  if (scope && scope.nodeType !== 1) scope = scope.parentElement;
+  if (!scope || scope.nodeType !== 1) return [];
+  if (shouldSkipTableBreakSubtree(scope) && !isAssistantTableBreakCell(scope)) return [];
+  const cells = [];
+  const add = cell => {
+    if (isAssistantTableBreakCell(cell)) cells.push(cell);
+  };
+  if (scope.matches && scope.matches('td, th')) add(scope);
+  if (scope.querySelectorAll) {
+    for (const cell of scope.querySelectorAll('td, th')) add(cell);
+  }
+  return cells;
+}
+
+function splitTextNodeForTableBreak(textNode) {
+  const value = textNode.nodeValue || '';
+  if (!TABLE_BR_TEXT_RE.test(value)) return false;
+  const parent = textNode.parentNode;
+  if (!parent) return false;
+
+  TABLE_BR_SPLIT_RE.lastIndex = 0;
+  let match;
+  let firstBreak = -1;
+  let cursor = 0;
+  const toInsert = [];
+  while ((match = TABLE_BR_SPLIT_RE.exec(value))) {
+    if (firstBreak === -1) {
+      firstBreak = match.index;
+      cursor = match.index;
+    }
+    if (match.index > cursor) {
+      toInsert.push(document.createTextNode(value.slice(cursor, match.index)));
+    }
+    const source = document.createElement('span');
+    source.setAttribute(TABLE_BR_SOURCE_ATTR, '');
+    source.setAttribute('aria-hidden', 'true');
+    source.hidden = true;
+    source.textContent = match[0];
+    toInsert.push(source);
+
+    const br = document.createElement('br');
+    br.setAttribute(TABLE_BR_NODE_ATTR, '');
+    toInsert.push(br);
+    cursor = match.index + match[0].length;
+  }
+  TABLE_BR_SPLIT_RE.lastIndex = 0;
+  if (firstBreak === -1) return false;
+  if (cursor < value.length) {
+    toInsert.push(document.createTextNode(value.slice(cursor)));
+  }
+
+  const anchor = textNode.nextSibling;
+  textNode.nodeValue = value.slice(0, firstBreak);
+  for (const node of toInsert) {
+    parent.insertBefore(node, anchor);
+  }
+  return true;
+}
+
+function renderTableBreaksInCell(cell) {
+  if (!cell || !cell.isConnected) return false;
+  if (!isAssistantTableBreakCell(cell)) return false;
+  const candidates = [];
+  const walker = document.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const value = node.nodeValue || '';
+        if (!TABLE_BR_TEXT_RE.test(value)) return NodeFilter.FILTER_REJECT;
+        let p = node.parentElement;
+        while (p && p !== cell) {
+          if (shouldSkipTableBreakSubtree(p)) return NodeFilter.FILTER_REJECT;
+          p = p.parentElement;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    }
+  );
+  let textNode;
+  while ((textNode = walker.nextNode())) candidates.push(textNode);
+
+  let mutated = false;
+  for (const node of candidates) {
+    if (!node.isConnected) continue;
+    if (splitTextNodeForTableBreak(node)) mutated = true;
+  }
+  return mutated;
+}
+
+function renderTableBreakTextNodes(root) {
+  const cells = collectTableBreakCells(root);
+  if (!cells.length) return false;
+  let mutated = false;
+  for (const cell of cells) {
+    if (renderTableBreaksInCell(cell)) mutated = true;
+  }
+  return mutated;
+}
+
+function runTableBreakScan() {
+  if (conversationIsBusy()) return;
+  const root = attachedMessagesRoot || document.querySelector(MESSAGES_ROOT_SELECTOR) || document.body;
+  if (!root) return;
+  renderTableBreakTextNodes(root);
+}
+
+function scheduleTableBreakScan(reason = 'deferred') {
+  scheduleIdleTask('typography.tableBreakScan', () => {
+    try { runTableBreakScan(); }
+    catch (e) { warn('table <br> scan failed:', e); }
+  }, {
+    delay: reason === 'assistantTurnFinalized' ? 80 : STREAMING_TYPOGRAPHY_RECHECK_MS,
+    timeout: 1200,
+  });
+}
+
+// ========== 4c. CJK ↔ ASCII punctuation spacing ==========
 //
 // Some Chromium and Electron builds do not apply `text-autospace`
 // consistently. This walker wraps ASCII punctuation that touches CJK text
@@ -954,10 +1123,18 @@ function flush() {
     let processed = 0;
     let swept = false;
     const hljsReady = typeof window.hljs !== 'undefined';
+    let busy = false;
+    try { busy = conversationIsBusy(); } catch (_) { busy = false; }
     while (pendingRoots.size) {
       const root = firstSetValue(pendingRoots);
       pendingRoots.delete(root);
       if (!root || (root.isConnected === false)) continue;
+      if (busy) {
+        markStreamDirty('typography', root);
+      } else {
+        try { renderTableBreakTextNodes(root); }
+        catch (e) { warn('table <br> render failed:', e); }
+      }
       if (hljsReady) {
         try { enqueueCodeHighlight(root); } catch (e) { warn('highlight queue failed:', e); }
       }
@@ -1234,6 +1411,31 @@ function isIncipitDiffCodeBlock(block) {
   );
 }
 
+function explicitHighlightLanguage(block) {
+  if (!block || !block.classList) return '';
+  for (const cls of block.classList) {
+    const m = /^language-(.+)$/i.exec(cls);
+    if (!m) continue;
+    const lang = (m[1] || '').trim().toLowerCase();
+    if (!lang || lang === 'plaintext' || lang === 'text' || lang === 'nohighlight') return '';
+    return lang;
+  }
+  return '';
+}
+
+function hljsCanHighlightBlock(block) {
+  const lang = explicitHighlightLanguage(block);
+  if (!lang) return true;
+  if (!window.hljs || typeof window.hljs.getLanguage !== 'function') return true;
+  if (window.hljs.getLanguage(lang)) return true;
+  // highlightElement logs a warning for every unsupported language. Diff
+  // islands can contain hundreds of one-line code nodes, so one missing
+  // grammar (e.g. powershell) otherwise floods the VS Code console.
+  if (block.dataset) block.dataset.incipitHljsUnsupportedLanguage = lang;
+  if (block.classList) block.classList.add('hljs');
+  return false;
+}
+
 function shouldDeferRegularCodeHighlight(block, busy) {
   if (!busy) return false;
   if (!block || !block.closest) return false;
@@ -1271,7 +1473,9 @@ function highlightOneCodeBlock(block, options = {}) {
   } else if (block.dataset && block.dataset.incipitHljsDeferred) {
     delete block.dataset.incipitHljsDeferred;
   }
-  try { window.hljs.highlightElement(block); } catch (e) { /* ignore */ }
+  if (hljsCanHighlightBlock(block)) {
+    try { window.hljs.highlightElement(block); } catch (e) { /* ignore */ }
+  }
   if (isDiffIsland) applyIncipitDiffCharRangesToCode(block);
 }
 
@@ -1429,6 +1633,8 @@ export function initTypography(hooks = {}) {
   // Mermaid renders on turn finalize (the quietest signal — busy=false plus
   // dirty-quiet); streamSettled is a backstop. Both only schedule; the actual
   // render is gated on busy=false inside runMermaidScan.
+  subscribe('assistantTurnFinalized', () => scheduleTableBreakScan('assistantTurnFinalized'));
+  subscribe('streamSettled', () => scheduleTableBreakScan('streamSettled'));
   subscribe('assistantTurnFinalized', () => scheduleMermaidScan('assistantTurnFinalized'));
   subscribe('streamSettled', () => scheduleMermaidScan('streamSettled'));
   setupObserver();
@@ -1444,6 +1650,7 @@ export function initTypography(hooks = {}) {
 
   // Render any mermaid already present in an opened transcript (no stream, so
   // no settle event will fire for it).
+  scheduleTableBreakScan('init');
   scheduleMermaidScan('init');
 
   reportHealth('typography', 'ok');

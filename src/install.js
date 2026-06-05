@@ -126,6 +126,16 @@ const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
     extensionSha256: '01e8fbadf710055b2f678ad413c14ac04b7f41f342b67447d30228874e016f48',
     webviewSha256: 'c4321ebc89d056588de2d41efaf8fa169909d43875db30fe2aeb67bec245341c',
   },
+  {
+    version: '2.1.162',
+    extensionSha256: 'cbc8350fd9d1dbc0c1ab07dfde6280b31006c346eef0c8242014d47c0d39188b',
+    webviewSha256: '415f5be0981b6b5d2f5759e9daaf7690570e7eaa07e638167eb0a585ac5e70fb',
+  },
+  {
+    version: '2.1.163',
+    extensionSha256: '0a99ecad92c305ab7c8a482fd18c8cafc114d8fc3cebf3ef5400c6efe13f6d50',
+    webviewSha256: 'c044efb557df9b7c173e9fabc0334facf117dc104a3ad94863ad28d0ff270911',
+  },
 ]);
 
 function sanitizeFontFamilyValue(raw) {
@@ -146,21 +156,6 @@ function sanitizeFontFamilyValue(raw) {
 
 const VERSION_RE = /anthropic\.claude-code-(\d+(?:\.\d+)+)/;
 
-const STYLE_CSP_PATTERN =
-  /style-src \$\{[^}]+\} 'unsafe-inline'(?! https:\/\/cdnjs\.cloudflare\.com)/;
-const STYLE_CSP_PATCHED_RE =
-  /style-src \$\{[^}]+\} 'unsafe-inline' https:\/\/cdnjs\.cloudflare\.com/;
-
-const SCRIPT_CSP_PATTERN =
-  /script-src 'nonce-\$\{[^}]+\}'(?! https:\/\/cdnjs\.cloudflare\.com)/;
-const SCRIPT_CSP_PATCHED_RE =
-  /script-src 'nonce-\$\{[^}]+\}' https:\/\/cdnjs\.cloudflare\.com/;
-
-const FONT_CSP_PATTERN =
-  /font-src \$\{[^}]+\}(?! https:\/\/cdnjs\.cloudflare\.com data:)/;
-const FONT_CSP_PATCHED_RE =
-  /font-src \$\{[^}]+\} https:\/\/cdnjs\.cloudflare\.com data:/;
-
 const STATIC_IMPORT_RE = /(?:\r?\n)?import\s+['"]\.\/enhance\.js['"];?(?:\r?\n)?/;
 const DYNAMIC_IMPORT_RE =
   /(?:\r?\n)?import\(\s*['"]\.\/enhance\.js['"]\s*\)(?:\.catch\([^)]*\))?;?(?:\r?\n)?/;
@@ -180,20 +175,16 @@ const MARKDOWN_CODE_COMPONENT_PATCHED_RE =
   /code:\(\{children:[A-Za-z_$][\w$]*,className:[A-Za-z_$][\w$]*\}\)=>\{let [A-Za-z_$][\w$]*=String\([A-Za-z_$][\w$]*\),__incipitHtml;if\([A-Za-z_$][\w$]*\)\{__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:[A-Za-z_$][\w$]*\},[A-Za-z_$][\w$]*\)\}if\([A-Za-z_$][\w$]*\.indexOf\("\\n"\)!==-1\)\{__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\([A-Za-z_$][\w$]*,""\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return [A-Za-z_$][\w$]*\.default\.createElement\("code",\{className:"hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\)\}/;
 const MARKDOWN_CODE_COMPONENT_V1_PATCHED_PATTERN =
   /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)\{let ([A-Za-z_$][\w$]*)=String\(\1\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\(\3,\2\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return \4\.default\.createElement\("code",\{className:\2\},\1\)\}let \3=String\(\1\);/g;
-const AT_MENTION_COMMAND_PATTERN =
-  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention",async\(\)=>\{(?=let [A-Za-z_$][\w$]*=\4\.window\.activeTextEditor;[\s\S]{0,700}?\2\.fire\()/g;
-const AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN =
-  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{\2\.fire\(__incipitMention\);return\}(?=let [A-Za-z_$][\w$]*=\4\.window\.activeTextEditor;)/g;
+const AT_MENTION_COMMAND_ANCHOR_PATTERN =
+  /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{([\s\S]{0,900}?)(\2\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention")/g;
 const AT_MENTION_COMMAND_PATCHED_RE =
-  /commands\.registerCommand\("claude-vscode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(![A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)await [A-Za-z_$][\w$]*\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __incipitFire=\(\)=>[A-Za-z_$][\w$]*\.fire\(__incipitMention\);setTimeout\(__incipitFire,80\);setTimeout\(__incipitFire,360\);return\}/;
-const CLAUDE_VISIBLE_COMMAND_PATTERN =
-  /function [A-Za-z_$][\w$]*\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{\1\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention"/g;
+  /commands\.registerCommand\("incipit\.claudeCode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(![A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)await [A-Za-z_$][\w$]*\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __incipitFire=\(\)=>[A-Za-z_$][\w$]*\.fire\(__incipitMention\);setTimeout\(__incipitFire,80\);setTimeout\(__incipitFire,360\);return!0\}return!1\}\)/;
 const CLAUDE_VISIBLE_COMMAND_PATCHED_RE =
   /commands\.registerCommand\("incipit\.claudeCode\.hasVisibleWebview",\(\)=>[A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)/;
-const IMPLICIT_SELECTION_SEND_PATTERN =
-  /let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)&&![A-Za-z_$][\w$]*;([A-Za-z_$][\w$]*)\(\$\.selection\.value,\1,/g;
-const IMPLICIT_SELECTION_SEND_PATCHED_RE =
-  /let [A-Za-z_$][\w$]*=!1;[A-Za-z_$][\w$]*\(\$\.selection\.value,[A-Za-z_$][\w$]*,/;
+const IMPLICIT_SELECTION_SEND_BRANCH_PATTERN =
+  /if\((?!\!1&&)([^;{}]*\bthis\.lastSentSelection\b[^;{}]*\bthis\.selection\.value\b[^;{}]*)\)([A-Za-z_$][\w$]*)=this\.selection\.value,this\.lastSentSelection=\2;/g;
+const IMPLICIT_SELECTION_SEND_PATCHED_BRANCH_RE =
+  /if\(!1&&[^;{}]*\bthis\.lastSentSelection\b[^;{}]*\bthis\.selection\.value\b[^;{}]*\)([A-Za-z_$][\w$]*)=this\.selection\.value,this\.lastSentSelection=\1;/g;
 const STREAM_UNHANDLED_CASE_PATTERN =
   /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{throw Error\(\3\?\?`Unhandled case: \$\{\2\}`\)\}/g;
 const STREAM_UNHANDLED_CASE_PATCHED_RE =
@@ -225,13 +216,11 @@ const BADGE_REQUIRE_VIEW_RE =
   /(resolveWebviewView\(K,V,B\)\{let j=\{isVisible:\(\)=>K\.visible\};this\.webviews\.add\(j\),)require\("\.\/webview\/host-badge\.cjs"\)\.attach\(K(?:,P0)?\),/;
 const BADGE_REQUIRE_PANEL_RE =
   /(setupPanel\(K,V,B,j\)\{let G=\{isVisible:\(\)=>K\.visible\};this\.webviews\.add\(G\);)require\("\.\/webview\/host-badge\.cjs"\)\.attach\(K(?:,P0)?\);/;
-const BADGE_COMM_ATTACH_PATTERN = /this\.webview=[A-Za-z_$][\w$]*;/g;
-const BADGE_COMM_ATTACH_PATCHED_RE =
-  /this\.webview=[A-Za-z_$][\w$]*;require\("\.\/webview\/host-badge\.cjs"\)\.attachComm\(this\);/;
+const BADGE_COMM_ATTACH_LITERAL = HOST_BADGE_COMM_ATTACH;
 const INCIPIT_MESSAGE_GUARD_PATTERN =
-  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{this\.output\.info\(`Received message from webview: \$\{JSON\.stringify\(\1\)\}`\),([A-Za-z_$][\w$]*)\?\.fromClient\(\1\)\},null,this\.disposables\)/g;
+  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{(?!if\(\1&&\1\.__incipit===true\)return;)([\s\S]{0,500}?[A-Za-z_$][\w$]*\?\.fromClient\(\1\)[\s\S]{0,80}?)\},null,this\.disposables\)/g;
 const INCIPIT_MESSAGE_GUARD_PATCHED_RE =
-  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{if\(\1&&\1\.__incipit===true\)return;this\.output\.info\(`Received message from webview: \$\{JSON\.stringify\(\1\)\}`\),[A-Za-z_$][\w$]*\?\.fromClient\(\1\)\},null,this\.disposables\)/g;
+  /\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{if\(\1&&\1\.__incipit===true\)return;[\s\S]{0,500}?[A-Za-z_$][\w$]*\?\.fromClient\(\1\)[\s\S]{0,80}?\},null,this\.disposables\)/g;
 
 // Give the host's Monaco diff editor an incipit-owned theme, font, and gutter.
 // Claude Code 2.1.x hard-codes both inline and expanded Edit diff editors to
@@ -893,29 +882,6 @@ function installSerifSystemFonts(resourceRoot) {
 // `extension.js` / `webview/index.js` patching
 // ============================================================
 
-function patchRequiredPattern(content, { pattern, alreadyPattern, label, replacementSuffix }) {
-  if (pattern.test(content)) {
-    const updated = content.replace(pattern, m => m + replacementSuffix);
-    return [updated, `${padLabel(label)}: 已写入`];
-  }
-  if (alreadyPattern.test(content)) {
-    return [content, `${padLabel(label)}: 已存在`];
-  }
-  throw new Error(`Claude Code 扩展结构已变化,未找到 ${label} 的可补丁位置。`);
-}
-
-function patchUniqueReplace(content, { pattern, alreadyPattern, label, replace }) {
-  if (alreadyPattern.test(content)) {
-    return [content, `${padLabel(label)}: 已存在`];
-  }
-  const matches = content.match(pattern) || [];
-  if (matches.length !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 ${label} 可补丁位置。`);
-  }
-  const updated = replace(content);
-  return [updated, `${padLabel(label)}: 已写入`];
-}
-
 function requirePatchContract(ok, label, detail = '') {
   if (ok) return;
   const suffix = detail ? ` (${detail})` : '';
@@ -955,6 +921,31 @@ function installContractFromAssessment(name, line, assessment) {
   });
 }
 
+function buildWorkbenchOverlayInstallContract(overlayPreflight, overlayRequested) {
+  const preflight = overlayPreflight || { status: overlayRequested ? 'unknown' : 'off' };
+  const requested = overlayRequested === true;
+  const degraded = requested && preflight.status === 'degraded';
+  const status = !requested ? 'preExisting' : (degraded ? 'degraded' : 'patched');
+  return patchContract({
+    name: 'install.workbenchOverlay',
+    status,
+    priority: 'low',
+    anchorReason: !requested
+      ? 'overlay-not-requested'
+      : (degraded ? (preflight.reason || 'workbench-preflight-miss') : 'workbench-preflight-ok'),
+    contractReason: !requested
+      ? 'overlay-disabled-no-workbench-patch'
+      : (degraded ? 'overlay-skipped-apply-continues' : 'overlay-preflight-allows-apply'),
+    fingerprint: {
+      requested,
+      preflightStatus: preflight.status || 'unknown',
+      reason: preflight.reason || null,
+      candidateCount: Array.isArray(preflight.candidates) ? preflight.candidates.length : 0,
+    },
+    detail: preflight.message ? { message: preflight.message } : null,
+  });
+}
+
 function sha256Text(text) {
   return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
 }
@@ -970,13 +961,202 @@ function testRegexOnce(regex, text) {
   return ok;
 }
 
+function escapeRegExpLiteral(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const CSP_TOKEN_PATTERN = /\$\{[^}]+\}|'[^']*'|[^\s"'`;<>]+/g;
+
+function cspDirectivePattern(directive) {
+  return new RegExp(
+    `${escapeRegExpLiteral(directive)}(?:\\s+(?:\\$\\{[^}]+\\}|'[^']*'|[^\\s"'\\\`;<>]+))+`,
+    'g',
+  );
+}
+
+function cspDirectiveCandidates(content, directive) {
+  const pattern = cspDirectivePattern(directive);
+  const matches = [];
+  let match;
+  while ((match = pattern.exec(content))) {
+    const segment = match[0];
+    // The bundle also contains documentation/example CSP strings. The real
+    // webview CSP is the one composed from VS Code's dynamic cspSource/nonce.
+    if (!segment.includes('${')) continue;
+    const tokens = segment.match(CSP_TOKEN_PATTERN) || [];
+    matches.push({
+      index: match.index,
+      text: segment,
+      tokens,
+    });
+  }
+  return matches;
+}
+
+function cspDirectiveHasTokens(content, directive, requiredTokens) {
+  return cspDirectiveCandidates(content, directive).some(candidate =>
+    requiredTokens.every(token => candidate.tokens.includes(token)),
+  );
+}
+
+function assessCspDirectiveContact(content, directive, requiredTokens) {
+  const candidates = cspDirectiveCandidates(content, directive);
+  const patchedCandidates = candidates.filter(candidate =>
+    requiredTokens.every(token => candidate.tokens.includes(token)));
+  const status = candidates.length === 1 && patchedCandidates.length === 1 ? 'patched' : 'failed';
+  let anchorReason;
+  if (candidates.length === 0) anchorReason = 'dynamic-csp-directive-miss';
+  else if (candidates.length > 1) anchorReason = 'ambiguous-dynamic-csp-directive';
+  else if (patchedCandidates.length === 1) anchorReason = 'dynamic-csp-directive';
+  else anchorReason = 'dynamic-csp-directive-contract-miss';
+  return {
+    status,
+    priority: 'high',
+    anchorReason,
+    contractReason: status === 'patched' ? 'required-csp-tokens-present' : 'required-csp-tokens-missing',
+    fingerprint: {
+      directive,
+      candidateCount: candidates.length,
+      patchedCandidateCount: patchedCandidates.length,
+      requiredTokens: requiredTokens.join(' '),
+    },
+  };
+}
+
+function patchCspDirective(content, { directive, requiredTokens, label }) {
+  const candidates = cspDirectiveCandidates(content, directive);
+  if (candidates.length !== 1) {
+    const assessment = assessCspDirectiveContact(content, directive, requiredTokens);
+    requireHighRiskContract(
+      installContractFromAssessment(`install.extensionCsp.${directive}`, '', assessment),
+      label,
+    );
+    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 ${label} 动态 CSP directive。`);
+  }
+  const candidate = candidates[0];
+  const missing = requiredTokens.filter(token => !candidate.tokens.includes(token));
+  if (!missing.length) {
+    return [
+      content,
+      `${padLabel(label)}: 已存在`,
+      assessCspDirectiveContact(content, directive, requiredTokens),
+    ];
+  }
+  const updated = content.slice(0, candidate.index) +
+    candidate.text + missing.map(token => ` ${token}`).join('') +
+    content.slice(candidate.index + candidate.text.length);
+  const assessment = assessCspDirectiveContact(updated, directive, requiredTokens);
+  requireHighRiskContract(
+    installContractFromAssessment(`install.extensionCsp.${directive}`, '', assessment),
+    label,
+  );
+  return [updated, `${padLabel(label)}: 已写入`, assessment];
+}
+
+function badgeCommAttachCandidates(content) {
+  const candidates = [];
+  const pattern = /this\.webview=([A-Za-z_$][\w$]*);/g;
+  let match;
+  while ((match = pattern.exec(content))) {
+    const insertIndex = match.index + match[0].length;
+    const context = content.slice(Math.max(0, match.index - 5000), Math.min(content.length, match.index + 70000));
+    const semantic = (
+      context.includes('fromClient(') &&
+      context.includes('.webview.onDidReceiveMessage') &&
+      /shutdown\s*\(/.test(context)
+    );
+    const patched = content.slice(insertIndex, insertIndex + BADGE_COMM_ATTACH_LITERAL.length) ===
+      BADGE_COMM_ATTACH_LITERAL;
+    candidates.push({
+      index: match.index,
+      insertIndex,
+      webviewVar: match[1],
+      semantic,
+      patched,
+    });
+  }
+  return candidates;
+}
+
+function assessBadgeCommAttachContact(content) {
+  const candidates = badgeCommAttachCandidates(content);
+  const semantic = candidates.filter(candidate => candidate.semantic);
+  const patched = semantic.filter(candidate => candidate.patched);
+  const status = semantic.length === 1 && patched.length === 1 ? 'patched' : 'failed';
+  let anchorReason;
+  if (!semantic.length) anchorReason = 'comm-webview-anchor-miss';
+  else if (semantic.length > 1) anchorReason = 'ambiguous-comm-webview-anchor';
+  else if (patched.length === 1) anchorReason = 'comm-webview-semantic-anchor';
+  else anchorReason = 'comm-webview-contract-miss';
+  return {
+    status,
+    priority: 'high',
+    anchorReason,
+    contractReason: status === 'patched' ? 'host-badge-comm-attached' : 'host-badge-comm-missing',
+    fingerprint: {
+      webviewAssignmentCount: candidates.length,
+      semanticCandidateCount: semantic.length,
+      patchedSemanticCount: patched.length,
+    },
+  };
+}
+
+function badgeCommAttachIsPatched(content) {
+  return assessBadgeCommAttachContact(content).status === 'patched';
+}
+
+function patchBadgeCommAttach(content) {
+  const assessmentBefore = assessBadgeCommAttachContact(content);
+  if (assessmentBefore.status === 'patched') {
+    return [content, `${padLabel('徽章注入(comm)')}: 已存在`, assessmentBefore];
+  }
+  const candidates = badgeCommAttachCandidates(content).filter(candidate => candidate.semantic);
+  if (candidates.length !== 1) {
+    requireHighRiskContract(
+      installContractFromAssessment('install.hostBadgeCommAttach', '', assessmentBefore),
+      '徽章注入(comm)',
+    );
+    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 徽章注入(comm) 通信对象。`);
+  }
+  const candidate = candidates[0];
+  const updated = content.slice(0, candidate.insertIndex) +
+    BADGE_COMM_ATTACH_LITERAL +
+    content.slice(candidate.insertIndex);
+  const assessment = assessBadgeCommAttachContact(updated);
+  requireHighRiskContract(
+    installContractFromAssessment('install.hostBadgeCommAttach', '', assessment),
+    '徽章注入(comm)',
+  );
+  return [updated, `${padLabel('徽章注入(comm)')}: 已写入`, assessment];
+}
+
+function assessPrivateMessageGuardContact(content) {
+  const guardedMessages = (content.match(INCIPIT_MESSAGE_GUARD_PATCHED_RE) || []).length;
+  const unguardedMessages = (content.match(INCIPIT_MESSAGE_GUARD_PATTERN) || []).length;
+  const status = guardedMessages > 0 && unguardedMessages === 0 ? 'patched' : 'failed';
+  let anchorReason;
+  if (guardedMessages > 0 && unguardedMessages === 0) anchorReason = 'fromClient-message-guard';
+  else if (unguardedMessages > 0) anchorReason = 'unguarded-fromClient-message-dispatch';
+  else anchorReason = 'fromClient-message-dispatch-miss';
+  return {
+    status,
+    priority: 'high',
+    anchorReason,
+    contractReason: status === 'patched' ? 'incipit-private-messages-filtered' : 'incipit-private-messages-unfiltered',
+    fingerprint: {
+      guardedMessages,
+      unguardedMessages,
+    },
+  };
+}
+
 function hostRouteLooksAlreadyPatched(extensionText, webviewText) {
   const extensionPatched = (
-    testRegexOnce(STYLE_CSP_PATCHED_RE, extensionText) ||
-    testRegexOnce(SCRIPT_CSP_PATCHED_RE, extensionText) ||
-    testRegexOnce(FONT_CSP_PATCHED_RE, extensionText) ||
-    testRegexOnce(BADGE_COMM_ATTACH_PATCHED_RE, extensionText) ||
-    testRegexOnce(INCIPIT_MESSAGE_GUARD_PATCHED_RE, extensionText)
+    cspDirectiveHasTokens(extensionText, 'style-src', [CDN_HOST]) ||
+    cspDirectiveHasTokens(extensionText, 'script-src', [CDN_HOST]) ||
+    cspDirectiveHasTokens(extensionText, 'font-src', [CDN_HOST, 'data:']) ||
+    badgeCommAttachIsPatched(extensionText) ||
+    assessPrivateMessageGuardContact(extensionText).status === 'patched'
   );
   const webviewPatched = (
     testRegexOnce(WEBVIEW_CONFIG_RE, webviewText) ||
@@ -1091,6 +1271,129 @@ function extractSwitchBody(content, switchIndex) {
   const close = findMatchingBrace(content, open);
   if (open < 0 || close < 0) return null;
   return content.slice(open + 1, close);
+}
+
+function regexMatches(regex, text) {
+  regex.lastIndex = 0;
+  const matches = [];
+  let match;
+  while ((match = regex.exec(text))) {
+    matches.push(match);
+  }
+  regex.lastIndex = 0;
+  return matches;
+}
+
+function sessionSendMethodCandidates(content) {
+  const candidates = [];
+  const pattern = /async send\([^)]*\)\{/g;
+  let match;
+  while ((match = pattern.exec(content))) {
+    const open = content.indexOf('{', match.index);
+    const close = findMatchingBrace(content, open);
+    if (open < 0 || close < 0) continue;
+    const bodyStart = open + 1;
+    const body = content.slice(bodyStart, close);
+    candidates.push({
+      index: match.index,
+      bodyStart,
+      bodyEnd: close,
+      signature: match[0],
+      body,
+      businessOk: body.includes('sendInput(') && body.includes('launchClaude'),
+      selectionTokenPresent: /\bselection\b/.test(body),
+      lastSentSelectionTokenPresent: body.includes('lastSentSelection'),
+    });
+  }
+  return candidates;
+}
+
+function sessionSendBusinessCandidates(content) {
+  return sessionSendMethodCandidates(content).filter(candidate => candidate.businessOk);
+}
+
+function implicitSelectionBranchMatches(body) {
+  const unsafe = regexMatches(IMPLICIT_SELECTION_SEND_BRANCH_PATTERN, body)
+    .map(match => ({
+      index: match.index,
+      text: match[0],
+      condition: match[1],
+      selectionVar: match[2],
+    }));
+  const patched = regexMatches(IMPLICIT_SELECTION_SEND_PATCHED_BRANCH_RE, body)
+    .map(match => ({
+      index: match.index,
+      text: match[0],
+      selectionVar: match[1],
+    }));
+  return { unsafe, patched };
+}
+
+function extractSessionSendBody(content) {
+  const businessCandidates = sessionSendBusinessCandidates(content);
+  if (businessCandidates.length === 1) return businessCandidates[0].body;
+  const candidates = sessionSendMethodCandidates(content);
+  if (candidates.length === 1) return candidates[0].body;
+  return null;
+}
+
+function implicitSelectionSendLooksUpstreamSafe(content) {
+  return assessImplicitSelectionSendContact(content).status === 'upstreamSafe';
+}
+
+function implicitSelectionSendIsDisabled(content) {
+  const status = assessImplicitSelectionSendContact(content).status;
+  return status === 'patched' || status === 'upstreamSafe';
+}
+
+function assessImplicitSelectionSendContact(content) {
+  const candidates = sessionSendMethodCandidates(content);
+  const businessCandidates = candidates.filter(candidate => candidate.businessOk);
+  const unsafeBranches = [];
+  const patchedBranches = [];
+  for (const candidate of businessCandidates) {
+    const branches = implicitSelectionBranchMatches(candidate.body);
+    for (const branch of branches.unsafe) unsafeBranches.push({ candidate, branch });
+    for (const branch of branches.patched) patchedBranches.push({ candidate, branch });
+  }
+  const singleBusiness = businessCandidates.length === 1;
+  const body = singleBusiness ? businessCandidates[0].body : '';
+  // "Upstream safe" means SessionState.send no longer consults the editor
+  // selection at all. If the host merely reshapes the read
+  // (`this.selection?.value`, aliasing, or a renamed guard), fail closed so we
+  // do not silently restore implicit selected-text sends.
+  const upstreamSafe = singleBusiness &&
+    unsafeBranches.length === 0 &&
+    patchedBranches.length === 0 &&
+    !(/\bselection\b|lastSentSelection/.test(body));
+  const patched = singleBusiness && patchedBranches.length === 1 && unsafeBranches.length === 0;
+  let status = 'failed';
+  if (patched) status = 'patched';
+  else if (upstreamSafe) status = 'upstreamSafe';
+  let anchorReason;
+  if (!businessCandidates.length) anchorReason = 'session-send-business-fingerprint-miss';
+  else if (businessCandidates.length > 1) anchorReason = 'ambiguous-session-send-business-fingerprint';
+  else if (patched) anchorReason = 'session-send-selection-branch-patched';
+  else if (unsafeBranches.length === 1) anchorReason = 'session-send-selection-branch';
+  else if (unsafeBranches.length > 1) anchorReason = 'ambiguous-session-send-selection-branch';
+  else if (upstreamSafe) anchorReason = 'upstream-session-send-without-selection-read';
+  else anchorReason = 'session-send-selection-branch-miss';
+  return {
+    status,
+    priority: 'high',
+    anchorReason,
+    contractReason: (patched || upstreamSafe)
+      ? 'implicit-ide-selection-not-sent'
+      : 'implicit-ide-selection-may-be-sent',
+    fingerprint: {
+      sendMethodCount: candidates.length,
+      businessCandidateCount: businessCandidates.length,
+      unsafeBranchCount: unsafeBranches.length,
+      patchedBranchCount: patchedBranches.length,
+      selectionTokenPresent: businessCandidates.some(candidate => candidate.selectionTokenPresent),
+      lastSentSelectionTokenPresent: businessCandidates.some(candidate => candidate.lastSentSelectionTokenPresent),
+    },
+  };
 }
 
 function hasTopLevelDefaultCase(switchBody) {
@@ -1265,31 +1568,35 @@ function patchExtensionJs(content) {
       : `${padLabel('旧脚本注入清理')}: 未发现`,
   );
 
-  // Extend `style-src`, `script-src`, and `font-src` with `cdnjs`.
+  // Extend `style-src`, `script-src`, and `font-src` with `cdnjs`. Anchor to
+  // the dynamic webview CSP directives (`${...}` cspSource/nonce), not to the
+  // exact token order or the documentation/example CSP strings also present in
+  // the bundle.
   let status;
-  [updated, status] = patchRequiredPattern(updated, {
-    pattern: STYLE_CSP_PATTERN,
-    alreadyPattern: STYLE_CSP_PATCHED_RE,
+  let assessment;
+  [updated, status, assessment] = patchCspDirective(updated, {
+    directive: 'style-src',
+    requiredTokens: [CDN_HOST],
     label: 'style-src',
-    replacementSuffix: ` ${CDN_HOST}`,
   });
-  statusLines.push(record('install.extensionCsp.style', status));
+  contracts.push(installContractFromAssessment('install.extensionCsp.style', status, assessment));
+  statusLines.push(status);
 
-  [updated, status] = patchRequiredPattern(updated, {
-    pattern: SCRIPT_CSP_PATTERN,
-    alreadyPattern: SCRIPT_CSP_PATCHED_RE,
+  [updated, status, assessment] = patchCspDirective(updated, {
+    directive: 'script-src',
+    requiredTokens: [CDN_HOST],
     label: 'script-src',
-    replacementSuffix: ` ${CDN_HOST}`,
   });
-  statusLines.push(record('install.extensionCsp.script', status));
+  contracts.push(installContractFromAssessment('install.extensionCsp.script', status, assessment));
+  statusLines.push(status);
 
-  [updated, status] = patchRequiredPattern(updated, {
-    pattern: FONT_CSP_PATTERN,
-    alreadyPattern: FONT_CSP_PATCHED_RE,
+  [updated, status, assessment] = patchCspDirective(updated, {
+    directive: 'font-src',
+    requiredTokens: [CDN_HOST, 'data:'],
     label: 'font-src',
-    replacementSuffix: ` ${CDN_HOST} data:`,
   });
-  statusLines.push(record('install.extensionCsp.font', status));
+  contracts.push(installContractFromAssessment('install.extensionCsp.font', status, assessment));
+  statusLines.push(status);
 
   // Remove the legacy module-load diagnostic probe.
   updated = updated.replace(LEGACY_MODLOAD_RE, '');
@@ -1300,18 +1607,10 @@ function patchExtensionJs(content) {
   updated = updated.replace(BADGE_REQUIRE_VIEW_RE, '$1');
   updated = updated.replace(BADGE_REQUIRE_PANEL_RE, '$1');
   let statusBadge;
-  [updated, statusBadge] = patchUniqueReplace(updated, {
-    pattern: BADGE_COMM_ATTACH_PATTERN,
-    alreadyPattern: BADGE_COMM_ATTACH_PATCHED_RE,
-    label: '徽章注入(comm)',
-    replace(text) {
-      return text.replace(
-        /this\.webview=([A-Za-z_$][\w$]*);/,
-        match => match + HOST_BADGE_COMM_ATTACH,
-      );
-    },
-  });
-  statusLines.push(record('install.hostBadgeCommAttach', statusBadge));
+  let badgeAssessment;
+  [updated, statusBadge, badgeAssessment] = patchBadgeCommAttach(updated);
+  contracts.push(installContractFromAssessment('install.hostBadgeCommAttach', statusBadge, badgeAssessment));
+  statusLines.push(statusBadge);
 
   const guardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATCHED_RE) || []).length;
   const unguardedMessages = (updated.match(INCIPIT_MESSAGE_GUARD_PATTERN) || []).length;
@@ -1319,7 +1618,8 @@ function patchExtensionJs(content) {
   if (unguardedMessages > 0) {
     updated = updated.replace(
       INCIPIT_MESSAGE_GUARD_PATTERN,
-      (match, message) => match.replace(`=>{this.output.info`, `=>{if(${message}&&${message}.__incipit===true)return;this.output.info`),
+      (_match, message, body) =>
+        `.webview.onDidReceiveMessage((${message})=>{if(${message}&&${message}.__incipit===true)return;${body}},null,this.disposables)`,
     );
     privateMessageStatus = `${padLabel('私有消息过滤')}: 已写入 (${unguardedMessages})`;
   } else if (guardedMessages > 0) {
@@ -1327,14 +1627,17 @@ function patchExtensionJs(content) {
   } else {
     throw new Error(`Claude Code 扩展结构已变化,未找到 私有消息过滤 的可补丁位置。`);
   }
-  statusLines.push(record('install.privateMessageGuard', privateMessageStatus));
+  const privateMessageAssessment = assessPrivateMessageGuardContact(updated);
+  requireHighRiskContract(
+    installContractFromAssessment('install.privateMessageGuard', privateMessageStatus, privateMessageAssessment),
+    '私有消息过滤',
+  );
+  contracts.push(installContractFromAssessment('install.privateMessageGuard', privateMessageStatus, privateMessageAssessment));
+  statusLines.push(privateMessageStatus);
 
   let statusAtMention;
   [updated, statusAtMention] = patchAtMentionCommand(updated);
   statusLines.push(record('install.atMentionCommand', statusAtMention));
-  let statusVisibleCommand;
-  [updated, statusVisibleCommand] = patchClaudeVisibleCommand(updated);
-  statusLines.push(record('install.claudeVisibleCommand', statusVisibleCommand));
 
   assertExtensionPatchContracts(updated);
   statusLines.push(record('install.extensionContract', `${padLabel('extension 契约')}: ok`));
@@ -1449,17 +1752,20 @@ function patchMarkdownChildren(content) {
     MARKDOWN_LEGACY_CHILDREN_RE,
     '$1=$.children||""',
   );
-  return patchUniqueReplace(stripped, {
-    pattern: MARKDOWN_ASSIGN_PATTERN,
-    alreadyPattern: MARKDOWN_ASSIGN_PATCHED_RE,
-    label: 'markdown 预处理',
-    replace(text) {
-      return text.replace(
-        MARKDOWN_ASSIGN_PATTERN,
-        'if(typeof $1==="string"){if(window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__)$1=window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__($1);$2.value=$1;}else $3("Unexpected value `"+$1+"` for `children` prop, expected `string`")',
-      );
-    },
-  });
+  if (MARKDOWN_ASSIGN_PATCHED_RE.test(stripped)) {
+    return [stripped, `${padLabel('markdown 预处理')}: 已存在`];
+  }
+  const matches = stripped.match(MARKDOWN_ASSIGN_PATTERN) || [];
+  if (matches.length !== 1) {
+    return [stripped, `${padLabel('markdown 预处理')}: 降级 (未找到源码 handoff; markdown 原样)`];
+  }
+  return [
+    stripped.replace(
+      MARKDOWN_ASSIGN_PATTERN,
+      'if(typeof $1==="string"){if(window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__)$1=window.__CLAUDE_ENHANCE_PREPROCESS_MARKDOWN__($1);$2.value=$1;}else $3("Unexpected value `"+$1+"` for `children` prop, expected `string`")',
+    ),
+    `${padLabel('markdown 预处理')}: 已写入`,
+  ];
 }
 
 function markdownCodeComponentReplacement(childrenVar, classNameVar, reactVar, codeVar) {
@@ -1513,74 +1819,83 @@ function patchMarkdownCodeComponent(content) {
 }
 
 function patchAtMentionCommand(content) {
-  if (AT_MENTION_COMMAND_PATCHED_RE.test(content)) {
-    return [content, `${padLabel('@引用命令参数')}: 已存在`];
+  const hasInsert = AT_MENTION_COMMAND_PATCHED_RE.test(content);
+  const hasVisible = CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content);
+  if (hasInsert && hasVisible) {
+    return [content, `${padLabel('@引用命令桥')}: 已存在`];
   }
 
-  const legacyMatches = content.match(AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN) || [];
-  if (legacyMatches.length === 1) {
-    return [
-      content.replace(
-        AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN,
-        (match, _subscriptions, emitter, webviews, vscodeApi) =>
-          match.replace(
-            `if(typeof __incipitMention==="string"){${emitter}.fire(__incipitMention);return}`,
-            `if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return}`,
-          ),
-      ),
-      `${padLabel('@引用命令参数')}: 已升级`,
-    ];
-  }
-
-  const matches = content.match(AT_MENTION_COMMAND_PATTERN) || [];
+  const matches = content.match(AT_MENTION_COMMAND_ANCHOR_PATTERN) || [];
   if (matches.length !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 @引用命令参数 可补丁位置。`);
+    return [content, `${padLabel('@引用命令桥')}: 降级 (未找到命令 setup 锚点; companion 引用不可用)`];
   }
   return [
-    content.replace(AT_MENTION_COMMAND_PATTERN, (match, _subscriptions, emitter, webviews, vscodeApi) =>
-      match.replace('async()=>{', 'async(__incipitMention)=>{') +
-      `if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return}`,
+    content.replace(AT_MENTION_COMMAND_ANCHOR_PATTERN, (
+      _match,
+      functionName,
+      subscriptions,
+      emitter,
+      webviews,
+      prefix,
+      commandStart,
+      vscodeApi,
+    ) => {
+      const registrations = [];
+      if (!hasInsert) {
+        registrations.push(
+          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.insertAtMention",async(__incipitMention)=>{if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return!0}return!1})),`,
+        );
+      }
+      if (!hasVisible) {
+        registrations.push(
+          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.hasVisibleWebview",()=>${webviews}.hasVisibleWebview())),`,
+        );
+      }
+      return `function ${functionName}(${subscriptions},${emitter},${webviews}){${prefix}${registrations.join('')}${commandStart}`;
+    }
     ),
-    `${padLabel('@引用命令参数')}: 已写入`,
-  ];
-}
-
-function patchClaudeVisibleCommand(content) {
-  if (CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content)) {
-    return [content, `${padLabel('Claude 可见状态')}: 已存在`];
-  }
-  const matches = content.match(CLAUDE_VISIBLE_COMMAND_PATTERN) || [];
-  if (matches.length !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 Claude 可见状态 可补丁位置。`);
-  }
-  return [
-    content.replace(
-      CLAUDE_VISIBLE_COMMAND_PATTERN,
-      (match, subscriptions, _emitter, webviews, vscodeApi) =>
-        match.replace(
-          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("claude-vscode.insertAtMention"`,
-          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.hasVisibleWebview",()=>${webviews}.hasVisibleWebview())),${subscriptions}.push(${vscodeApi}.commands.registerCommand("claude-vscode.insertAtMention"`,
-        ),
-    ),
-    `${padLabel('Claude 可见状态')}: 已写入`,
+    `${padLabel('@引用命令桥')}: 已写入`,
   ];
 }
 
 function patchDisableImplicitSelectionSend(content) {
-  // This is not tied to the experimental editor overlay. Official implicit
-  // IDE selection sending conflicts with incipit's explicit visible @file
-  // references, so ordinary composer sends always use includeSelection=false.
-  return patchUniqueReplace(content, {
-    pattern: IMPLICIT_SELECTION_SEND_PATTERN,
-    alreadyPattern: IMPLICIT_SELECTION_SEND_PATCHED_RE,
-    label: '自动选区发送',
-    replace(text) {
-      return text.replace(
-        IMPLICIT_SELECTION_SEND_PATTERN,
-        'let $1=!1;$3($.selection.value,$1,',
-      );
-    },
-  });
+  // Patch the SessionState.send selection branch, not the composer-local
+  // includeSelection variable. The composer tree shifts often; the semantic
+  // boundary is where send would turn `this.selection.value` into a message
+  // content block. Incipit uses explicit visible @file references instead.
+  const assessmentBefore = assessImplicitSelectionSendContact(content);
+  if (assessmentBefore.status === 'patched') {
+    return [content, `${padLabel('自动选区发送')}: 已存在`, assessmentBefore];
+  }
+  if (assessmentBefore.status === 'upstreamSafe') {
+    return [content, `${padLabel('自动选区发送')}: 上游已禁用`, assessmentBefore];
+  }
+
+  const patchable = [];
+  for (const candidate of sessionSendBusinessCandidates(content)) {
+    const branches = implicitSelectionBranchMatches(candidate.body);
+    for (const branch of branches.unsafe) patchable.push({ candidate, branch });
+  }
+  if (patchable.length === 1) {
+    const { candidate, branch } = patchable[0];
+    const absoluteIndex = candidate.bodyStart + branch.index;
+    const replacement =
+      `if(!1&&(${branch.condition}))${branch.selectionVar}=this.selection.value,this.lastSentSelection=${branch.selectionVar};`;
+    const updated = content.slice(0, absoluteIndex) +
+      replacement +
+      content.slice(absoluteIndex + branch.text.length);
+    const assessment = assessImplicitSelectionSendContact(updated);
+    requireHighRiskContract(
+      installContractFromAssessment('install.implicitSelectionSend', '', assessment),
+      '自动选区发送',
+    );
+    return [updated, `${padLabel('自动选区发送')}: 已写入`, assessment];
+  }
+  requireHighRiskContract(
+    installContractFromAssessment('install.implicitSelectionSend', '', assessmentBefore),
+    '自动选区发送',
+  );
+  throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 自动选区发送 可补丁位置。`);
 }
 
 function patchStreamUnhandledCase(content) {
@@ -1661,18 +1976,15 @@ function patchHostStateSemanticBridge(content) {
 }
 
 function assertExtensionPatchContracts(content) {
-  requirePatchContract(STYLE_CSP_PATCHED_RE.test(content), 'extension style-src allows local incipit assets');
-  requirePatchContract(SCRIPT_CSP_PATCHED_RE.test(content), 'extension script-src allows local incipit assets');
-  requirePatchContract(FONT_CSP_PATCHED_RE.test(content), 'extension font-src allows incipit fonts');
-  requirePatchContract(BADGE_COMM_ATTACH_PATCHED_RE.test(content), 'host badge bridge attached');
-  requirePatchContract(INCIPIT_MESSAGE_GUARD_PATCHED_RE.test(content), 'incipit private messages filtered');
-  requirePatchContract(AT_MENTION_COMMAND_PATCHED_RE.test(content), '@ mention command accepts explicit string');
-  requirePatchContract(CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content), 'Claude visible command registered');
+  requirePatchContract(cspDirectiveHasTokens(content, 'style-src', [CDN_HOST]), 'extension style-src allows local incipit assets');
+  requirePatchContract(cspDirectiveHasTokens(content, 'script-src', [CDN_HOST]), 'extension script-src allows local incipit assets');
+  requirePatchContract(cspDirectiveHasTokens(content, 'font-src', [CDN_HOST, 'data:']), 'extension font-src allows incipit fonts');
+  requirePatchContract(badgeCommAttachIsPatched(content), 'host badge bridge attached');
+  requirePatchContract(assessPrivateMessageGuardContact(content).status === 'patched', 'incipit private messages filtered');
 }
 
 function assessWebviewPatchContracts(content) {
-  requirePatchContract(MARKDOWN_ASSIGN_PATCHED_RE.test(content), 'markdown source preprocess handoff');
-  requirePatchContract(IMPLICIT_SELECTION_SEND_PATCHED_RE.test(content), 'implicit IDE selection send disabled');
+  requirePatchContract(implicitSelectionSendIsDisabled(content), 'implicit IDE selection send disabled');
   requirePatchContract(streamUnhandledCaseIsSafe(content), 'unknown stream cases are guarded or upstream-tolerant');
 
   const highlighterCalls = literalCount(
@@ -1719,7 +2031,7 @@ function patchMonacoDiffTheme(content) {
     return [content, `${padLabel('diff 主题')}: 已存在`];
   }
   if (hardcoded + legacyPatched + patched !== 2) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 diff 主题可补丁位置。`);
+    return [content, `${padLabel('diff 主题')}: 降级 (未找到唯一渲染锚点)`];
   }
   const updated = content
     .replace(MONACO_DIFF_THEME_HARDCODED_RE, `theme:${MONACO_DIFF_THEME_EXPR}`)
@@ -1739,7 +2051,7 @@ function patchMonacoDiffFont(content) {
     return [content, `${padLabel('diff 字体/行号')}: 已存在`];
   }
   if (hardcoded + legacyPatched + oldPatched + patched !== 2) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 diff 字体/行号可补丁位置。`);
+    return [content, `${padLabel('diff 字体/行号')}: 降级 (未找到唯一渲染锚点)`];
   }
   return [
     content
@@ -1757,7 +2069,7 @@ function patchMonacoDiffWordWrap(content) {
     return [content, `${padLabel('diff 换行')}: 已存在`];
   }
   if (hardcoded + patched !== 2) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 diff 换行可补丁位置。`);
+    return [content, `${padLabel('diff 换行')}: 降级 (未找到唯一渲染锚点)`];
   }
   return [
     content.replace(MONACO_DIFF_WORD_WRAP_HARDCODED_RE, 'wordWrap:"off",wrappingIndent:"same"'),
@@ -1778,7 +2090,7 @@ function patchMonacoDiffOverview(content) {
     return [content, `${padLabel('diff 概览条')}: 已存在`];
   }
   if (hardcoded !== 1 || patched + inlineLayoutPatched !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 diff 概览条可补丁位置。`);
+    return [content, `${padLabel('diff 概览条')}: 降级 (未找到唯一 modal 锚点)`];
   }
   return [
     content.replace(MONACO_DIFF_OVERVIEW_HARDCODED_RE, 'readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!1'),
@@ -1796,7 +2108,7 @@ function patchMonacoDiffInlineLayout(content) {
     return [content, `${padLabel('diff inline 布局')}: 已存在`];
   }
   if (layoutHardcoded + layoutPatched !== 1 || resizeHardcoded + resizePatched !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 inline diff 布局可补丁位置。`);
+    return [content, `${padLabel('diff inline 布局')}: 降级 (未找到唯一渲染锚点)`];
   }
 
   const updated = content
@@ -1822,7 +2134,7 @@ function patchMonacoDiffModalLayout(content) {
     return [content, `${padLabel('diff modal 布局')}: 已存在`];
   }
   if (hardcoded + patched !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 modal diff 布局可补丁位置。`);
+    return [content, `${padLabel('diff modal 布局')}: 降级 (未找到唯一渲染锚点)`];
   }
   return [
     content.replace(
@@ -1846,7 +2158,7 @@ function patchMonacoDiffModalScrollbar(content) {
     ];
   }
   if (hardcoded + legacyHidden !== 1) {
-    throw new Error(`Claude Code 扩展结构已变化,未找到唯一的 diff 横向滚动可补丁位置。`);
+    return [content, `${padLabel('diff 横向滚动')}: 降级 (未找到唯一滚动锚点)`];
   }
   return [content, `${padLabel('diff 横向滚动')}: 已存在`];
 }
@@ -1867,8 +2179,14 @@ function patchWebviewIndex(content, features, theme, language, installContracts 
   statusLines.push(record('install.markdownCodeComponent', markdownCodeStatus));
 
   let implicitSelectionStatus;
-  [updated, implicitSelectionStatus] = patchDisableImplicitSelectionSend(updated);
-  statusLines.push(record('install.implicitSelectionSend', implicitSelectionStatus));
+  let implicitSelectionAssessment;
+  [updated, implicitSelectionStatus, implicitSelectionAssessment] = patchDisableImplicitSelectionSend(updated);
+  contracts.push(installContractFromAssessment(
+    'install.implicitSelectionSend',
+    implicitSelectionStatus,
+    implicitSelectionAssessment,
+  ));
+  statusLines.push(implicitSelectionStatus);
 
   let streamUnhandledStatus;
   let streamUnhandledAssessment;
@@ -1995,6 +2313,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
   const overlayPreflight = preflightWorkbenchOverlayForTarget(target, overlayRequested);
   const overlayDegraded = overlayPreflight && overlayPreflight.status === 'degraded';
   const overlayEffective = overlayRequested && !overlayDegraded;
+  const overlayInstallContract = buildWorkbenchOverlayInstallContract(overlayPreflight, overlayRequested);
   const enhancePreamble = buildEnhancePreamble(features, theme, language);
   const themeOverrideBlock = buildThemeOverrideBlock(theme);
 
@@ -2075,6 +2394,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
   pushInstallContract(extContracts, 'install.extensionHtmlHead', extJsHeadStatus, {
     palette: theme && theme.palette === 'warm-white' ? 'warm-white' : 'warm-black',
   });
+  extContracts.push(overlayInstallContract);
   const extJsUpdated = extJsUpdatedText !== extJsOriginal;
   if (extJsUpdated) {
     fs.writeFileSync(target.extensionJsPath, extJsUpdatedText, 'utf8');
@@ -2201,9 +2521,11 @@ module.exports = {
     patchExtensionHtmlHead,
     patchWebviewIndex,
     patchHostStateSemanticBridge,
+    buildWorkbenchOverlayInstallContract,
     buildHostRouteContract,
     assertExtensionPatchContracts,
     assessWebviewPatchContracts,
+    assessImplicitSelectionSendContact,
     assessHostStateBridgeContact,
   },
 };

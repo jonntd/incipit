@@ -724,10 +724,10 @@ import {
 
   function transcriptHasText(record) {
     const content = transcriptContent(record);
-    if (typeof content === 'string') return true;
+    if (typeof content === 'string') return content.trim().length > 0;
     return Array.isArray(content) && content.some(block =>
       (block = unwrapTranscriptContentBlock(block)) &&
-      block && block.type === 'text' && typeof block.text === 'string'
+      block && block.type === 'text' && typeof block.text === 'string' && block.text.trim().length > 0
     );
   }
 
@@ -1729,6 +1729,124 @@ import {
     return document.querySelector(SEL.inputContainer);
   }
 
+  // Composer input visibility state.
+  //
+  // Claude Code renders the editable text through a paired aria-hidden
+  // `mentionMirror` so @mentions and dictation interim text can be styled
+  // without disturbing the real contenteditable selection. incipit must not
+  // hide that mirror wholesale: doing so leaves the caret visible while typed
+  // text disappears. We only mark the composer empty so CSS can suppress a
+  // stale mirror after send/clear races.
+  let composerInputStateBound = false;
+  let composerInputStateObserver = null;
+  let composerInputStateRaf = 0;
+
+  function composerEditorFor(container) {
+    if (!container || !container.querySelector) return null;
+    return container.querySelector(
+      '[class*="messageInput"][contenteditable], ' +
+      '[aria-multiline="true"][contenteditable], ' +
+      SEL.inputEditor
+    );
+  }
+
+  function composerContainerForNode(node) {
+    if (!node || node.nodeType !== 1) return currentComposerElement();
+    try {
+      if (node.matches && node.matches(SEL.inputContainer)) return node;
+      const closest = node.closest && node.closest(SEL.inputContainer);
+      if (closest) return closest;
+      if (node.querySelector && node.querySelector(SEL.inputContainer)) {
+        return node.querySelector(SEL.inputContainer);
+      }
+    } catch (_) {}
+    return currentComposerElement();
+  }
+
+  function composerEditorPlainText(editor) {
+    if (!editor) return '';
+    return String(editor.textContent || '').replace(/[\u200b\ufeff]/g, '');
+  }
+
+  function syncComposerInputState(container = currentComposerElement()) {
+    if (!container || !container.isConnected) return false;
+    const editor = composerEditorFor(container);
+    const empty = composerEditorPlainText(editor).length === 0;
+    const next = empty ? '1' : '0';
+    if (container.getAttribute('data-incipit-composer-empty') !== next) {
+      container.setAttribute('data-incipit-composer-empty', next);
+    }
+    return true;
+  }
+
+  function scheduleComposerInputStateSync(node = null) {
+    if (composerInputStateRaf) return;
+    composerInputStateRaf = requestAnimationFrame(() => {
+      composerInputStateRaf = 0;
+      syncComposerInputState(composerContainerForNode(node));
+    });
+  }
+
+  function nodeTouchesComposerInput(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.matches && (
+            node.matches(SEL.inputContainer) ||
+            node.matches('[class*="messageInput"][contenteditable]') ||
+            node.matches('[class*="mentionMirror"]')
+          )) return true;
+      if (node.closest && node.closest(SEL.inputContainer)) return true;
+      if (node.querySelector && (
+            node.querySelector(SEL.inputContainer) ||
+            node.querySelector('[class*="messageInput"][contenteditable]') ||
+            node.querySelector('[class*="mentionMirror"]')
+          )) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function setupComposerInputState() {
+    if (composerInputStateBound) return;
+    composerInputStateBound = true;
+
+    const onComposerEvent = evt => {
+      if (!evt || !nodeTouchesComposerInput(evt.target)) return;
+      scheduleComposerInputStateSync(evt.target);
+    };
+
+    document.addEventListener('input', onComposerEvent, true);
+    document.addEventListener('beforeinput', onComposerEvent, true);
+    document.addEventListener('keyup', onComposerEvent, true);
+    document.addEventListener('cut', onComposerEvent, true);
+    document.addEventListener('paste', onComposerEvent, true);
+    document.addEventListener('compositionend', onComposerEvent, true);
+    document.addEventListener('focusin', onComposerEvent, true);
+
+    if (document.body) {
+      composerInputStateObserver = new MutationObserver(muts => {
+        for (const m of muts) {
+          if (m.type !== 'childList') continue;
+          for (const node of m.addedNodes) {
+            if (nodeTouchesComposerInput(node)) {
+              scheduleComposerInputStateSync(node);
+              return;
+            }
+          }
+          for (const node of m.removedNodes) {
+            if (nodeTouchesComposerInput(node)) {
+              scheduleComposerInputStateSync();
+              return;
+            }
+          }
+        }
+      });
+      composerInputStateObserver.observe(document.body, { childList: true, subtree: true });
+    }
+
+    syncComposerInputState();
+    setTimeout(() => syncComposerInputState(), 120);
+  }
+
   function fileDragHintText() {
     return FILE_DRAG_HINT_TEXT[CFG.language] || FILE_DRAG_HINT_TEXT.en;
   }
@@ -1847,6 +1965,39 @@ import {
   let deferredNextSeq = 0;
   let deferredNextPatchAttempts = 0;
   let deferredDragId = null;         // id of the row being pointer-dragged
+  let composerRailEl = null;
+
+  const CHANGE_REVIEW_TEXT = Object.freeze({
+    review: 'Review',
+    rejectTurn: 'Reject turn',
+    rejectFile: 'Reject',
+    filesChanged: '{n} files changed',
+    oneFileChanged: '1 file changed',
+    noFiles: 'No file changes',
+    stale: 'Stale',
+    rejected: 'Rejected',
+    unavailable: 'Unavailable',
+    close: 'Close',
+    openDiff: 'Open diff',
+    loading: 'Loading diff...',
+    rejectFail: 'Reject failed: {msg}',
+    diffFail: 'Could not open review diff: {msg}',
+  });
+  let changeReviewPayload = null;
+  let changeReviewCardEl = null;
+  let changeReviewRenderScheduled = false;
+  let changeReviewTurnBlockRenderScheduled = false;
+  let changeReviewExpanded = false;
+  let changeReviewInlineError = '';
+  let changeReviewListenerBound = false;
+  let changeReviewIdentityTimer = 0;
+  let changeReviewStartTimer = 0;
+  let changeReviewStartRetryUntil = 0;
+  let changeReviewStartedTurnKey = '';
+  let changeReviewSeq = 0;
+  const changeReviewDiffPending = new Map();
+  const changeReviewRejectPending = new Map();
+  let changeReviewModal = null;
 
   function deferredHead() { return deferredQueue[0] || null; }
   function deferredFindById(id) {
@@ -2116,10 +2267,37 @@ import {
     }, delay);
   }
 
-  function deferredCardMountPoint() {
+  function composerRailMountPoint() {
     const input = document.querySelector(SEL.inputContainer);
     if (!input || !input.parentElement) return null;
     return { parent: input.parentElement, before: input, input };
+  }
+
+  function ensureComposerRail() {
+    const mount = composerRailMountPoint();
+    if (!mount) {
+      if (composerRailEl) {
+        try { composerRailEl.remove(); } catch (_) {}
+        composerRailEl = null;
+      }
+      return null;
+    }
+    if (!composerRailEl || !composerRailEl.isConnected) {
+      composerRailEl = document.createElement('div');
+      composerRailEl.setAttribute('data-incipit-composer-rail', '');
+    }
+    if (composerRailEl.parentElement !== mount.parent || composerRailEl.nextSibling !== mount.before) {
+      mount.parent.insertBefore(composerRailEl, mount.before);
+    }
+    composerRailEl.toggleAttribute('data-incipit-composer-rail-hidden',
+      !deferredComposerIsVisible(mount.input) || askPanelIsActive());
+    return { rail: composerRailEl, input: mount.input };
+  }
+
+  function deferredCardMountPoint() {
+    const mount = ensureComposerRail();
+    if (!mount) return null;
+    return { parent: mount.rail, before: null, input: mount.input };
   }
 
   function removeDeferredNextCard() {
@@ -2369,6 +2547,724 @@ import {
       if (list.children[i] !== row) list.insertBefore(row, list.children[i] || null);
     });
     Array.from(list.children).forEach(ch => { if (!wantedSet.has(ch)) ch.remove(); });
+  }
+
+  function changeReviewText(key, vars = null) {
+    let text = CHANGE_REVIEW_TEXT[key] || key;
+    if (vars && typeof vars === 'object') {
+      for (const [name, value] of Object.entries(vars)) {
+        text = text.replace(new RegExp('\\{' + name + '\\}', 'g'), String(value));
+      }
+    }
+    return text;
+  }
+
+  function changeReviewActiveTurn() {
+    const turn = changeReviewPayload && changeReviewPayload.activeTurn;
+    return turn && changeReviewTurnFiles(turn).length ? turn : null;
+  }
+
+  function changeReviewTurnFiles(turn) {
+    return (turn && Array.isArray(turn.files) ? turn.files : [])
+      .filter(file => file);
+  }
+
+  function changeReviewRejectableFiles(turn) {
+    return changeReviewTurnFiles(turn)
+      .filter(file => !file.status || file.status === 'pending');
+  }
+
+  function changeReviewTotals(turn) {
+    const files = changeReviewTurnFiles(turn);
+    return files.reduce((sum, file) => {
+      sum.files += 1;
+      sum.added += file.added || 0;
+      sum.removed += file.removed || 0;
+      return sum;
+    }, { files: 0, added: 0, removed: 0 });
+  }
+
+  function changeReviewFileHasLineStats(file) {
+    return !!(file && file.hasLineStats === true);
+  }
+
+  function changeReviewTotalsHaveLineStats(turn) {
+    return changeReviewTurnFiles(turn).some(changeReviewFileHasLineStats);
+  }
+
+  function formatChangeReviewSummary(turn) {
+    const totals = changeReviewTotals(turn);
+    const label = totals.files === 1
+      ? changeReviewText('oneFileChanged')
+      : changeReviewText('filesChanged', { n: totals.files });
+    return changeReviewTotalsHaveLineStats(turn)
+      ? label + ' +' + totals.added + ' \u2212' + totals.removed
+      : label;
+  }
+
+  function changeReviewButton(label, attr, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute(attr, '');
+    btn.textContent = label;
+    btn.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (btn.disabled || btn.dataset.incipitDisabled === '1') return;
+      onClick(btn, evt);
+    });
+    return btn;
+  }
+
+  function ensureChangeReviewCard() {
+    const turn = changeReviewActiveTurn();
+    if (!turn) {
+      if (changeReviewCardEl) {
+        try { changeReviewCardEl.remove(); } catch (_) {}
+        changeReviewCardEl = null;
+      }
+      return null;
+    }
+    const rail = ensureComposerRail();
+    if (!rail) return null;
+    if (!changeReviewCardEl || !changeReviewCardEl.isConnected) {
+      changeReviewCardEl = document.createElement('div');
+      changeReviewCardEl.setAttribute('data-incipit-change-review-card', '');
+    }
+    const before = rail.rail.firstChild && rail.rail.firstChild !== changeReviewCardEl
+      ? rail.rail.firstChild
+      : null;
+    if (changeReviewCardEl.parentElement !== rail.rail) {
+      rail.rail.insertBefore(changeReviewCardEl, rail.rail.firstChild || null);
+    } else if (before) {
+      rail.rail.insertBefore(changeReviewCardEl, before);
+    }
+    return changeReviewCardEl;
+  }
+
+  function scheduleChangeReviewRender() {
+    if (changeReviewRenderScheduled) return;
+    changeReviewRenderScheduled = true;
+    requestAnimationFrame(() => {
+      changeReviewRenderScheduled = false;
+      renderChangeReviewCard();
+    });
+  }
+
+  function scheduleChangeReviewTurnBlocksRender() {
+    if (changeReviewTurnBlockRenderScheduled) return;
+    changeReviewTurnBlockRenderScheduled = true;
+    requestAnimationFrame(() => {
+      changeReviewTurnBlockRenderScheduled = false;
+      renderChangeReviewTurnBlocks();
+    });
+  }
+
+  function renderChangeReviewCard() {
+    const turn = changeReviewActiveTurn();
+    const el = ensureChangeReviewCard();
+    if (!el || !turn) return;
+    const busy = changeReviewBusySafe();
+    const totals = changeReviewTotals(turn);
+    el.toggleAttribute('data-incipit-change-review-expanded', changeReviewExpanded);
+    el.textContent = '';
+
+    const summary = document.createElement('div');
+    summary.setAttribute('data-incipit-change-review-summary', '');
+    summary.addEventListener('click', evt => {
+      if (evt.target && evt.target.closest && evt.target.closest('button')) return;
+      changeReviewExpanded = !changeReviewExpanded;
+      scheduleChangeReviewRender();
+    });
+    const title = document.createElement('button');
+    title.type = 'button';
+    title.setAttribute('data-incipit-change-review-toggle', '');
+    title.textContent = formatChangeReviewSummary(turn);
+    title.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      changeReviewExpanded = !changeReviewExpanded;
+      scheduleChangeReviewRender();
+    });
+    summary.appendChild(title);
+    summary.appendChild(changeReviewButton(changeReviewText('review'), 'data-incipit-change-review-review', () => {
+      revealChangeReviewTurn(turn.turnKey);
+    }));
+    const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn', btn => {
+      rejectChangeReviewTurn(turn.turnKey, btn);
+    });
+    reject.disabled = busy || changeReviewRejectableFiles(turn).length <= 0;
+    if (reject.disabled) reject.dataset.incipitDisabled = '1';
+    summary.appendChild(reject);
+    el.appendChild(summary);
+
+    if (changeReviewInlineError) {
+      const err = document.createElement('div');
+      err.setAttribute('data-incipit-change-review-error', '');
+      err.textContent = changeReviewInlineError;
+      el.appendChild(err);
+    }
+
+    if (changeReviewExpanded) {
+      const list = document.createElement('div');
+      list.setAttribute('data-incipit-change-review-files', '');
+      for (const file of changeReviewTurnFiles(turn)) {
+        list.appendChild(renderChangeReviewFileRow(file, { compact: true, busy }));
+      }
+      el.appendChild(list);
+    }
+  }
+
+  function renderChangeReviewFileRow(file, options = {}) {
+    const row = document.createElement('div');
+    row.setAttribute('data-incipit-change-review-file', '');
+    row.dataset.incipitChangeReviewFileId = file.id || '';
+    const name = document.createElement('button');
+    name.type = 'button';
+    name.setAttribute('data-incipit-change-review-file-name', '');
+    name.textContent = file.displayPath || file.filePath || 'file';
+    name.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      openChangeReviewDiff(file);
+    });
+    row.appendChild(name);
+
+    const counts = document.createElement('span');
+    counts.setAttribute('data-incipit-change-review-counts', '');
+    counts.textContent = changeReviewFileHasLineStats(file)
+      ? '+' + (file.added || 0) + ' \u2212' + (file.removed || 0)
+      : '';
+    row.appendChild(counts);
+
+    if (file.status && file.status !== 'pending') {
+      const status = document.createElement('span');
+      status.setAttribute('data-incipit-change-review-status', file.status);
+      status.textContent = changeReviewStatusLabel(file.status);
+      row.appendChild(status);
+    }
+
+    const reject = changeReviewButton(changeReviewText('rejectFile'), 'data-incipit-change-review-reject-file', btn => {
+      rejectChangeReviewFile(file.id, btn);
+    });
+    reject.disabled = !!options.busy || file.status === 'rejected' || file.status === 'stale' || file.status === 'unavailable';
+    if (reject.disabled) reject.dataset.incipitDisabled = '1';
+    row.appendChild(reject);
+    return row;
+  }
+
+  function changeReviewStatusLabel(status) {
+    if (status === 'stale') return changeReviewText('stale');
+    if (status === 'rejected') return changeReviewText('rejected');
+    if (status === 'unavailable') return changeReviewText('unavailable');
+    return status || '';
+  }
+
+  function changeReviewBusySafe() {
+    try { return conversationIsBusy() === true; }
+    catch (_) { return true; }
+  }
+
+  function revealChangeReviewTurn(turnKey) {
+    scheduleChangeReviewRender();
+    setTimeout(() => {
+      const block = document.querySelector('[data-incipit-change-review-turn="' + cssEscapeAttr(turnKey) + '"]');
+      if (block) {
+        try { block.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { block.scrollIntoView(); }
+        block.setAttribute('data-incipit-change-review-flash', '1');
+        setTimeout(() => block.removeAttribute('data-incipit-change-review-flash'), 900);
+      }
+    }, 0);
+  }
+
+  function cssEscapeAttr(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value || ''));
+    return String(value || '').replace(/"/g, '\\"');
+  }
+
+  function changeReviewTurns() {
+    return changeReviewPayload && Array.isArray(changeReviewPayload.turns)
+      ? changeReviewPayload.turns
+      : [];
+  }
+
+  function changeReviewTurnKeyForLastAssistant() {
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    if (!Array.isArray(messages) || !messages.length) return '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'progress' || m.type === 'system') continue;
+      if (m.type === 'user' && transcriptHasToolResult(m)) continue;
+      if (m.type !== 'assistant') return '';
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = messages[j];
+        if (!prev || typeof prev !== 'object') continue;
+        if (prev.type === 'user' && transcriptHasToolResult(prev)) continue;
+        if (prev.type === 'assistant' || prev.type === 'progress' || prev.type === 'system') continue;
+        if (prev.type !== 'user') return '';
+        return recordUuid(prev);
+      }
+      return '';
+    }
+    return '';
+  }
+
+  function changeReviewTurnKeyForLatestRealUser() {
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    if (!Array.isArray(messages) || !messages.length) return '';
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'progress' || m.type === 'system') continue;
+      if (m.type === 'user' && transcriptHasToolResult(m)) continue;
+      if (m.type === 'assistant') {
+        if (transcriptHasText(m)) return '';
+        continue;
+      }
+      if (m.type === 'user') return recordUuid(m);
+      return '';
+    }
+    return '';
+  }
+
+  function postChangeReviewTurnLifecycle(type, turnKey) {
+    if (!turnKey) return;
+    setupChangeReviewChannel();
+    const api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') return;
+    try {
+      api.postMessage({
+        __incipit: true,
+        type,
+        sessionId: getActiveSessionId(),
+        cwd: changeReviewPayload && changeReviewPayload.cwd || null,
+        turnKey,
+      });
+    } catch (_) {}
+  }
+
+  function notifyChangeReviewTurnStarted() {
+    const turnKey = changeReviewTurnKeyForLatestRealUser();
+    if (!turnKey) return false;
+    if (turnKey === changeReviewStartedTurnKey) return true;
+    changeReviewStartedTurnKey = turnKey;
+    postChangeReviewTurnLifecycle('change_review_turn_started', turnKey);
+    return true;
+  }
+
+  function cancelChangeReviewTurnStarted() {
+    changeReviewStartRetryUntil = 0;
+    if (changeReviewStartTimer) {
+      clearTimeout(changeReviewStartTimer);
+      changeReviewStartTimer = 0;
+    }
+  }
+
+  function scheduleChangeReviewTurnStarted(delay = 60) {
+    if (changeReviewStartTimer) clearTimeout(changeReviewStartTimer);
+    changeReviewStartTimer = setTimeout(() => {
+      changeReviewStartTimer = 0;
+      if (notifyChangeReviewTurnStarted()) return;
+      if (changeReviewBusySafe() && nowMs() < changeReviewStartRetryUntil) {
+        scheduleChangeReviewTurnStarted(80);
+      }
+    }, delay);
+  }
+
+  function armChangeReviewTurnStarted() {
+    changeReviewStartRetryUntil = nowMs() + 1800;
+    scheduleChangeReviewTurnStarted(40);
+  }
+
+  function notifyChangeReviewTurnFinalized() {
+    postChangeReviewTurnLifecycle('change_review_turn_finalized', changeReviewTurnKeyForLastAssistant());
+  }
+
+  function findAssistantRecordForTurn(turnKey) {
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    if (!Array.isArray(messages) || !turnKey) return null;
+    const userIdx = messages.findIndex(m => m && m.type === 'user' && recordUuid(m) === turnKey);
+    if (userIdx < 0) return null;
+    let fallback = null;
+    for (let i = userIdx + 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'user' && !transcriptHasToolResult(m)) break;
+      if (m.type === 'assistant' && transcriptHasText(m)) {
+        fallback = m;
+        if (isLastAssistantOfTurn(m)) return m;
+      }
+    }
+    return fallback;
+  }
+
+  function findAssistantReviewPlacement(record) {
+    if (!record) return null;
+    const markdownRoot = lastAssistantMarkdownRoot(record);
+    if (markdownRoot) {
+      const host = findAssistantActionHost(markdownRoot) || closestByAttr(markdownRoot, ATTR.message);
+      if (host && host.querySelector(':scope > .incipit-assistant-action-row')) return { host, markdownRoot };
+    }
+    const hosts = document.querySelectorAll(SEL.message + ', [class*="timelineMessage"]');
+    for (const host of hosts) {
+      if (host.closest(SEL.userMessageContainer) || host.closest('[class*="userMessageContainer"]')) continue;
+      if (!host.querySelector(':scope > .incipit-assistant-action-row')) continue;
+      const rec = transcriptRecordForElement(host);
+      if (sameTranscriptRecord(rec, record)) return { host, markdownRoot: null };
+    }
+    const roots = document.querySelectorAll(SEL.markdownRoot + ', [class*="root_"]');
+    for (const root of roots) {
+      const rec = transcriptRecordForElement(root);
+      if (!sameTranscriptRecord(rec, record)) continue;
+      const host = findAssistantActionHost(root) || closestByAttr(root, ATTR.message);
+      if (host && host.querySelector(':scope > .incipit-assistant-action-row')) return { host, markdownRoot: root };
+    }
+    return null;
+  }
+
+  function placeChangeReviewTurnBlock(host, block) {
+    if (!host || !block) return false;
+    const actionRow = host.querySelector(':scope > .incipit-assistant-action-row');
+    if (!actionRow) return false;
+    if (actionRow.nextSibling !== block) host.insertBefore(block, actionRow.nextSibling);
+    return true;
+  }
+
+  function renderChangeReviewTurnBlocks() {
+    const turns = changeReviewTurns();
+    const wanted = new Set(turns.map(turn => turn && turn.turnKey).filter(Boolean));
+    document.querySelectorAll('[data-incipit-change-review-turn]').forEach(block => {
+      const key = block.getAttribute('data-incipit-change-review-turn') || '';
+      if (!wanted.has(key)) block.remove();
+    });
+    if (!turns.length) return;
+    for (const turn of turns) {
+      const files = changeReviewTurnFiles(turn);
+      if (!files.length) continue;
+      const record = findAssistantRecordForTurn(turn.turnKey);
+      const placement = findAssistantReviewPlacement(record);
+      let block = document.querySelector('[data-incipit-change-review-turn="' + cssEscapeAttr(turn.turnKey) + '"]');
+      if (!placement || !placement.host) {
+        if (block) block.remove();
+        continue;
+      }
+      const host = placement.host;
+      if (!block) {
+        block = document.createElement('div');
+        block.setAttribute('data-incipit-change-review-turn', turn.turnKey);
+      }
+      if (!placeChangeReviewTurnBlock(host, block)) continue;
+      updateChangeReviewTurnBlock(block, turn);
+    }
+  }
+
+  function updateChangeReviewTurnBlock(block, turn) {
+    const busy = changeReviewBusySafe();
+    block.textContent = '';
+    const header = document.createElement('div');
+    header.setAttribute('data-incipit-change-review-turn-header', '');
+    const title = document.createElement('div');
+    title.setAttribute('data-incipit-change-review-turn-title', '');
+    title.textContent = formatChangeReviewSummary(turn);
+    header.appendChild(title);
+    const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn', btn => {
+      rejectChangeReviewTurn(turn.turnKey, btn);
+    });
+    reject.disabled = busy || changeReviewRejectableFiles(turn).length <= 0;
+    if (reject.disabled) reject.dataset.incipitDisabled = '1';
+    header.appendChild(reject);
+    block.appendChild(header);
+
+    const list = document.createElement('div');
+    list.setAttribute('data-incipit-change-review-turn-files', '');
+    for (const file of changeReviewTurnFiles(turn)) {
+      list.appendChild(renderChangeReviewFileRow(file, { busy }));
+    }
+    block.appendChild(list);
+  }
+
+  function setupChangeReviewChannel() {
+    if (changeReviewListenerBound) return;
+    changeReviewListenerBound = true;
+    window.addEventListener('message', evt => {
+      const msg = evt && evt.data;
+      if (msg && msg.__incipitChangeReview === true && msg.payload) {
+        changeReviewPayload = msg.payload;
+        changeReviewInlineError = '';
+        scheduleChangeReviewRender();
+        if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+        return;
+      }
+      if (!msg || msg.__incipit !== true) return;
+      if (msg.type === 'change_review_diff_response') {
+        const pending = changeReviewDiffPending.get(msg.requestId);
+        if (!pending) return;
+        changeReviewDiffPending.delete(msg.requestId);
+        const payload = msg.payload || {};
+        if (payload.ok === false) pending.reject(new Error(payload.error || 'Diff request failed'));
+        else pending.resolve(payload);
+        return;
+      }
+      if (msg.type === 'change_review_reject_response') {
+        const pending = changeReviewRejectPending.get(msg.requestId);
+        if (!pending) return;
+        changeReviewRejectPending.delete(msg.requestId);
+        const payload = msg.payload || {};
+        if (payload.payload) changeReviewPayload = payload.payload;
+        if (payload.ok === false) pending.reject(new Error(payload.error || firstRejectError(payload) || 'Reject failed'));
+        else pending.resolve(payload);
+        scheduleChangeReviewRender();
+        scheduleChangeReviewTurnBlocksRender();
+      }
+    });
+  }
+
+  function firstRejectError(payload) {
+    const list = Array.isArray(payload && payload.results) ? payload.results : [];
+    const hit = list.find(item => item && item.error);
+    return hit ? hit.error : '';
+  }
+
+  function postChangeReviewRequest(type, payload, timeoutMs = 10000) {
+    setupChangeReviewChannel();
+    const api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') {
+      return Promise.reject(new Error('Could not reach the VS Code webview channel.'));
+    }
+    const requestId = 'review-' + (++changeReviewSeq).toString(36);
+    const pending = type === 'change_review_diff_request' ? changeReviewDiffPending : changeReviewRejectPending;
+    const message = {
+      __incipit: true,
+      type,
+      requestId,
+      sessionId: getActiveSessionId(),
+      cwd: changeReviewPayload && changeReviewPayload.cwd || null,
+      busy: changeReviewBusySafe(),
+      ...payload,
+    };
+    return new Promise((resolve, reject) => {
+      pending.set(requestId, { resolve, reject });
+      try {
+        api.postMessage(message);
+      } catch (error) {
+        pending.delete(requestId);
+        reject(error);
+        return;
+      }
+      setTimeout(() => {
+        const item = pending.get(requestId);
+        if (!item) return;
+        pending.delete(requestId);
+        item.reject(new Error('Change review request timed out.'));
+      }, timeoutMs);
+    });
+  }
+
+  function requestChangeReviewIdentity() {
+    setupChangeReviewChannel();
+    const api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') return;
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'change_review_identity_update',
+        sessionId: getActiveSessionId(),
+        cwd: null,
+      });
+    } catch (_) {}
+  }
+
+  function scheduleChangeReviewIdentityUpdate(delay = 100) {
+    if (changeReviewIdentityTimer) clearTimeout(changeReviewIdentityTimer);
+    changeReviewIdentityTimer = setTimeout(() => {
+      changeReviewIdentityTimer = 0;
+      requestChangeReviewIdentity();
+    }, delay);
+  }
+
+  function rejectChangeReviewTurn(turnKey, button) {
+    if (!turnKey || changeReviewBusySafe()) return;
+    if (button) button.dataset.incipitInflight = '1';
+    postChangeReviewRequest('change_review_reject_request', { turnKey })
+      .then(() => { changeReviewInlineError = ''; })
+      .catch(error => {
+        changeReviewInlineError = changeReviewText('rejectFail', {
+          msg: error && error.message ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        scheduleChangeReviewRender();
+      });
+  }
+
+  function rejectChangeReviewFile(fileId, button) {
+    if (!fileId || changeReviewBusySafe()) return;
+    if (button) button.dataset.incipitInflight = '1';
+    postChangeReviewRequest('change_review_reject_request', { fileId })
+      .then(() => { changeReviewInlineError = ''; })
+      .catch(error => {
+        changeReviewInlineError = changeReviewText('rejectFail', {
+          msg: error && error.message ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        scheduleChangeReviewRender();
+      });
+  }
+
+  function openChangeReviewDiff(file) {
+    if (!file || !file.id) return;
+    openChangeReviewModalShell(file.displayPath || file.filePath || 'diff', changeReviewText('loading'));
+    postChangeReviewRequest('change_review_diff_request', { fileId: file.id }, 12000)
+      .then(payload => {
+        const diff = payload.diff || {};
+        openChangeReviewDiffModal(payload.file || file, diff);
+      })
+      .catch(error => {
+        openChangeReviewModalShell(file.displayPath || file.filePath || 'diff',
+          changeReviewText('diffFail', { msg: error && error.message ? error.message : String(error) }));
+      });
+  }
+
+  function closeChangeReviewModal() {
+    if (!changeReviewModal) return;
+    const modal = changeReviewModal;
+    changeReviewModal = null;
+    document.removeEventListener('keydown', modal.onKeyDown, true);
+    if (modal.backdrop && modal.backdrop.parentElement) modal.backdrop.remove();
+  }
+
+  function openChangeReviewModalShell(titleText, bodyText) {
+    closeChangeReviewModal();
+    if (!document.body) return;
+    const backdrop = document.createElement('div');
+    backdrop.setAttribute('data-incipit-change-review-modal', '');
+    const content = document.createElement('div');
+    content.setAttribute('data-incipit-write-diff-modal-content', '');
+    content.setAttribute('data-incipit-change-review-modal-content', '');
+    const header = document.createElement('div');
+    header.setAttribute('data-incipit-write-diff-modal-header', '');
+    const title = document.createElement('span');
+    title.setAttribute('data-incipit-write-diff-modal-title', '');
+    title.textContent = titleText || 'diff';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.setAttribute('data-incipit-write-diff-modal-close', '');
+    close.setAttribute('aria-label', changeReviewText('close'));
+    close.textContent = '\u00d7';
+    close.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      closeChangeReviewModal();
+    });
+    header.appendChild(title);
+    header.appendChild(close);
+    const body = document.createElement('div');
+    body.setAttribute('data-incipit-change-review-modal-message', '');
+    body.textContent = bodyText || '';
+    content.appendChild(header);
+    content.appendChild(body);
+    backdrop.appendChild(content);
+    backdrop.addEventListener('click', evt => {
+      if (evt.target !== backdrop) return;
+      evt.preventDefault();
+      closeChangeReviewModal();
+    });
+    const onKeyDown = evt => {
+      if (evt.key !== 'Escape') return;
+      evt.preventDefault();
+      closeChangeReviewModal();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    changeReviewModal = { backdrop, onKeyDown, content };
+    document.body.appendChild(backdrop);
+  }
+
+  function openChangeReviewDiffModal(file, diff) {
+    openChangeReviewModalShell(file.displayPath || diff.displayPath || diff.filePath || 'diff', '');
+    if (!changeReviewModal || !changeReviewModal.content) return;
+    const content = changeReviewModal.content;
+    const msg = content.querySelector('[data-incipit-change-review-modal-message]');
+    if (msg) msg.remove();
+    const scroll = document.createElement('div');
+    scroll.setAttribute('data-incipit-write-diff-modal-scroll', '');
+    const island = document.createElement('div');
+    island.setAttribute('data-incipit-diff-island', '');
+    island.setAttribute('data-incipit-write-diff', '');
+    const body = document.createElement('div');
+    body.setAttribute('data-incipit-diff-island-body', '');
+    body.setAttribute('data-incipit-write-diff-body', '');
+    fillChangeReviewDiffBody(body, diff.oldText || '', diff.newText || '');
+    island.appendChild(body);
+    scroll.appendChild(island);
+    content.appendChild(scroll);
+    const typography = globalThis.__incipitTypography;
+    if (typography && typeof typography.highlightAllCode === 'function') {
+      typography.highlightAllCode(content);
+    }
+  }
+
+  function changeReviewDiffRows(oldText, newText) {
+    const oldLines = oldText === '' ? [] : String(oldText).split('\n');
+    const newLines = newText === '' ? [] : String(newText).split('\n');
+    const m = oldLines.length;
+    const n = newLines.length;
+    if (!m) return newLines.map((text, i) => ({ kind: 'add', oldLine: null, newLine: i + 1, text }));
+    if (!n) return oldLines.map((text, i) => ({ kind: 'del', oldLine: i + 1, newLine: null, text }));
+    if (m * n > 500000) {
+      return oldLines.map((text, i) => ({ kind: 'del', oldLine: i + 1, newLine: null, text }))
+        .concat(newLines.map((text, i) => ({ kind: 'add', oldLine: null, newLine: i + 1, text })));
+    }
+    const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        dp[i][j] = oldLines[i] === newLines[j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const rows = [];
+    let i = 0, j = 0;
+    while (i < m && j < n) {
+      if (oldLines[i] === newLines[j]) rows.push({ kind: 'ctx', oldLine: i + 1, newLine: j + 1, text: newLines[j++] }), i++;
+      else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i++] });
+      else rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j++] });
+    }
+    while (i < m) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i++] });
+    while (j < n) rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j++] });
+    return rows;
+  }
+
+  function fillChangeReviewDiffBody(body, oldText, newText) {
+    body.textContent = '';
+    for (const row of changeReviewDiffRows(oldText, newText)) {
+      const rowEl = document.createElement('div');
+      rowEl.setAttribute('data-incipit-diff-island-row', row.kind);
+      rowEl.setAttribute('data-incipit-write-diff-row', row.kind);
+      const num = document.createElement('span');
+      num.setAttribute('data-incipit-diff-island-number', '');
+      num.setAttribute('data-incipit-write-diff-number', '');
+      num.textContent = row.kind === 'del'
+        ? (row.oldLine ? String(row.oldLine) : '')
+        : (row.newLine ? String(row.newLine) : '');
+      const pre = document.createElement('pre');
+      pre.setAttribute('data-incipit-diff-island-pre', '');
+      pre.setAttribute('data-incipit-write-diff-pre', '');
+      const code = document.createElement('code');
+      code.setAttribute('data-incipit-diff-island-code', '');
+      code.setAttribute('data-incipit-write-diff-code', '');
+      code.textContent = row.text;
+      pre.appendChild(code);
+      rowEl.appendChild(num);
+      rowEl.appendChild(pre);
+      body.appendChild(rowEl);
+    }
   }
 
   function deferredRowAfterPoint(list, y) {
@@ -2706,16 +3602,9 @@ import {
   function setupDeferredNextVisibilityObserver() {
     if (deferredNextVisibilityObserver || !document.body) return;
     deferredNextVisibilityObserver = new MutationObserver(muts => {
-      if (!deferredQueue.length && !deferredNextEl) return;
+      if (!deferredQueue.length && !deferredNextEl && !changeReviewCardEl && !changeReviewActiveTurn()) return;
       let touched = false;
       for (const m of muts) {
-        if (m.type === 'attributes') {
-          if (deferredNodeTouchesComposerOrAsk(m.target)) {
-            touched = true;
-            break;
-          }
-          continue;
-        }
         if (m.type !== 'childList') continue;
         for (const node of m.addedNodes) {
           if (deferredNodeTouchesComposerOrAsk(node)) {
@@ -2734,16 +3623,12 @@ import {
       }
       if (!touched) return;
       scheduleDeferredNextRender();
+      scheduleChangeReviewRender();
       if (deferredQueue.length && !askPanelIsActive() && !deferredConvBusySafe()) {
         armNaturalEndConfirm();
       }
     });
-    deferredNextVisibilityObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden'],
-    });
+    deferredNextVisibilityObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   function setupDeferredNextMessageQueue() {
@@ -2770,6 +3655,46 @@ import {
     subscribeRuntime('streamSettled', () => { armNaturalEndConfirm(); });
     subscribeRuntime('assistantTurnFinalized', () => { armNaturalEndConfirm(); });
     reportHealth('legacy.deferred_next', 'ok');
+  }
+
+  function setupChangeReviewFileReview() {
+    setupChangeReviewChannel();
+    setupDeferredNextVisibilityObserver();
+    scheduleChangeReviewIdentityUpdate(0);
+    subscribeRuntime('sessionChanged', () => {
+      changeReviewPayload = null;
+      changeReviewExpanded = false;
+      changeReviewInlineError = '';
+      changeReviewStartedTurnKey = '';
+      cancelChangeReviewTurnStarted();
+      scheduleChangeReviewIdentityUpdate(0);
+      scheduleChangeReviewRender();
+      if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+    });
+    subscribeRuntime('messagesChanged', () => {
+      scheduleChangeReviewIdentityUpdate(250);
+      if (changeReviewBusySafe()) scheduleChangeReviewTurnStarted(20);
+      scheduleChangeReviewRender();
+    });
+    subscribeRuntime('busyChanged', evt => {
+      if (evt && evt.busy === true) armChangeReviewTurnStarted();
+      else cancelChangeReviewTurnStarted();
+      scheduleChangeReviewRender();
+      if (!changeReviewBusySafe()) {
+        scheduleChangeReviewIdentityUpdate(250);
+      }
+    });
+    subscribeRuntime('assistantTurnFinalized', () => {
+      cancelChangeReviewTurnStarted();
+      notifyChangeReviewTurnFinalized();
+      changeReviewStartedTurnKey = '';
+      scheduleChangeReviewIdentityUpdate(150);
+      setTimeout(() => {
+        scheduleChangeReviewRender();
+        scheduleChangeReviewTurnBlocksRender();
+      }, 220);
+    });
+    reportHealth('legacy.change_review', 'ok');
   }
 
   function setupTranscriptMutationChannel() {
@@ -4888,9 +5813,11 @@ import {
     }
     if (anchor.parentElement === host) {
       if (anchor.nextSibling !== row) host.insertBefore(row, anchor.nextSibling);
+      if (changeReviewTurns().length) scheduleChangeReviewTurnBlocksRender();
       return;
     }
     host.appendChild(row);
+    if (changeReviewTurns().length) scheduleChangeReviewTurnBlocksRender();
   }
 
   // Returns true when the record is the trailing assistant of the
@@ -8325,6 +9252,9 @@ import {
     let tipRevealSeq = 0;
     let tipRevealListenerBound = false;
     const tipRevealPending = new Map();
+    let tipPathCopySeq = 0;
+    let tipPathCopyListenerBound = false;
+    const tipPathCopyPending = new Map();
     const BODY_LINK_SCOPE_SELECTOR =
       '[data-incipit-markdown-root], [data-incipit-message], [class*="root_"]';
     // Hover-intent dwell (user request, 2026-05-18): the popover only
@@ -8356,6 +9286,24 @@ import {
 
     function safeDecodeURIComponent(value) {
       try { return decodeURIComponent(value); } catch (_) { return value; }
+    }
+
+    function fileHrefToLocalPath(rawHref) {
+      try {
+        const url = new URL(rawHref);
+        const host = safeDecodeURIComponent(url.hostname || '');
+        let pathname = safeDecodeURIComponent(url.pathname || '');
+        if (/^\/[A-Za-z]:\//.test(pathname)) {
+          return pathname.slice(1).replace(/\//g, '\\');
+        }
+        if (host && host.toLowerCase() !== 'localhost') {
+          const body = pathname.replace(/^\/+/, '');
+          return '//' + host + (body ? '/' + body : '');
+        }
+        return pathname;
+      } catch (_) {
+        return null;
+      }
     }
 
     function eventTargetElement(node) {
@@ -8393,17 +9341,13 @@ import {
       }
       const queryIndex = raw.indexOf('?');
       if (queryIndex !== -1) raw = raw.slice(0, queryIndex);
+      let decoded = false;
       if (/^file:/i.test(raw)) {
-        try {
-          const url = new URL(raw);
-          raw = url.pathname || '';
-          if (/^\/[A-Za-z]:\//.test(raw)) raw = raw.slice(1);
-          raw = raw.replace(/\//g, '\\');
-        } catch (_) {
-          return null;
-        }
+        raw = fileHrefToLocalPath(raw);
+        if (!raw) return null;
+        decoded = true;
       }
-      raw = safeDecodeURIComponent(raw).trim();
+      raw = (decoded ? String(raw) : safeDecodeURIComponent(raw)).trim();
       if (!raw) return null;
       return {
         filePath: raw,
@@ -8529,79 +9473,68 @@ import {
       return tipEl;
     }
 
-    function pathLooksAbsolute(value) {
-      const s = String(value || '').trim();
-      return /^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s) || /^\//.test(s);
+    function setupTipPathCopyChannel() {
+      if (tipPathCopyListenerBound) return;
+      tipPathCopyListenerBound = true;
+      window.addEventListener('message', evt => {
+        const msg = evt && evt.data;
+        if (!msg || msg.__incipit !== true || msg.type !== 'file_path_copy_response') return;
+        const pending = tipPathCopyPending.get(msg.requestId);
+        if (!pending) return;
+        tipPathCopyPending.delete(msg.requestId);
+        const payload = msg.payload || {};
+        if (payload.ok === false) pending.reject(new Error(payload.error || 'Could not resolve file path.'));
+        else pending.resolve(payload);
+      });
     }
 
-    function preferredPathSeparator(a, b) {
-      return /\\/.test(String(a || '') + String(b || '')) || /^[A-Za-z]:[\\/]/.test(String(a || b || ''))
-        ? '\\'
-        : '/';
-    }
-
-    function stripCurrentDirPrefix(value) {
-      return String(value || '').replace(/^\.[\\/]+/, '');
-    }
-
-    function joinWorkspacePath(cwd, filePath) {
-      const sep = preferredPathSeparator(cwd, filePath);
-      const left = String(cwd || '').replace(/[\\/]+$/, '');
-      const right = stripCurrentDirPrefix(filePath).replace(/^[\\/]+/, '').replace(/[\\/]+/g, sep);
-      return left && right ? left + sep + right : (left || right);
-    }
-
-    function pathRootAndParts(value) {
-      let s = String(value || '').trim().replace(/\\/g, '/');
-      let root = '';
-      if (/^[A-Za-z]:\//.test(s)) {
-        root = s.slice(0, 2).toLowerCase();
-        s = s.slice(3);
-      } else if (s.startsWith('//')) {
-        const parts = s.slice(2).split('/');
-        if (parts.length >= 2) {
-          root = '//' + parts[0].toLowerCase() + '/' + parts[1].toLowerCase();
-          s = parts.slice(2).join('/');
+    function requestResolvedFilePaths(info) {
+      if (!info || !info.filePath) return Promise.reject(new Error('No file path to copy.'));
+      setupTipPathCopyChannel();
+      const api = getIncipitVsCodeApi();
+      if (!api || typeof api.postMessage !== 'function') {
+        return Promise.reject(new Error('Could not reach the VS Code webview channel.'));
+      }
+      const requestId = 'path-copy-' + (++tipPathCopySeq).toString(36);
+      const message = {
+        __incipit: true,
+        type: 'file_path_copy_request',
+        requestId,
+        filePath: info.filePath,
+        cwd: cwdForFileAction(),
+        sessionId: sessionIdForFileAction(),
+      };
+      return new Promise((resolve, reject) => {
+        tipPathCopyPending.set(requestId, { resolve, reject });
+        try {
+          api.postMessage(message);
+        } catch (error) {
+          tipPathCopyPending.delete(requestId);
+          reject(error);
+          return;
         }
-      } else if (s.startsWith('/')) {
-        root = '/';
-        s = s.slice(1);
-      }
-      return { root, parts: s.split('/').filter(Boolean) };
+        setTimeout(() => {
+          const pending = tipPathCopyPending.get(requestId);
+          if (!pending) return;
+          tipPathCopyPending.delete(requestId);
+          pending.reject(new Error('Path copy request timed out.'));
+        }, 6000);
+      });
     }
 
-    function relativePathFromCwd(cwd, filePath) {
-      const from = pathRootAndParts(cwd);
-      const to = pathRootAndParts(filePath);
-      if (!from.root || !to.root || from.root !== to.root) return '';
-      const insensitive = /^[a-z]:$/.test(from.root) ||
-        from.root.startsWith('//') ||
-        /\\/.test(String(cwd || '') + String(filePath || ''));
-      let i = 0;
-      while (i < from.parts.length && i < to.parts.length) {
-        const a = insensitive ? from.parts[i].toLowerCase() : from.parts[i];
-        const b = insensitive ? to.parts[i].toLowerCase() : to.parts[i];
-        if (a !== b) break;
-        i++;
-      }
-      const rel = Array(from.parts.length - i).fill('..').concat(to.parts.slice(i));
-      return rel.length ? rel.join(preferredPathSeparator(cwd, filePath)) : '.';
-    }
-
-    function absolutePathForFileInfo(info) {
-      const filePath = info && info.filePath ? String(info.filePath) : '';
-      if (!filePath) return '';
-      if (pathLooksAbsolute(filePath)) return filePath;
-      const cwd = cwdForFileAction();
-      return cwd ? joinWorkspacePath(cwd, filePath) : stripCurrentDirPrefix(filePath);
-    }
-
-    function relativePathForFileInfo(info) {
-      const filePath = info && info.filePath ? String(info.filePath) : '';
-      if (!filePath) return '';
-      if (!pathLooksAbsolute(filePath)) return stripCurrentDirPrefix(filePath);
-      const cwd = cwdForFileAction();
-      return (cwd && relativePathFromCwd(cwd, filePath)) || filePath;
+    function copyResolvedPathForFileInfo(kind, info) {
+      requestResolvedFilePaths(info).then(payload => {
+        const text = kind === 'absolute' ? payload.absolutePath : payload.relativePath;
+        if (!text) {
+          throw new Error(kind === 'absolute'
+            ? 'Could not resolve absolute path.'
+            : 'Could not resolve relative path for this workspace.');
+        }
+        return copyText(text);
+      }).catch(error => {
+        try { console.warn('[incipit] failed to copy path:', error); } catch (_) {}
+        showTranscriptToast(kind === 'absolute' ? 'Could not copy absolute path' : 'Could not copy relative path', 'error');
+      });
     }
 
     function closeTipContextMenu() {
@@ -8665,12 +9598,10 @@ import {
         });
       }));
       tipContextMenuEl.appendChild(makeTipContextMenuItem('Copy Relative Path', COPY_ICON_SVG, info => {
-        const text = relativePathForFileInfo(info);
-        if (text) copyText(text);
+        copyResolvedPathForFileInfo('relative', info);
       }));
       tipContextMenuEl.appendChild(makeTipContextMenuItem('Copy Absolute Path', COPY_ICON_SVG, info => {
-        const text = absolutePathForFileInfo(info);
-        if (text) copyText(text);
+        copyResolvedPathForFileInfo('absolute', info);
       }));
       if (document.body) document.body.appendChild(tipContextMenuEl);
       return tipContextMenuEl;
@@ -9317,9 +10248,11 @@ import {
       setupToolFold,
       setupDiffSideBars,
       setupBusyStateObserver,
+      setupComposerInputState,
       setupFileDragReferenceHint,
       setupUserBubbleNativeActionSuppression,
       setupDeferredNextMessageQueue,
+      setupChangeReviewFileReview,
       setupAskRequestRefinement,
       setupTranscriptActionDebugTools,
       assertForkRewindReady,
@@ -9331,6 +10264,9 @@ import {
     initLegacyForkRewind(legacyContext);
     initLegacyUserBubble(legacyContext);
     initLegacyDeferredNext(legacyContext);
+    setupComposerInputState();
+    // 2026-06-05: change review UI is developed but withheld from release apply.
+    // Keep the implementation nearby, but do not activate its composer/transcript UI.
     initLegacyAskRefinement(legacyContext);
     initLegacyTranscriptActionDebug(legacyContext);
     reportHealth('legacy', 'ok');
