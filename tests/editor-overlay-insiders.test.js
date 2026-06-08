@@ -161,6 +161,14 @@ function mkAppRoot(parent, product) {
     !src.includes("observer.observe(document.body, { childList: true, subtree: true, attributes: true"),
     'editor overlay must not observe Workbench-wide class/style attributes',
   );
+  assert.ok(
+    src.includes('function scheduleForEvent(event)') &&
+      src.includes('if (visible || eventInEditor(event)) schedule();') &&
+      src.includes('function scheduleForSelection()') &&
+      src.includes('if (visible || focusedEditorElement()) schedule();') &&
+      src.includes('setInterval(() => { if (visible || focusedEditorElement()) schedule(); }, 900);'),
+    'editor overlay scroll/key/selection/interval hooks must be gated to visible overlay or focused editor',
+  );
   ok('workbench overlay: body observer is childList-only');
 })();
 

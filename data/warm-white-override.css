@@ -81,9 +81,12 @@
   --app-menu-foreground: #0d0d0d !important;
   --app-secondary-foreground: #797569 !important;
   --app-secondary-text: #797569 !important;
-  --app-mention-chip-background: #ead8cf !important;
-  --app-mention-chip-foreground: #8f452b !important;
-  --incipit-mention-chip-background-hover: #e2c8bc !important;
+  --incipit-message-mention-chip-background: #ead8cf;
+  --incipit-message-mention-chip-foreground: #8f452b;
+  --incipit-message-mention-chip-background-hover: #e2c8bc;
+  --incipit-composer-mention-chip-background: #ead8cf;
+  --incipit-composer-mention-chip-foreground: #8f452b;
+  --incipit-composer-mention-chip-background-hover: #e2c8bc;
   --incipit-mermaid-text: #0d0d0d;
   --incipit-mermaid-muted: #5f5a50;
   --incipit-mermaid-inverse-text: #f8f8f6;
@@ -532,10 +535,6 @@
   background: #ffffff !important;
   background-color: #ffffff !important;
 }
-[data-incipit-input-container] [class*="messageInput"][contenteditable]:empty::before,
-[data-incipit-input-container] [class*="messageInput"][contenteditable]::placeholder {
-  color: rgba(61, 57, 41, 0.42) !important;
-}
 
 [data-incipit-input-container][data-incipit-file-drag-hint="over"],
 [data-incipit-input-container][data-incipit-file-drag-hint="over"]:focus-within {
@@ -555,23 +554,6 @@
   color: #797569;
   border-color: rgba(191,93,58,0.42);
   box-shadow: 0 4px 14px rgba(60,55,40,0.12);
-}
-
-[data-incipit-input-container] [class*="inputMentionChip"] {
-  background: var(--app-mention-chip-background) !important;
-  background-color: var(--app-mention-chip-background) !important;
-  box-shadow:
-    -4px 0 0 var(--app-mention-chip-background),
-     4px 0 0 var(--app-mention-chip-background) !important;
-  color: var(--app-mention-chip-foreground) !important;
-}
-[data-incipit-input-container] [class*="inputMentionChip"]:hover {
-  background: var(--incipit-mention-chip-background-hover) !important;
-  background-color: var(--incipit-mention-chip-background-hover) !important;
-  box-shadow:
-    -4px 0 0 var(--incipit-mention-chip-background-hover),
-     4px 0 0 var(--incipit-mention-chip-background-hover) !important;
-  color: var(--app-mention-chip-foreground) !important;
 }
 
 [data-incipit-change-review-card],
@@ -623,6 +605,61 @@
 }
 [data-incipit-change-review-modal-message] {
   color: rgba(13,13,13,0.74) !important;
+}
+[data-incipit-custom-model-modal] {
+  background: rgba(60,55,40,0.32) !important;
+}
+[data-incipit-custom-model-dialog] {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0d0d0d !important;
+  box-shadow: 0 12px 36px rgba(60,55,40,0.22),
+              0 2px 8px rgba(60,55,40,0.14) !important;
+}
+[data-incipit-custom-model-header] {
+  border-bottom-color: rgba(60,55,40,0.10) !important;
+}
+[data-incipit-custom-model-close] {
+  color: rgba(13,13,13,0.56) !important;
+}
+[data-incipit-custom-model-close]:hover,
+[data-incipit-custom-model-close]:focus-visible {
+  background: #E6E4DE !important;
+  color: #0d0d0d !important;
+}
+[data-incipit-custom-model-label] {
+  color: rgba(13,13,13,0.58) !important;
+}
+[data-incipit-custom-model-input] {
+  background: #faf9f5 !important;
+  background-color: #faf9f5 !important;
+  color: #0d0d0d !important;
+  caret-color: #a8896e !important;
+  border-color: rgba(60,55,40,0.12) !important;
+}
+[data-incipit-custom-model-input]::placeholder {
+  color: rgba(61,57,41,0.42) !important;
+}
+[data-incipit-custom-model-input]:focus {
+  border-color: rgba(60,55,40,0.12) !important;
+  box-shadow: none !important;
+}
+[data-incipit-custom-model-error] {
+  color: #b4543a !important;
+}
+[data-incipit-custom-model-cancel] {
+  border-color: rgba(60,55,40,0.14) !important;
+  color: rgba(13,13,13,0.70) !important;
+}
+[data-incipit-custom-model-cancel]:hover,
+[data-incipit-custom-model-cancel]:focus-visible {
+  background: #E6E4DE !important;
+  color: #0d0d0d !important;
+}
+[data-incipit-custom-model-submit] {
+  background: #a8896e !important;
+  background-color: #a8896e !important;
+  color: #1f1f1e !important;
 }
 [data-incipit-deferred-next-grip] {
   color: rgba(13,13,13,0.26) !important;
@@ -955,6 +992,85 @@
   background: rgba(60, 55, 40, 0.14);
 }
 
+/* ---------- Generic permission request panels ---------- */
+[class*="permissionRequestContainer_"] {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0d0d0d !important;
+  box-shadow: 0 12px 36px rgba(60,55,40,0.20),
+              0 2px 8px rgba(60,55,40,0.12) !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"] {
+  color: #0d0d0d !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="title_"],
+[class*="permissionRequestContainer_"] [class*="questionText_"],
+[class*="permissionRequestContainer_"] [class*="questionTextLarge_"] {
+  color: #0d0d0d !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="description_"],
+[class*="permissionRequestContainer_"] [class*="hint_"],
+[class*="permissionRequestContainer_"] [class*="keyboardHints_"] {
+  color: rgba(61,57,41,0.56) !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="option_"],
+[class*="permissionRequestContainer_"] [class*="button_"],
+[class*="permissionRequestContainer_"] [class*="permissionAction_"],
+[class*="permissionRequestContainer_"] [class*="permissionOption_"],
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]) {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: rgba(60,55,40,0.12) !important;
+  color: #0d0d0d !important;
+  box-shadow: none !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="option_"]:hover,
+[class*="permissionRequestContainer_"] [class*="option_"]:focus,
+[class*="permissionRequestContainer_"] [class*="button_"]:hover,
+[class*="permissionRequestContainer_"] [class*="button_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionAction_"]:hover,
+[class*="permissionRequestContainer_"] [class*="permissionAction_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionOption_"]:hover,
+[class*="permissionRequestContainer_"] [class*="permissionOption_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]):hover,
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]):focus {
+  background: rgba(230,228,222,0.50) !important;
+  background-color: rgba(230,228,222,0.50) !important;
+  border-color: rgba(60,55,40,0.14) !important;
+  box-shadow: none !important;
+}
+
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]),
+[class*="permissionRequestContainer_"] textarea {
+  background: #faf9f5 !important;
+  background-color: #faf9f5 !important;
+  color: #0d0d0d !important;
+  caret-color: #a8896e !important;
+  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.12) !important;
+}
+
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]):hover,
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]):focus,
+[class*="permissionRequestContainer_"] textarea:hover,
+[class*="permissionRequestContainer_"] textarea:focus {
+  border: none !important;
+  outline: none !important;
+  box-shadow: inset 0 0 0 1px rgba(60,55,40,0.12) !important;
+}
+
+[class*="permissionRequestContainer_"] input::placeholder,
+[class*="permissionRequestContainer_"] textarea::placeholder {
+  color: rgba(61,57,41,0.42) !important;
+}
+
 /* ---------- AskUserQuestion panel ---------- */
 [data-incipit-ask-request],
 [class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) {
@@ -1081,26 +1197,41 @@
   background-color: #DDDBD5 !important;
 }
 
-.incipit-ask-collapse-btn {
+.incipit-ask-collapse-btn,
+.incipit-permission-collapse-btn {
   color: rgba(61,57,41,0.56);
 }
 .incipit-ask-collapse-btn:hover,
-.incipit-ask-collapse-btn:focus-visible {
+.incipit-ask-collapse-btn:focus-visible,
+.incipit-permission-collapse-btn:hover,
+.incipit-permission-collapse-btn:focus-visible {
   background: #F4F2EC;
   color: #0d0d0d;
 }
 
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar {
   color: #0d0d0d;
 }
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar::before {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar::before,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar::before,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar::before,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar::before {
   background: rgba(61,57,41,0.62);
 }
 .incipit-ask-collapsed-meta {
   color: rgba(61,57,41,0.46);
 }
 [data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:hover,
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar:hover,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar:focus-visible,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar:hover,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar:hover,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar:focus-visible {
   background: #F4F2EC;
 }
 

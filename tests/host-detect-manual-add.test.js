@@ -26,7 +26,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { identifyFolder } = require('../src/host-detect');
+const {
+  deriveSettingsPathFromExtensionsDir,
+  identifyFolder,
+} = require('../src/host-detect');
 
 let passed = 0;
 function ok(name) { console.log('  ok  ' + name); passed++; }
@@ -50,7 +53,7 @@ function mkExtVersion(extensionsDir, version, { full = false } = {}) {
 // ---- profile root is recognized one level down (the reported gap) ----
 
 (function profileRootRecognized() {
-  for (const profile of ['.vscode', '.cursor', '.vscode-insiders', '.windsurf']) {
+  for (const profile of ['.vscode', '.cursor', '.vscode-insiders', '.windsurf', '.antigravity-ide']) {
     const root = tmp();
     const picked = path.join(root, profile);
     const extDir = path.join(picked, 'extensions');
@@ -65,7 +68,67 @@ function mkExtVersion(extensionsDir, version, { full = false } = {}) {
     assert.strictEqual(id.latestExtName, ext.name,
       `${profile}: must report the discovered extension`);
   }
-  ok('profile root (.vscode/.cursor/.vscode-insiders/.windsurf) → extensions_dir one level down');
+  ok('profile root (.vscode/.cursor/.vscode-insiders/.windsurf/.antigravity-ide) → extensions_dir one level down');
+})();
+
+// ---- Antigravity IDE 2.0 renamed both the profile and app-data roots ----
+
+(function antigravityIde20NamesAreRecognized() {
+  const root = tmp();
+  const picked = path.join(root, '.antigravity-ide');
+  const extDir = path.join(picked, 'extensions');
+  fs.mkdirSync(extDir, { recursive: true });
+  mkExtVersion(extDir, '2.1.163');
+
+  const oldAppData = process.env.APPDATA;
+  const oldXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  const appData = path.join(root, 'Roaming');
+  let expectedRoot;
+  if (process.platform === 'win32') {
+    process.env.APPDATA = appData;
+    expectedRoot = path.join(appData, 'Antigravity IDE');
+  } else if (process.platform === 'darwin') {
+    expectedRoot = path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity IDE');
+  } else {
+    process.env.XDG_CONFIG_HOME = appData;
+    expectedRoot = path.join(appData, 'Antigravity IDE');
+  }
+  fs.mkdirSync(path.join(expectedRoot, 'User'), { recursive: true });
+  try {
+    const id = identifyFolder(picked);
+    assert.strictEqual(id.kind, 'extensions_dir');
+    assert.strictEqual(path.resolve(id.extensionsDir), path.resolve(extDir));
+    assert.strictEqual(
+      path.resolve(id.settingsPath),
+      path.resolve(path.join(expectedRoot, 'User', 'settings.json')),
+      'Antigravity IDE 2.0 settings must map to the renamed app-data root',
+    );
+    assert.strictEqual(
+      path.resolve(deriveSettingsPathFromExtensionsDir(extDir)),
+      path.resolve(path.join(expectedRoot, 'User', 'settings.json')),
+      'derived settings path must also prefer Antigravity IDE over the legacy Antigravity root',
+    );
+  } finally {
+    if (oldAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = oldAppData;
+    if (oldXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = oldXdgConfigHome;
+  }
+  ok('Antigravity IDE 2.0 profile/app-data names are recognized');
+})();
+
+// ---- Antigravity IDE 2.0 install root has a spaced executable name ----
+
+(function antigravityIde20InstallRootIsRecognizedAsStandardHost() {
+  const root = tmp();
+  const picked = path.join(root, 'Antigravity IDE');
+  fs.mkdirSync(picked, { recursive: true });
+  fs.writeFileSync(path.join(picked, 'Antigravity IDE.exe'), '');
+  const id = identifyFolder(picked);
+  assert.strictEqual(id.kind, 'standard_install_root');
+  assert.strictEqual(id.hint, 'standard-install-no-data');
+  assert.strictEqual(id.recoverable, true);
+  ok('Antigravity IDE 2.0 install root executable is recognized');
 })();
 
 // ---- profile shape but no Claude Code → specific actionable hint ----

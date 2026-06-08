@@ -80,8 +80,8 @@ function assistantToolLine(sessionId, cwd, uuid, toolId, name, input) {
   };
 }
 
-function toolResultLine(sessionId, cwd, uuid, toolId, sourceToolAssistantUUID) {
-  return {
+function toolResultLine(sessionId, cwd, uuid, toolId, sourceToolAssistantUUID, options = {}) {
+  const entry = {
     type: 'user',
     uuid,
     message: {
@@ -89,8 +89,8 @@ function toolResultLine(sessionId, cwd, uuid, toolId, sourceToolAssistantUUID) {
       content: [{
         tool_use_id: toolId,
         type: 'tool_result',
-        content: 'ok',
-        is_error: false,
+        content: options.content || 'ok',
+        is_error: options.isError === true,
       }],
     },
     cwd,
@@ -98,6 +98,10 @@ function toolResultLine(sessionId, cwd, uuid, toolId, sourceToolAssistantUUID) {
     sourceToolAssistantUUID,
     timestamp: '2026-06-03T10:00:00.020Z',
   };
+  if (Object.prototype.hasOwnProperty.call(options, 'toolUseResult')) {
+    entry.toolUseResult = options.toolUseResult;
+  }
+  return entry;
 }
 
 function successfulWriteLines(sessionId, cwd, turnKey, filePath, backup, options = {}) {
@@ -173,6 +177,142 @@ function finalizedReviewState(turnKey) {
     assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.latestTurn.files[0], 'oldText'), false);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.latestTurn.files[0], 'newText'), false);
     ok('snapshot parse + same-turn file aggregation across active/finalized payloads');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+(function activeReviewPersistsAcrossMultipleFileToolsUntilTurnFinalized() {
+  const dir = tmp();
+  try {
+    const parser = T.createParser(path.join(dir, 's1.jsonl'));
+    T.processChangeReviewEntry(parser, userLine('s1', dir, 'u1'));
+    const reviewState = { turns: {}, files: {} };
+    T.markChangeReviewTurnStarted(reviewState, 'u1');
+    assert.strictEqual(T.buildChangeReviewPayload(parser, reviewState).activeTurn, null);
+
+    T.countChangeReviewTool(parser, {
+      id: 'tool-1',
+      turnKey: 'u1',
+      filePath: 'a.txt',
+      added: 1,
+      removed: 0,
+    });
+    const first = T.buildChangeReviewPayload(parser, reviewState);
+    assert.ok(first.activeTurn, 'first successful file tool starts the visible composer review lifecycle');
+    assert.strictEqual(first.activeTurn.turnKey, 'u1');
+    assert.strictEqual(first.activeTurn.files.length, 1);
+    assert.strictEqual(first.turns.length, 0);
+
+    T.countChangeReviewTool(parser, {
+      id: 'tool-2',
+      turnKey: 'u1',
+      filePath: 'b.txt',
+      added: 3,
+      removed: 2,
+    });
+    const second = T.buildChangeReviewPayload(parser, reviewState);
+    assert.strictEqual(second.activeTurn.turnKey, 'u1');
+    assert.deepStrictEqual(
+      second.activeTurn.files.map(file => file.displayPath.replace(/\\/g, '/')).sort(),
+      ['a.txt', 'b.txt'],
+      'later file tools must update the same active review instead of ending the lifecycle',
+    );
+    assert.strictEqual(second.activeTurn.totals.files, 2);
+
+    T.markChangeReviewTurnFinalized(reviewState, 'u1');
+    const final = T.buildChangeReviewPayload(parser, reviewState);
+    assert.strictEqual(final.activeTurn, null, 'composer mini bar disappears only when the assistant turn finalizes');
+    assert.strictEqual(final.turns.length, 1);
+    assert.strictEqual(final.latestTurn.files.length, 2);
+    ok('active review persists across multiple file tools until turn finalized');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+(function agentToolStatsCreateSummaryOnlyLifecycleReview() {
+  const dir = tmp();
+  try {
+    const parser = T.createParser(path.join(dir, 's1.jsonl'));
+    const reviewState = { turns: {}, files: {} };
+    T.processChangeReviewEntry(parser, userLine('s1', dir, 'u1'));
+    T.markChangeReviewTurnStarted(reviewState, 'u1');
+    assert.strictEqual(T.buildChangeReviewPayload(parser, reviewState).activeTurn, null);
+
+    T.processEditActivityEntry(parser, assistantToolLine('s1', dir, 'assistant-agent', 'tool-agent', 'Agent', {
+      description: 'delegate file edits',
+      subagent_type: 'general-purpose',
+      prompt: 'write files',
+    }));
+    T.processEditActivityEntry(parser, toolResultLine('s1', dir, 'tool-result-agent', 'tool-agent', 'assistant-agent', {
+      toolUseResult: {
+        status: 'completed',
+        toolStats: {
+          editFileCount: 2,
+          linesAdded: 533,
+          linesRemoved: 0,
+        },
+      },
+    }));
+
+    const active = T.buildChangeReviewPayload(parser, reviewState);
+    assert.ok(active.activeTurn, 'Agent toolStats must start the visible composer review lifecycle');
+    assert.strictEqual(active.activeTurn.turnKey, 'u1');
+    assert.strictEqual(active.activeTurn.files.length, 0, 'summary-only Agent stats must not invent file rows');
+    assert.deepStrictEqual(active.activeTurn.summary, {
+      files: 2,
+      added: 533,
+      removed: 0,
+      hasLineStats: true,
+    });
+    assert.deepStrictEqual(active.activeTurn.totals, {
+      files: 2,
+      added: 533,
+      removed: 0,
+      hasLineStats: true,
+    });
+    assert.strictEqual(active.turns.length, 0);
+
+    T.markChangeReviewTurnFinalized(reviewState, 'u1');
+    const final = T.buildChangeReviewPayload(parser, reviewState);
+    assert.strictEqual(final.activeTurn, null);
+    assert.strictEqual(final.turns.length, 1);
+    assert.strictEqual(final.latestTurn.files.length, 0);
+    assert.strictEqual(final.latestTurn.totals.files, 2);
+    assert.strictEqual(final.latestTurn.totals.added, 533);
+    ok('Agent toolStats create a summary-only active/finalized change review');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+(function agentToolStatsWithoutLinesDoNotClaimZeroLineStats() {
+  const dir = tmp();
+  try {
+    const parser = T.createParser(path.join(dir, 's1.jsonl'));
+    const reviewState = { turns: {}, files: {} };
+    T.processChangeReviewEntry(parser, userLine('s1', dir, 'u1'));
+    T.markChangeReviewTurnStarted(reviewState, 'u1');
+    T.processEditActivityEntry(parser, assistantToolLine('s1', dir, 'assistant-agent', 'tool-agent', 'Agent', {
+      description: 'delegate file edits',
+    }));
+    T.processEditActivityEntry(parser, toolResultLine('s1', dir, 'tool-result-agent', 'tool-agent', 'assistant-agent', {
+      toolUseResult: {
+        status: 'completed',
+        toolStats: {
+          editFileCount: 2,
+        },
+      },
+    }));
+    const active = T.buildChangeReviewPayload(parser, reviewState);
+    assert.ok(active.activeTurn);
+    assert.strictEqual(active.activeTurn.files.length, 0);
+    assert.strictEqual(active.activeTurn.totals.files, 2);
+    assert.strictEqual(active.activeTurn.totals.added, 0);
+    assert.strictEqual(active.activeTurn.totals.removed, 0);
+    assert.strictEqual(active.activeTurn.totals.hasLineStats, false);
+    ok('Agent summary-only review without line stats does not claim +0/-0 data');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -783,6 +923,50 @@ function finalizedReviewState(turnKey) {
     assert.strictEqual(payload.latestTurn.files[0].added, 3);
     assert.strictEqual(payload.latestTurn.files[0].removed, 2);
     ok('usage cache hydrates change-review history');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+(function usageCacheHydratesAgentSummaryOnlyReviewHistory() {
+  const dir = tmp();
+  try {
+    const transcript = path.join(dir, 's1.jsonl');
+    const lines = [
+      userLine('s1', dir, 'u1'),
+      assistantToolLine('s1', dir, 'assistant-agent', 'tool-agent', 'Agent', {
+        description: 'delegate file edits',
+      }),
+      toolResultLine('s1', dir, 'tool-result-agent', 'tool-agent', 'assistant-agent', {
+        toolUseResult: {
+          status: 'completed',
+          toolStats: {
+            editFileCount: 2,
+            linesAdded: 533,
+            linesRemoved: 0,
+          },
+        },
+      }),
+    ];
+    fs.writeFileSync(transcript, lines.map(line => JSON.stringify(line)).join('\n') + '\n');
+    const stat = fs.statSync(transcript);
+    const parser = T.createParser(transcript);
+    for (const line of lines) {
+      T.processChangeReviewEntry(parser, line);
+      T.processEditActivityEntry(parser, line);
+    }
+    parser.size = stat.size;
+    parser.committedSize = stat.size;
+    const index = T.serializeUsageCacheParser(parser, stat);
+    const hydrated = T.createParser(transcript);
+    assert.strictEqual(T.hydrateUsageCacheParser(hydrated, index), true);
+    const payload = T.buildChangeReviewPayload(hydrated, finalizedReviewState('u1'));
+    assert.strictEqual(payload.turns.length, 1);
+    assert.strictEqual(payload.latestTurn.files.length, 0);
+    assert.strictEqual(payload.latestTurn.summary.files, 2);
+    assert.strictEqual(payload.latestTurn.totals.added, 533);
+    assert.strictEqual(payload.latestTurn.totals.hasLineStats, true);
+    ok('usage cache hydrates Agent summary-only change-review history');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

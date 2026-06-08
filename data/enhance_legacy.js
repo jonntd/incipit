@@ -13,6 +13,7 @@ import { initLegacyAskRefinement } from './legacy/ask_refinement.js';
 import {
   conversationIsBusy as kernelConversationIsBusy,
   getHostState as kernelGetHostState,
+  registerBusyProbe as registerRuntimeBusyProbe,
   subscribe as subscribeRuntime,
 } from './runtime_kernel.js';
 
@@ -1185,6 +1186,236 @@ import {
     return result.ok ? result.value : null;
   }
 
+  // ============================================================
+  // Custom model picker.
+  //
+  // Claude Code's headless slash parser rejects the model-switch command
+  // in the webview environment, but the official UI model switcher is
+  // still available through SessionState.setModel(modelObject). Keep this
+  // as a UI shell over that host path: no slash command, no request/auth
+  // rewrites, and no private recent-model storage in the command menu.
+  // ============================================================
+  const CUSTOM_MODEL_ACTION_ID = 'incipit-custom-model-id';
+  const CUSTOM_MODEL_REGISTER_TIMEOUT_MS = 10000;
+  const customModelRegisteredRegistries = new WeakSet();
+  let customModelRegisterStarted = false;
+  let customModelRegisterTimer = 0;
+  let customModelDialog = null;
+
+  function commandRegistryFromAppContext(ctx) {
+    const registry = ctx && ctx.commandRegistry;
+    if (!registry || typeof registry !== 'object') return null;
+    return typeof registry.registerAction === 'function' ? registry : null;
+  }
+
+  function locateCommandRegistry() {
+    return commandRegistryFromAppContext(locateActiveAppContext());
+  }
+
+  function modelDisplayNameFromId(raw) {
+    const value = String(raw || '').trim();
+    return value || 'Custom model';
+  }
+
+  function makeCustomModelOption(raw) {
+    const value = String(raw || '').trim();
+    return {
+      value,
+      displayName: modelDisplayNameFromId(value),
+      description: 'Custom model ID',
+    };
+  }
+
+  function closeCustomModelDialog() {
+    if (!customModelDialog) return;
+    const dialog = customModelDialog;
+    customModelDialog = null;
+    document.removeEventListener('keydown', dialog.onKeyDown, true);
+    if (dialog.backdrop && dialog.backdrop.parentElement) dialog.backdrop.remove();
+  }
+
+  function setCustomModelDialogError(dialog, message) {
+    if (!dialog || !dialog.errorEl) return;
+    const text = message ? String(message) : '';
+    dialog.errorEl.textContent = text;
+    if (text) dialog.errorEl.setAttribute('data-visible', '1');
+    else dialog.errorEl.removeAttribute('data-visible');
+  }
+
+  function setCustomModelDialogBusy(dialog, busy) {
+    if (!dialog) return;
+    const value = busy ? '1' : '0';
+    if (dialog.backdrop) dialog.backdrop.dataset.incipitBusy = value;
+    if (dialog.input) dialog.input.disabled = !!busy;
+    if (dialog.submit) dialog.submit.disabled = !!busy;
+  }
+
+  async function submitCustomModelDialog(dialog) {
+    if (!dialog || !dialog.input) return;
+    const raw = String(dialog.input.value || '').trim();
+    if (!raw) {
+      setCustomModelDialogError(dialog, 'Enter a model ID.');
+      try { dialog.input.focus(); } catch (_) {}
+      return;
+    }
+    const session = locateActiveSessionState();
+    if (!session || typeof session.setModel !== 'function') {
+      setCustomModelDialogError(dialog, 'The active Claude session is not ready yet.');
+      return;
+    }
+    setCustomModelDialogBusy(dialog, true);
+    setCustomModelDialogError(dialog, '');
+    try {
+      const result = await session.setModel(makeCustomModelOption(raw));
+      if (result === false) throw new Error('The host rejected this model ID.');
+      closeCustomModelDialog();
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error || 'Unknown error');
+      setCustomModelDialogError(dialog, 'Could not set model: ' + msg);
+      setCustomModelDialogBusy(dialog, false);
+      try { dialog.input.focus(); } catch (_) {}
+    }
+  }
+
+  function openCustomModelDialog() {
+    closeCustomModelDialog();
+    if (!document.body) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.setAttribute('data-incipit-custom-model-modal', '');
+    backdrop.tabIndex = -1;
+
+    const panel = document.createElement('div');
+    panel.setAttribute('data-incipit-custom-model-dialog', '');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', 'incipit-custom-model-title');
+    panel.addEventListener('click', evt => evt.stopPropagation());
+
+    const header = document.createElement('div');
+    header.setAttribute('data-incipit-custom-model-header', '');
+
+    const title = document.createElement('div');
+    title.id = 'incipit-custom-model-title';
+    title.setAttribute('data-incipit-custom-model-title', '');
+    title.textContent = 'Custom model';
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.setAttribute('data-incipit-custom-model-close', '');
+    close.setAttribute('aria-label', 'Close');
+    close.textContent = '\u00d7';
+    close.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      closeCustomModelDialog();
+    });
+
+    header.appendChild(title);
+    header.appendChild(close);
+
+    const body = document.createElement('form');
+    body.setAttribute('data-incipit-custom-model-body', '');
+    body.addEventListener('submit', evt => {
+      evt.preventDefault();
+      submitCustomModelDialog(customModelDialog);
+    });
+
+    const label = document.createElement('label');
+    label.setAttribute('data-incipit-custom-model-label', '');
+    label.setAttribute('for', 'incipit-custom-model-input');
+    label.textContent = 'Model ID';
+
+    const input = document.createElement('input');
+    input.id = 'incipit-custom-model-input';
+    input.setAttribute('data-incipit-custom-model-input', '');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = 'claude-opus-4-6[1m]';
+
+    const error = document.createElement('div');
+    error.setAttribute('data-incipit-custom-model-error', '');
+    error.setAttribute('role', 'alert');
+
+    const actions = document.createElement('div');
+    actions.setAttribute('data-incipit-custom-model-actions', '');
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.setAttribute('data-incipit-custom-model-cancel', '');
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', evt => {
+      evt.preventDefault();
+      closeCustomModelDialog();
+    });
+
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.setAttribute('data-incipit-custom-model-submit', '');
+    submit.textContent = 'Use model';
+
+    actions.appendChild(cancel);
+    actions.appendChild(submit);
+    body.appendChild(label);
+    body.appendChild(input);
+    body.appendChild(error);
+    body.appendChild(actions);
+    panel.appendChild(header);
+    panel.appendChild(body);
+    backdrop.appendChild(panel);
+    backdrop.addEventListener('click', evt => {
+      if (evt.target !== backdrop) return;
+      evt.preventDefault();
+      closeCustomModelDialog();
+    });
+
+    const onKeyDown = evt => {
+      if (evt.key !== 'Escape') return;
+      evt.preventDefault();
+      closeCustomModelDialog();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    customModelDialog = { backdrop, panel, input, submit, errorEl: error, onKeyDown };
+    document.body.appendChild(backdrop);
+    setTimeout(() => { try { input.focus(); } catch (_) {} }, 0);
+  }
+
+  function tryRegisterCustomModelAction() {
+    const registry = locateCommandRegistry();
+    if (!registry) return false;
+    if (customModelRegisteredRegistries.has(registry)) return true;
+    try {
+      registry.registerAction({
+        id: CUSTOM_MODEL_ACTION_ID,
+        label: 'Use custom model ID...',
+        description: 'Set a model by full ID',
+      }, 'Model', () => openCustomModelDialog());
+      customModelRegisteredRegistries.add(registry);
+      reportHealth('legacy.custom_model', 'ok');
+      return true;
+    } catch (error) {
+      warn('Could not register custom model action:', error);
+      reportHealth('legacy.custom_model', 'degraded', { reason: 'register-failed' });
+      return true;
+    }
+  }
+
+  function setupCustomModelPicker() {
+    if (customModelRegisterStarted) return;
+    customModelRegisterStarted = true;
+    const startedAt = Date.now();
+    const tick = () => {
+      if (tryRegisterCustomModelAction()) return;
+      if (Date.now() - startedAt >= CUSTOM_MODEL_REGISTER_TIMEOUT_MS) {
+        reportHealth('legacy.custom_model', 'degraded', { reason: 'no-command-registry' });
+        return;
+      }
+      customModelRegisterTimer = setTimeout(tick, 250);
+    };
+    tick();
+  }
+
   // Look up the *current* record by uuid from active SessionState's
   // messages.value. Edits replace the Ez instance in the array (uuid
   // stable, identity changes), so any callback that captured the
@@ -1474,6 +1705,9 @@ import {
   // stays consistent with the icon row even mid-edit.
   function sweepStreamingDisableState() {
     const busy = conversationIsBusy();
+    if (busy) {
+      try { removeCurrentBusyAssistantTerminalDecorations(); } catch (_) {}
+    }
     const icons = document.querySelectorAll('.incipit-transcript-action-btn');
     for (const btn of icons) applyButtonBusyState(btn, busy);
     const saves = document.querySelectorAll('.incipit-inline-edit-save');
@@ -1512,9 +1746,12 @@ import {
   // for this long before it mints rows, so a transient send→stop→send
   // oscillation no longer churns the editable footer / send icon.
   const BUSY_UI_STABLE_MS = 420;
+  const SEND_BUTTON_DOM_CACHE_MS = 32;
   let lastChannelInterruptAt = 0;
   let historyHandoffInFlight = false;
   let busyFalseStableSince = 0;
+  let sendButtonDomCachedAt = 0;
+  let sendButtonDomCachedValue = null;
 
   function nowMs() {
     return (typeof performance !== 'undefined' && performance.now)
@@ -1725,126 +1962,78 @@ import {
     return items.some(item => item && item.kind === 'file');
   }
 
-  function currentComposerElement() {
-    return document.querySelector(SEL.inputContainer);
+  const COMPOSER_INPUT_CONTAINER_SELECTOR =
+    'fieldset[class*="inputContainer_"], [class*="inputContainer_"]:has(> [class*="inputContainerBackground"])';
+
+  function composerRootSelector() {
+    return SEL.inputContainer + ', ' + COMPOSER_INPUT_CONTAINER_SELECTOR;
   }
 
-  // Composer input visibility state.
-  //
-  // Claude Code renders the editable text through a paired aria-hidden
-  // `mentionMirror` so @mentions and dictation interim text can be styled
-  // without disturbing the real contenteditable selection. incipit must not
-  // hide that mirror wholesale: doing so leaves the caret visible while typed
-  // text disappears. We only mark the composer empty so CSS can suppress a
-  // stale mirror after send/clear races.
-  let composerInputStateBound = false;
-  let composerInputStateObserver = null;
-  let composerInputStateRaf = 0;
-
-  function composerEditorFor(container) {
-    if (!container || !container.querySelector) return null;
-    return container.querySelector(
-      '[class*="messageInput"][contenteditable], ' +
-      '[aria-multiline="true"][contenteditable], ' +
-      SEL.inputEditor
-    );
+  function elementClassText(node) {
+    if (!node || node.nodeType !== 1) return '';
+    return typeof node.className === 'string'
+      ? node.className
+      : String(node.getAttribute?.('class') || '');
   }
 
-  function composerContainerForNode(node) {
-    if (!node || node.nodeType !== 1) return currentComposerElement();
-    try {
-      if (node.matches && node.matches(SEL.inputContainer)) return node;
-      const closest = node.closest && node.closest(SEL.inputContainer);
-      if (closest) return closest;
-      if (node.querySelector && node.querySelector(SEL.inputContainer)) {
-        return node.querySelector(SEL.inputContainer);
-      }
-    } catch (_) {}
-    return currentComposerElement();
-  }
-
-  function composerEditorPlainText(editor) {
-    if (!editor) return '';
-    return String(editor.textContent || '').replace(/[\u200b\ufeff]/g, '');
-  }
-
-  function syncComposerInputState(container = currentComposerElement()) {
-    if (!container || !container.isConnected) return false;
-    const editor = composerEditorFor(container);
-    const empty = composerEditorPlainText(editor).length === 0;
-    const next = empty ? '1' : '0';
-    if (container.getAttribute('data-incipit-composer-empty') !== next) {
-      container.setAttribute('data-incipit-composer-empty', next);
+  function hasDirectInputContainerBackground(node) {
+    if (!node || node.nodeType !== 1 || !node.children) return false;
+    for (const child of node.children) {
+      if (elementClassText(child).includes('inputContainerBackground')) return true;
     }
-    return true;
-  }
-
-  function scheduleComposerInputStateSync(node = null) {
-    if (composerInputStateRaf) return;
-    composerInputStateRaf = requestAnimationFrame(() => {
-      composerInputStateRaf = 0;
-      syncComposerInputState(composerContainerForNode(node));
-    });
-  }
-
-  function nodeTouchesComposerInput(node) {
-    if (!node || node.nodeType !== 1) return false;
-    try {
-      if (node.matches && (
-            node.matches(SEL.inputContainer) ||
-            node.matches('[class*="messageInput"][contenteditable]') ||
-            node.matches('[class*="mentionMirror"]')
-          )) return true;
-      if (node.closest && node.closest(SEL.inputContainer)) return true;
-      if (node.querySelector && (
-            node.querySelector(SEL.inputContainer) ||
-            node.querySelector('[class*="messageInput"][contenteditable]') ||
-            node.querySelector('[class*="mentionMirror"]')
-          )) return true;
-    } catch (_) {}
     return false;
   }
 
-  function setupComposerInputState() {
-    if (composerInputStateBound) return;
-    composerInputStateBound = true;
-
-    const onComposerEvent = evt => {
-      if (!evt || !nodeTouchesComposerInput(evt.target)) return;
-      scheduleComposerInputStateSync(evt.target);
-    };
-
-    document.addEventListener('input', onComposerEvent, true);
-    document.addEventListener('beforeinput', onComposerEvent, true);
-    document.addEventListener('keyup', onComposerEvent, true);
-    document.addEventListener('cut', onComposerEvent, true);
-    document.addEventListener('paste', onComposerEvent, true);
-    document.addEventListener('compositionend', onComposerEvent, true);
-    document.addEventListener('focusin', onComposerEvent, true);
-
-    if (document.body) {
-      composerInputStateObserver = new MutationObserver(muts => {
-        for (const m of muts) {
-          if (m.type !== 'childList') continue;
-          for (const node of m.addedNodes) {
-            if (nodeTouchesComposerInput(node)) {
-              scheduleComposerInputStateSync(node);
-              return;
-            }
-          }
-          for (const node of m.removedNodes) {
-            if (nodeTouchesComposerInput(node)) {
-              scheduleComposerInputStateSync();
-              return;
-            }
-          }
-        }
-      });
-      composerInputStateObserver.observe(document.body, { childList: true, subtree: true });
+  function isComposerRootElement(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      const classes = elementClassText(node);
+      if (!classes.includes('inputContainer_')) return false;
+      if (classes.includes('inputContainerBackground')) return false;
+      const tag = String(node.tagName || '').toLowerCase();
+      return tag === 'fieldset' || hasDirectInputContainerBackground(node);
+    } catch (_) {
+      return false;
     }
+  }
 
-    syncComposerInputState();
-    setTimeout(() => syncComposerInputState(), 120);
+  function queryComposerRoots(root, selector) {
+    if (!root || !root.querySelectorAll) return [];
+    try {
+      return Array.from(root.querySelectorAll(selector));
+    } catch (_) {
+      try { return Array.from(root.querySelectorAll('[class*="inputContainer_"]')); }
+      catch (_) { return []; }
+    }
+  }
+
+  function closestComposerRoot(node) {
+    let element = node && node.nodeType === 1 ? node : node?.parentElement;
+    while (element) {
+      if (isComposerRootElement(element)) return element;
+      element = element.parentElement;
+    }
+    return null;
+  }
+
+  function queryComposerRoot(node) {
+    const candidates = queryComposerRoots(node, composerRootSelector());
+    for (const candidate of candidates) {
+      if (isComposerRootElement(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  function currentComposerElement() {
+    const marked = document.querySelectorAll(SEL.inputContainer);
+    for (const candidate of marked) {
+      if (isComposerRootElement(candidate)) return candidate;
+    }
+    const candidates = document.querySelectorAll('[class*="inputContainer_"]');
+    for (const candidate of candidates) {
+      if (isComposerRootElement(candidate)) return candidate;
+    }
+    return null;
   }
 
   function fileDragHintText() {
@@ -2110,15 +2299,56 @@ import {
     return false;
   }
 
-  function deferredNodeTouchesComposerOrAsk(node) {
+  function nodeInsideFocusedEditor(node) {
+    const active = document.activeElement;
+    return !!(
+      active &&
+      active.isContentEditable &&
+      node &&
+      (node === active || active.contains(node))
+    );
+  }
+
+  function mutationInsideFocusedEditor(mutation) {
+    return !!(mutation && mutation.target && nodeInsideFocusedEditor(mutation.target));
+  }
+
+  function nodeTouchesPermissionRequest(node) {
     if (!node || node.nodeType !== 1) return false;
     try {
-      if (node.matches?.(SEL.inputContainer) ||
-          node.matches?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
-          node.matches?.(ASK_QUESTIONS_SELECTOR)) return true;
-      if (node.querySelector?.(SEL.inputContainer) ||
-          node.querySelector?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
-          node.querySelector?.(ASK_QUESTIONS_SELECTOR)) return true;
+      if (node.matches?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
+          node.matches?.(ASK_QUESTIONS_SELECTOR) ||
+          node.closest?.(ASK_PERMISSION_CONTAINER_SELECTOR)) return true;
+      return !!(
+        node.querySelector?.(ASK_PERMISSION_CONTAINER_SELECTOR) ||
+        node.querySelector?.(ASK_QUESTIONS_SELECTOR)
+      );
+    } catch (_) {}
+    return false;
+  }
+
+  function nodeInsideMessagesContainer(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      return !!(
+        node.matches?.(SEL.messagesContainer) ||
+        node.matches?.('[class*="messagesContainer_"]') ||
+        node.closest?.(SEL.messagesContainer) ||
+        node.closest?.('[class*="messagesContainer_"]')
+      );
+    } catch (_) {}
+    return false;
+  }
+
+  function deferredNodeTouchesComposerOrAsk(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (nodeInsideFocusedEditor(node)) return false;
+    if (nodeTouchesPermissionRequest(node)) return true;
+    if (nodeInsideMessagesContainer(node)) return false;
+    try {
+      if (isComposerRootElement(node)) return true;
+      if (closestComposerRoot(node) ||
+          queryComposerRoot(node)) return true;
     } catch (_) {}
     return false;
   }
@@ -2268,7 +2498,7 @@ import {
   }
 
   function composerRailMountPoint() {
-    const input = document.querySelector(SEL.inputContainer);
+    const input = currentComposerElement();
     if (!input || !input.parentElement) return null;
     return { parent: input.parentElement, before: input, input };
   }
@@ -2561,12 +2791,23 @@ import {
 
   function changeReviewActiveTurn() {
     const turn = changeReviewPayload && changeReviewPayload.activeTurn;
-    return turn && changeReviewTurnFiles(turn).length ? turn : null;
+    return turn && changeReviewTurnFileCount(turn) > 0 ? turn : null;
   }
 
   function changeReviewTurnFiles(turn) {
     return (turn && Array.isArray(turn.files) ? turn.files : [])
       .filter(file => file);
+  }
+
+  function changeReviewNumber(value) {
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  }
+
+  function changeReviewTurnFileCount(turn) {
+    const totals = turn && turn.totals && typeof turn.totals === 'object'
+      ? turn.totals
+      : null;
+    return totals ? changeReviewNumber(totals.files) : changeReviewTurnFiles(turn).length;
   }
 
   function changeReviewRejectableFiles(turn) {
@@ -2575,6 +2816,16 @@ import {
   }
 
   function changeReviewTotals(turn) {
+    const turnTotals = turn && turn.totals && typeof turn.totals === 'object'
+      ? turn.totals
+      : null;
+    if (turnTotals) {
+      return {
+        files: changeReviewNumber(turnTotals.files),
+        added: changeReviewNumber(turnTotals.added),
+        removed: changeReviewNumber(turnTotals.removed),
+      };
+    }
     const files = changeReviewTurnFiles(turn);
     return files.reduce((sum, file) => {
       sum.files += 1;
@@ -2589,6 +2840,7 @@ import {
   }
 
   function changeReviewTotalsHaveLineStats(turn) {
+    if (turn && turn.totals && turn.totals.hasLineStats === true) return true;
     return changeReviewTurnFiles(turn).some(changeReviewFileHasLineStats);
   }
 
@@ -2705,10 +2957,11 @@ import {
       el.appendChild(err);
     }
 
-    if (changeReviewExpanded) {
+    const files = changeReviewTurnFiles(turn);
+    if (changeReviewExpanded && files.length) {
       const list = document.createElement('div');
       list.setAttribute('data-incipit-change-review-files', '');
-      for (const file of changeReviewTurnFiles(turn)) {
+      for (const file of files) {
         list.appendChild(renderChangeReviewFileRow(file, { compact: true, busy }));
       }
       el.appendChild(list);
@@ -2830,6 +3083,17 @@ import {
     return '';
   }
 
+  function removeCurrentBusyChangeReviewTurnBlocks() {
+    if (!changeReviewBusySafe()) return;
+    const turnKey = latestRealUserTurnKey();
+    if (!turnKey) return;
+    document.querySelectorAll('[data-incipit-change-review-turn]').forEach(block => {
+      if ((block.getAttribute('data-incipit-change-review-turn') || '') === turnKey) {
+        block.remove();
+      }
+    });
+  }
+
   function postChangeReviewTurnLifecycle(type, turnKey) {
     if (!turnKey) return;
     setupChangeReviewChannel();
@@ -2935,6 +3199,10 @@ import {
   }
 
   function renderChangeReviewTurnBlocks() {
+    if (changeReviewBusySafe()) {
+      removeCurrentBusyChangeReviewTurnBlocks();
+      return;
+    }
     const turns = changeReviewTurns();
     const wanted = new Set(turns.map(turn => turn && turn.turnKey).filter(Boolean));
     document.querySelectorAll('[data-incipit-change-review-turn]').forEach(block => {
@@ -2943,8 +3211,7 @@ import {
     });
     if (!turns.length) return;
     for (const turn of turns) {
-      const files = changeReviewTurnFiles(turn);
-      if (!files.length) continue;
+      if (changeReviewTurnFileCount(turn) <= 0) continue;
       const record = findAssistantRecordForTurn(turn.turnKey);
       const placement = findAssistantReviewPlacement(record);
       let block = document.querySelector('[data-incipit-change-review-turn="' + cssEscapeAttr(turn.turnKey) + '"]');
@@ -2979,12 +3246,15 @@ import {
     header.appendChild(reject);
     block.appendChild(header);
 
-    const list = document.createElement('div');
-    list.setAttribute('data-incipit-change-review-turn-files', '');
-    for (const file of changeReviewTurnFiles(turn)) {
-      list.appendChild(renderChangeReviewFileRow(file, { busy }));
+    const files = changeReviewTurnFiles(turn);
+    if (files.length) {
+      const list = document.createElement('div');
+      list.setAttribute('data-incipit-change-review-turn-files', '');
+      for (const file of files) {
+        list.appendChild(renderChangeReviewFileRow(file, { busy }));
+      }
+      block.appendChild(list);
     }
-    block.appendChild(list);
   }
 
   function setupChangeReviewChannel() {
@@ -3606,6 +3876,7 @@ import {
       let touched = false;
       for (const m of muts) {
         if (m.type !== 'childList') continue;
+        if (mutationInsideFocusedEditor(m)) continue;
         for (const node of m.addedNodes) {
           if (deferredNodeTouchesComposerOrAsk(node)) {
             touched = true;
@@ -3682,9 +3953,15 @@ import {
       scheduleChangeReviewRender();
       if (!changeReviewBusySafe()) {
         scheduleChangeReviewIdentityUpdate(250);
+      } else {
+        removeCurrentBusyChangeReviewTurnBlocks();
       }
     });
     subscribeRuntime('assistantTurnFinalized', () => {
+      if (changeReviewBusySafe()) {
+        removeCurrentBusyChangeReviewTurnBlocks();
+        return;
+      }
       cancelChangeReviewTurnStarted();
       notifyChangeReviewTurnFinalized();
       changeReviewStartedTurnKey = '';
@@ -3797,7 +4074,7 @@ import {
     );
   }
 
-  function sendButtonDomState() {
+  function readSendButtonDomState() {
     const buttons = document.querySelectorAll('[data-incipit-send-button], [class*="sendButton"]');
     let sawSend = false;
     for (const button of buttons) {
@@ -3820,6 +4097,16 @@ import {
       if (button.getAttribute('data-incipit-send-state') === 'send') sawSend = true;
     }
     return sawSend ? 'send' : null;
+  }
+
+  function sendButtonDomState() {
+    const now = nowMs();
+    if (sendButtonDomCachedAt && now - sendButtonDomCachedAt <= SEND_BUTTON_DOM_CACHE_MS) {
+      return sendButtonDomCachedValue;
+    }
+    sendButtonDomCachedValue = readSendButtonDomState();
+    sendButtonDomCachedAt = now;
+    return sendButtonDomCachedValue;
   }
 
   // NOTE: a turn interrupted mid-thinking persists a degenerate
@@ -3883,14 +4170,13 @@ import {
     return null;
   }
 
-  function conversationIsBusy() {
-    try { return !!kernelConversationIsBusy(); }
-    catch (_) { /* Fall through to the legacy probes below. */ }
-    // Claude Code's SessionState toggles this in send() and readMessages()
-    // finally/result handling. It is the canonical stream gate; footer icon
-    // shape is only a fallback for host versions where fiber lookup drifts.
+  function legacyCompositeBusyProbe() {
+    // A bridge busy=true is authoritative. A bridge/session busy=false is not:
+    // Claude Code can briefly drop it between assistant text and follow-up
+    // tool calls while the footer still shows Stop and the turn is not done.
+    // So false always falls through to the DOM/partial safety probes.
     const sessionBusy = activeSessionBusyState();
-    if (sessionBusy !== null) return sessionBusy;
+    if (sessionBusy === true) return true;
 
     const domState = sendButtonDomState();
     if (domState === 'stop') return true;
@@ -3901,6 +4187,26 @@ import {
     const partialTail = activeSessionHasPartialTail();
     if (!partialTail) return false;
     return true;
+  }
+
+  let runtimeBusyProbeRegistered = false;
+  function setupRuntimeBusyProbe() {
+    if (runtimeBusyProbeRegistered) return;
+    runtimeBusyProbeRegistered = true;
+    try {
+      registerRuntimeBusyProbe('legacy.compositeBusy', legacyCompositeBusyProbe);
+      reportHealth('legacy.runtime_busy_probe', 'ok');
+    } catch (_) {
+      reportHealth('legacy.runtime_busy_probe', 'degraded');
+    }
+  }
+
+  function conversationIsBusy() {
+    try {
+      return kernelConversationIsBusy() === true;
+    }
+    catch (_) { /* Fall through to the legacy probes below. */ }
+    return legacyCompositeBusyProbe() === true;
   }
 
   // "Is the OLD streaming process actually stopped?" — the pre-truncate
@@ -5778,6 +6084,37 @@ import {
     return -1;
   }
 
+  function latestRealUserMessageIndex(messages) {
+    if (!Array.isArray(messages) || !messages.length) return -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'progress' || m.type === 'system') continue;
+      if (m.type === 'user' && transcriptHasToolResult(m)) continue;
+      return m.type === 'user' ? i : -1;
+    }
+    return -1;
+  }
+
+  function latestRealUserTurnKey() {
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    const idx = latestRealUserMessageIndex(messages);
+    return idx >= 0 ? recordUuid(messages[idx]) : '';
+  }
+
+  function recordBelongsToCurrentBusyTurn(record) {
+    if (!record || record.type !== 'assistant') return false;
+    if (!conversationIsBusy()) return false;
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    if (!Array.isArray(messages) || !messages.length) return false;
+    const userIdx = latestRealUserMessageIndex(messages);
+    if (userIdx < 0) return false;
+    const recordIdx = transcriptRecordIndex(messages, record);
+    return recordIdx > userIdx;
+  }
+
   function normalizeActionText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
   }
@@ -5813,11 +6150,11 @@ import {
     }
     if (anchor.parentElement === host) {
       if (anchor.nextSibling !== row) host.insertBefore(row, anchor.nextSibling);
-      if (changeReviewTurns().length) scheduleChangeReviewTurnBlocksRender();
+      if (changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
       return;
     }
     host.appendChild(row);
-    if (changeReviewTurns().length) scheduleChangeReviewTurnBlocksRender();
+    if (changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
   }
 
   // Returns true when the record is the trailing assistant of the
@@ -5854,6 +6191,7 @@ import {
   function reconcileAssistantTranscriptActions(markdownRoot, fallbackRecord = null) {
     const host = findAssistantActionHost(markdownRoot);
     if (!host) return;
+    const domRecord = transcriptRecordForElement(host) || transcriptRecordForElement(markdownRoot);
     const existingRow = host.querySelector(':scope > .incipit-assistant-action-row');
     // Fast path: row already decorated. Once a record is the last
     // assistant text of its turn, that property is monotone (records
@@ -5867,12 +6205,17 @@ import {
     // and Interrupt. Idle→busy transitions still flip past-turn rows
     // to disabled via the busy-state observer's `cleanupDuringBusy`.
     if (existingRow) {
+      const existingRecord = domRecord || fallbackRecord;
+      if (recordBelongsToCurrentBusyTurn(existingRecord)) {
+        existingRow.remove();
+        removeCurrentBusyChangeReviewTurnBlocks();
+        return;
+      }
       placeAssistantActionRow(host, markdownRoot, existingRow);
       existingRow.querySelectorAll('.incipit-transcript-action-btn')
         .forEach(b => applyButtonBusyState(b, conversationIsBusy()));
       return;
     }
-    const domRecord = transcriptRecordForElement(host) || transcriptRecordForElement(markdownRoot);
     const domRecordLooksFinal = !!(
       domRecord &&
       domRecord.type === 'assistant' &&
@@ -5885,7 +6228,7 @@ import {
       record.type === 'assistant' &&
       transcriptHasText(record) &&
       isLastAssistantOfTurn(record) &&
-      !isCurrentlyStreamingRecord(record)
+      !recordBelongsToCurrentBusyTurn(record)
     );
     if (!shouldShow) return;
     // Iron streaming gate: never mint a brand-new row while a reply is in
@@ -5942,6 +6285,18 @@ import {
     row.appendChild(moreBtn);
 
     placeAssistantActionRow(host, markdownRoot, row);
+  }
+
+  function removeCurrentBusyAssistantTerminalDecorations() {
+    if (!conversationIsBusy()) return;
+    document.querySelectorAll('.incipit-assistant-action-row').forEach(row => {
+      const host = row.parentElement;
+      if (!host || !host.isConnected) return;
+      const record = transcriptRecordForElement(host);
+      if (!recordBelongsToCurrentBusyTurn(record)) return;
+      row.remove();
+    });
+    removeCurrentBusyChangeReviewTurnBlocks();
   }
 
   function scanAssistantTranscriptActions(root) {
@@ -6040,12 +6395,13 @@ import {
     } catch (_) {}
   }
 
-  // ========== 8a. AskUserQuestion permission panel ==========
+  // ========== 8a. Permission request collapse panel ==========
   //
   // Claude Code's AskUserQuestion permission UI shares the generic
   // permissionRequestContainer shell, then renders a navigation strip and a
-  // questionsContainer inside it. Keep this enhancement scoped to that shape:
-  // Bash/Edit/Plan permission requests should retain their normal flow.
+  // questionsContainer inside it. Generic permission shells are themed in CSS;
+  // this JS enhancement adds the shared collapse UI to Ask and Plan/Edit
+  // approval panels, while Ask alone gets the navigator-aware button position.
   const ASK_PERMISSION_CONTAINER_SELECTOR = '[class*="permissionRequestContainer_"]';
   const ASK_QUESTIONS_SELECTOR = '[class*="questionsContainer_"]';
   const ASK_NAV_SELECTOR = '[class*="navigationBar_"]';
@@ -6059,33 +6415,51 @@ import {
   const observedAskRequests = new WeakSet();
   let askRequestScanScheduled = false;
 
-  function isAskRequestContainer(el) {
+  function isPermissionRequestContainer(el) {
     return !!(
       el &&
       el.nodeType === 1 &&
       el.matches &&
-      el.matches(ASK_PERMISSION_CONTAINER_SELECTOR) &&
+      el.matches(ASK_PERMISSION_CONTAINER_SELECTOR)
+    );
+  }
+
+  function isAskRequestContainer(el) {
+    return !!(
+      isPermissionRequestContainer(el) &&
       el.querySelector &&
       el.querySelector(ASK_QUESTIONS_SELECTOR)
     );
   }
 
-  function closestAskRequestContainer(el) {
+  function closestPermissionRequestContainer(el) {
     if (!el || !el.closest) return null;
     const container = el.closest(ASK_PERMISSION_CONTAINER_SELECTOR);
-    return isAskRequestContainer(container) ? container : null;
+    return isPermissionRequestContainer(container) ? container : null;
   }
 
-  function askRequestTitle(container) {
+  function permissionRequestTitle(container) {
     const question = container.querySelector(ASK_TITLE_SELECTOR);
     const text = question && question.textContent ? question.textContent.trim() : '';
     if (text) return text;
     const active = container.querySelector(`${ASK_ACTIVE_TAB_SELECTOR} ${ASK_NAV_LABEL_SELECTOR}`);
     const activeText = active && active.textContent ? active.textContent.trim() : '';
-    return activeText || 'Question';
+    if (activeText) return activeText;
+    const content = container.querySelector('[class*="permissionRequestContent_"]') || container;
+    const titled = content.querySelector(
+      '[class*="permissionRequestTitle_"], [class*="questionText_"], ' +
+      '[class*="title_"], h1, h2, h3, strong',
+    );
+    const titledText = titled && titled.textContent ? titled.textContent.trim() : '';
+    if (titledText) return titledText;
+    const firstLine = String(content.textContent || '')
+      .split(/\n+/)
+      .map(line => line.trim())
+      .find(line => line && !/^(esc|escape)\b/i.test(line));
+    return firstLine || 'Permission request';
   }
 
-  function askRequestPosition(container) {
+  function permissionRequestPosition(container) {
     const tabs = Array.from(container.querySelectorAll(ASK_NAV_TAB_SELECTOR))
       .filter(tab => tab.querySelector && tab.querySelector(ASK_NAV_LABEL_SELECTOR));
     if (tabs.length <= 1) return '';
@@ -6133,19 +6507,28 @@ import {
   function setAskRequestCollapsed(container, collapsed) {
     if (!container) return;
     const scrollState = captureAskScrollState();
-    if (collapsed) container.setAttribute('data-incipit-ask-collapsed', '1');
-    else container.removeAttribute('data-incipit-ask-collapsed');
-    const toggle = container.querySelector('[data-incipit-ask-collapse-btn]');
+    if (collapsed) {
+      container.setAttribute('data-incipit-permission-collapsed', '1');
+      if (isAskRequestContainer(container)) container.setAttribute('data-incipit-ask-collapsed', '1');
+    } else {
+      container.removeAttribute('data-incipit-permission-collapsed');
+      container.removeAttribute('data-incipit-ask-collapsed');
+    }
+    const toggle = container.querySelector('[data-incipit-permission-collapse-btn], [data-incipit-ask-collapse-btn]');
     if (toggle) {
       toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
       toggle.title = collapsed ? 'Expand' : 'Collapse';
     }
-    const bar = container.querySelector('[data-incipit-ask-collapsed-bar]');
+    const bar = container.querySelector('[data-incipit-permission-collapsed-bar], [data-incipit-ask-collapsed-bar]');
     if (collapsed) {
       try { (bar || container).focus({ preventScroll: true }); } catch (_) {}
     } else {
       requestAnimationFrame(() => {
-        const first = container.querySelector('[role="radio"], [role="checkbox"]');
+        const first = container.querySelector(
+          '[role="radio"], [role="checkbox"], ' +
+          'button:not([data-incipit-permission-collapse-btn]):not([data-incipit-ask-collapse-btn]), ' +
+          'input:not([type="hidden"]), textarea',
+        );
         try { first && first.focus && first.focus({ preventScroll: true }); } catch (_) {}
       });
     }
@@ -6153,17 +6536,18 @@ import {
   }
 
   function ensureAskCollapsedBar(container) {
-    let bar = container.querySelector(':scope > [data-incipit-ask-collapsed-bar]');
+    let bar = container.querySelector(':scope > [data-incipit-permission-collapsed-bar], :scope > [data-incipit-ask-collapsed-bar]');
     if (!bar) {
       bar = document.createElement('button');
       bar.type = 'button';
-      bar.className = 'incipit-ask-collapsed-bar';
+      bar.className = 'incipit-ask-collapsed-bar incipit-permission-collapsed-bar';
+      bar.setAttribute('data-incipit-permission-collapsed-bar', '');
       bar.setAttribute('data-incipit-ask-collapsed-bar', '');
-      bar.setAttribute('aria-label', 'Expand question panel');
+      bar.setAttribute('aria-label', 'Expand permission panel');
       const title = document.createElement('span');
-      title.className = 'incipit-ask-collapsed-title';
+      title.className = 'incipit-ask-collapsed-title incipit-permission-collapsed-title';
       const meta = document.createElement('span');
-      meta.className = 'incipit-ask-collapsed-meta';
+      meta.className = 'incipit-ask-collapsed-meta incipit-permission-collapsed-meta';
       bar.appendChild(title);
       bar.appendChild(meta);
       bar.addEventListener('click', evt => {
@@ -6175,44 +6559,55 @@ import {
     }
     const title = bar.querySelector('.incipit-ask-collapsed-title');
     const meta = bar.querySelector('.incipit-ask-collapsed-meta');
-    if (title) title.textContent = askRequestTitle(container);
-    if (meta) meta.textContent = askRequestPosition(container);
+    if (title) title.textContent = permissionRequestTitle(container);
+    if (meta) meta.textContent = permissionRequestPosition(container);
     return bar;
   }
 
   function ensureAskCollapseButton(container) {
     const nav = container.querySelector(ASK_NAV_SELECTOR);
-    if (!nav) return null;
-    let btn = container.querySelector('[data-incipit-ask-collapse-btn]');
+    let btn = container.querySelector('[data-incipit-permission-collapse-btn], [data-incipit-ask-collapse-btn]');
     if (!btn) {
       btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'incipit-ask-collapse-btn';
+      btn.className = 'incipit-ask-collapse-btn incipit-permission-collapse-btn';
+      btn.setAttribute('data-incipit-permission-collapse-btn', '');
       btn.setAttribute('data-incipit-ask-collapse-btn', '');
-      btn.setAttribute('aria-label', 'Collapse question panel');
+      btn.setAttribute('aria-label', 'Collapse permission panel');
       btn.addEventListener('click', evt => {
         evt.preventDefault();
         evt.stopPropagation();
         setAskRequestCollapsed(container, true);
       });
     }
-    if (btn.parentElement !== nav) {
+    if (nav && btn.parentElement !== nav) {
+      btn.removeAttribute('data-incipit-permission-floating');
+      container.removeAttribute('data-incipit-permission-floating-collapse');
       const close = nav.querySelector(ASK_CLOSE_SELECTOR);
       nav.insertBefore(btn, close || null);
+    } else if (nav) {
+      btn.removeAttribute('data-incipit-permission-floating');
+      container.removeAttribute('data-incipit-permission-floating-collapse');
+    } else {
+      btn.setAttribute('data-incipit-permission-floating', '');
+      container.setAttribute('data-incipit-permission-floating-collapse', '1');
+      if (btn.parentElement !== container) container.appendChild(btn);
     }
     btn.setAttribute(
       'aria-expanded',
-      container.getAttribute('data-incipit-ask-collapsed') === '1' ? 'false' : 'true',
+      container.getAttribute('data-incipit-permission-collapsed') === '1' ? 'false' : 'true',
     );
-    btn.title = container.getAttribute('data-incipit-ask-collapsed') === '1'
+    btn.title = container.getAttribute('data-incipit-permission-collapsed') === '1'
       ? 'Expand'
       : 'Collapse';
     return btn;
   }
 
   function decorateAskRequest(container) {
-    if (!isAskRequestContainer(container)) return;
-    container.setAttribute('data-incipit-ask-request', '');
+    if (!isPermissionRequestContainer(container)) return;
+    container.setAttribute('data-incipit-permission-request', '');
+    if (isAskRequestContainer(container)) container.setAttribute('data-incipit-ask-request', '');
+    else container.removeAttribute('data-incipit-ask-request');
     ensureAskCollapsedBar(container);
     ensureAskCollapseButton(container);
     observeAskRequestContainer(container);
@@ -6247,7 +6642,7 @@ import {
     });
   }
 
-  // Cheap "does this subtree carry an Ask permission panel" test —
+  // Cheap "does this subtree carry a permission panel" test -
   // `matches` then a scoped `querySelector`, mirroring `nodeTouchesDiff`.
   // For streamed prose nodes the subtree is tiny and this returns null
   // fast; the point is to avoid the ancestor-walk-to-<body> below.
@@ -6257,25 +6652,37 @@ import {
     return node.querySelector?.(ASK_PERMISSION_CONTAINER_SELECTOR) != null;
   }
 
+  function mutationTouchesAskSurface(m) {
+    if (!m || m.type !== 'childList') return false;
+    if (nodeTouchesPermissionRequest(m.target)) return true;
+    for (const node of m.addedNodes) {
+      if (node.nodeType === 1 && nodeTouchesAsk(node)) return true;
+    }
+    for (const node of m.removedNodes) {
+      if (node.nodeType === 1 && nodeTouchesAsk(node)) return true;
+    }
+    return false;
+  }
+
   // Is a permission panel currently mounted anywhere? Recomputed only
-  // when a mutation actually adds/removes an Ask subtree (rare), so the
+  // when a mutation actually adds/removes a permission subtree (rare), so the
   // streaming hot path never pays the `document.querySelector`.
   let askActive = false;
 
   function enqueueAskRequestRoots(root, includeDescendants = true) {
     if (!root || root.nodeType !== 1) return;
-    if (isAskRequestContainer(root)) enqueueAskRequestContainer(root);
-    const closest = closestAskRequestContainer(root);
+    if (isPermissionRequestContainer(root)) enqueueAskRequestContainer(root);
+    const closest = closestPermissionRequestContainer(root);
     if (closest) enqueueAskRequestContainer(closest);
     if (!includeDescendants || !root.querySelector) return;
     if (root === document.body && root.querySelectorAll) {
       root.querySelectorAll(ASK_PERMISSION_CONTAINER_SELECTOR).forEach(container => {
-        if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
+        if (isPermissionRequestContainer(container)) enqueueAskRequestContainer(container);
       });
       return;
     }
     const container = root.querySelector(ASK_PERMISSION_CONTAINER_SELECTOR);
-    if (isAskRequestContainer(container)) enqueueAskRequestContainer(container);
+    if (isPermissionRequestContainer(container)) enqueueAskRequestContainer(container);
   }
 
   function setupAskRequestRefinement() {
@@ -6285,11 +6692,11 @@ import {
     }
     // PERF: this body-subtree observer fires for every token batch during
     // AI streaming. The old code ran `enqueueAskRequestRoots(m.target,
-    // false)` — i.e. `closestAskRequestContainer()`, an ancestor walk to
+    // false)` — i.e. `closestPermissionRequestContainer()`, an ancestor walk to
     // <body> that is always null mid-stream — plus a `querySelector` for
-    // EVERY such mutation, for an Ask panel that is present a fraction of
+    // EVERY such mutation, for a permission panel that is present a fraction of
     // the time. Gate it on actual panel presence (same idiom as the
-    // diff-sidebar `liveDiffEditors` gate): an Ask panel is a
+    // diff-sidebar `liveDiffEditors` gate): a permission panel is a
     // self-contained subtree the host mounts/unmounts wholesale, never
     // nested under the streamed assistant prose. When no panel is
     // present and this mutation neither added nor removed one, skip with
@@ -6299,15 +6706,8 @@ import {
       for (let i = 0; i < muts.length; i++) {
         const m = muts[i];
         if (m.type !== 'childList') continue;
-        let structural = false; // an Ask subtree was added or removed
-        for (const node of m.addedNodes) {
-          if (node.nodeType === 1 && nodeTouchesAsk(node)) { structural = true; break; }
-        }
-        if (!structural) {
-          for (const node of m.removedNodes) {
-            if (node.nodeType === 1 && nodeTouchesAsk(node)) { structural = true; break; }
-          }
-        }
+        if (mutationInsideFocusedEditor(m)) continue;
+        const structural = mutationTouchesAskSurface(m);
         if (structural) {
           askActive = !!document.querySelector(ASK_PERMISSION_CONTAINER_SELECTOR);
         }
@@ -6920,9 +7320,22 @@ import {
         liveDiffEditors.delete(diff);
         continue;
       }
+      if (!diffIsNearViewport(diff)) continue;
       syncOneDiffSideBars(diff);
     }
     if (liveDiffEditors.size === 0) syncDiffSideBarsListeners();
+  }
+
+  function diffIsNearViewport(diff) {
+    try {
+      const rect = diff.getBoundingClientRect();
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      if (rect.width <= 0 || rect.height <= 0 || vh <= 0) return false;
+      const margin = Math.max(240, Math.min(800, vh));
+      return rect.bottom >= -margin && rect.top <= vh + margin;
+    } catch (_) {
+      return true;
+    }
   }
 
   function setupDiffSideBars() {
@@ -6941,6 +7354,7 @@ import {
       for (let i = 0; i < muts.length && !touched; i++) {
         const m = muts[i];
         if (m.type !== 'childList') continue;
+        if (mutationInsideFocusedEditor(m)) continue;
         for (let j = 0; j < m.addedNodes.length; j++) {
           if (nodeTouchesDiff(m.addedNodes[j])) { touched = true; break; }
         }
@@ -10154,20 +10568,34 @@ import {
       });
     }
 
-    function enqueueAffectedToolUses(node) {
-      if (!node || node.nodeType !== 1) return;
+    function enqueueAffectedToolUses(node, targetInsideToolUse) {
+      if (!node || node.nodeType !== 1) return false;
+      let queued = false;
       // Case A: the added subtree IS a toolUse, or sits INSIDE one.
       // Covers React rebuilding the summary subtree mid-stream — the rebuilt
       // children come in as added nodes whose closest toolUse needs to be
       // re-decorated because our injected stats span was wiped.
-      const ancestor = node.closest && node.closest('[class*="toolUse_"]');
-      if (ancestor) pendingToolUseRoots.add(ancestor);
+      if (targetInsideToolUse) {
+        const ancestor = node.closest && node.closest('[class*="toolUse_"]');
+        if (ancestor) {
+          pendingToolUseRoots.add(ancestor);
+          queued = true;
+        }
+      }
+      if (elementClassText(node).indexOf('toolUse_') !== -1) {
+        pendingToolUseRoots.add(node);
+        queued = true;
+      }
       // Case B: the added subtree CONTAINS toolUse descendants (e.g. a fresh
       // assistant message landing with a tool call inside).
-      if (node.querySelectorAll) {
+      if (node.firstElementChild && node.querySelectorAll) {
         const inners = node.querySelectorAll('[class*="toolUse_"]');
-        for (const t of inners) pendingToolUseRoots.add(t);
+        for (const t of inners) {
+          pendingToolUseRoots.add(t);
+          queued = true;
+        }
       }
+      return queued;
     }
 
     // Local body observer is the primary path again. An earlier attempt
@@ -10181,8 +10609,14 @@ import {
       for (let i = 0; i < muts.length; i++) {
         const m = muts[i];
         if (m.type !== 'childList' || !m.addedNodes.length) continue;
-        for (const node of m.addedNodes) enqueueAffectedToolUses(node);
-        dirty = true;
+        if (mutationInsideFocusedEditor(m)) continue;
+        const targetInsideToolUse = !!(
+          m.target &&
+          (m.target.nodeType === 1 ? m.target : m.target.parentElement)?.closest?.('[class*="toolUse_"]')
+        );
+        for (const node of m.addedNodes) {
+          if (enqueueAffectedToolUses(node, targetInsideToolUse)) dirty = true;
+        }
       }
       if (dirty && pendingToolUseRoots.size) scheduleRescan();
     });
@@ -10241,6 +10675,7 @@ import {
   function init() {
     reportHealth('legacy', 'starting');
     log('Initializing legacy interaction module...');
+    setupRuntimeBusyProbe();
     const legacyContext = {
       reportHealth,
       preloadEffortBrainIcons,
@@ -10248,12 +10683,12 @@ import {
       setupToolFold,
       setupDiffSideBars,
       setupBusyStateObserver,
-      setupComposerInputState,
       setupFileDragReferenceHint,
       setupUserBubbleNativeActionSuppression,
       setupDeferredNextMessageQueue,
       setupChangeReviewFileReview,
       setupAskRequestRefinement,
+      setupCustomModelPicker,
       setupTranscriptActionDebugTools,
       assertForkRewindReady,
     };
@@ -10264,9 +10699,8 @@ import {
     initLegacyForkRewind(legacyContext);
     initLegacyUserBubble(legacyContext);
     initLegacyDeferredNext(legacyContext);
-    setupComposerInputState();
-    // 2026-06-05: change review UI is developed but withheld from release apply.
-    // Keep the implementation nearby, but do not activate its composer/transcript UI.
+    setupChangeReviewFileReview();
+    setupCustomModelPicker();
     initLegacyAskRefinement(legacyContext);
     initLegacyTranscriptActionDebug(legacyContext);
     reportHealth('legacy', 'ok');

@@ -5,6 +5,50 @@ import {
   subscribe as subscribeRuntime,
 } from './runtime_kernel.js';
 
+function classText(node) {
+  if (!node || node.nodeType !== 1) return '';
+  return typeof node.className === 'string'
+    ? node.className
+    : String(node.getAttribute && node.getAttribute('class') || '');
+}
+
+function nodeInsideFocusedEditor(node) {
+  var active = document.activeElement;
+  return !!(
+    active &&
+    active.isContentEditable &&
+    node &&
+    (node === active || active.contains(node))
+  );
+}
+
+function mutationInsideFocusedEditor(mutation) {
+  return !!(mutation && mutation.target && nodeInsideFocusedEditor(mutation.target));
+}
+
+function nodeInsideMessagesContainer(node) {
+  if (!node || node.nodeType !== 1) return false;
+  try {
+    return !!(
+      node.matches && node.matches(SEL.messagesContainer) ||
+      node.matches && node.matches('[class*="messagesContainer_"]') ||
+      node.closest && node.closest(SEL.messagesContainer) ||
+      node.closest && node.closest('[class*="messagesContainer_"]')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function mutationTouchesAddedNode(mutation, predicate) {
+  if (!mutation || typeof predicate !== 'function') return false;
+  for (var i = 0; i < mutation.addedNodes.length; i++) {
+    var node = mutation.addedNodes[i];
+    if (node && node.nodeType === 1 && predicate(node)) return true;
+  }
+  return false;
+}
+
 // ============================================================
 // Shared active-session identity heartbeat.
 // ============================================================
@@ -133,7 +177,22 @@ function setupFooterAbbreviation() {
 
   // Body-level finder is childList-only (no characterData) and so safe
   // against the IME paint bug. Its only job is to spot footer remounts.
-  const finder = new MutationObserver(() => {
+  function nodeCouldContainFooter(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (nodeInsideFocusedEditor(node) || nodeInsideMessagesContainer(node)) return false;
+    if (node.hasAttribute && node.hasAttribute('data-incipit-input-footer')) return true;
+    const cls = classText(node);
+    if (cls.indexOf('inputFooter') !== -1) return true;
+    return !!(node.querySelector && node.querySelector('[data-incipit-input-footer], [class*="inputFooter"]'));
+  }
+
+  const finder = new MutationObserver(mutations => {
+    let touched = false;
+    for (const mutation of mutations) {
+      if (mutationInsideFocusedEditor(mutation)) continue;
+      if (mutationTouchesAddedNode(mutation, nodeCouldContainFooter)) { touched = true; break; }
+    }
+    if (!touched) return;
     const f = document.querySelector('[data-incipit-input-footer]');
     if (f && f !== attachedFooter) attach(f);
   });
@@ -188,13 +247,23 @@ function setupKbdSymbols() {
 
   scan(document.body);
 
+  function nodeCouldContainKbdSymbol(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (nodeInsideFocusedEditor(node) || nodeInsideMessagesContainer(node)) return false;
+    if (String(node.tagName || '').toLowerCase() === 'kbd') return true;
+    const cls = classText(node);
+    if (cls.indexOf('menuHeaderHint') !== -1 || cls.indexOf('keys_') !== -1) return true;
+    return !!(node.querySelector && node.querySelector('kbd, [class*="menuHeaderHint"], [class*="keys_"]'));
+  }
+
   // Body-level childList observer (no characterData → IME-paint safe).
   // Modes/history popups mount on demand, so we cannot just attach
   // once at init.
   const obs = new MutationObserver(muts => {
     for (const m of muts) {
+      if (mutationInsideFocusedEditor(m)) continue;
       for (const n of m.addedNodes) {
-        if (n.nodeType === 1) scan(n);
+        if (n.nodeType === 1 && nodeCouldContainKbdSymbol(n)) scan(n);
       }
     }
   });
@@ -1247,6 +1316,7 @@ function setupCacheBadge() {
   // version thrashed layout whenever the popup was open.
   var repositionScheduled = false;
   function scheduleReposition() {
+    if (!isOpen()) return;
     if (repositionScheduled) return;
     repositionScheduled = true;
     requestAnimationFrame(function() {
@@ -1268,10 +1338,12 @@ function setupCacheBadge() {
     requestAnimationFrame(function() { ensureScheduled = false; ensureBadge(); });
   }
   function mutationTouchesFooter(m) {
+    if (mutationInsideFocusedEditor(m)) return false;
     for (var i = 0; i < m.addedNodes.length; i++) {
       var n = m.addedNodes[i];
       if (!n || n.nodeType !== 1) continue;
-      var cls = typeof n.className === 'string' ? n.className : '';
+      if (nodeInsideFocusedEditor(n) || nodeInsideMessagesContainer(n)) continue;
+      var cls = classText(n);
       if (cls.indexOf('inputFooter') !== -1 || cls.indexOf('Footer') !== -1) return true;
       if (n.querySelector && n.querySelector('[class*="inputFooter"]')) return true;
     }
@@ -1843,6 +1915,7 @@ function setupEditActivityHeader() {
   // Same coalescing rationale as the cache popup above.
   var activityRepositionScheduled = false;
   function scheduleActivityReposition() {
+    if (!isActivityOpen()) return;
     if (activityRepositionScheduled) return;
     activityRepositionScheduled = true;
     requestAnimationFrame(function() {
@@ -1864,10 +1937,12 @@ function setupEditActivityHeader() {
   }
 
   function mutationTouchesHeader(m) {
+    if (mutationInsideFocusedEditor(m)) return false;
     for (var i = 0; i < m.addedNodes.length; i++) {
       var n = m.addedNodes[i];
       if (!n || n.nodeType !== 1) continue;
-      var cls = typeof n.className === 'string' ? n.className : '';
+      if (nodeInsideFocusedEditor(n) || nodeInsideMessagesContainer(n)) continue;
+      var cls = classText(n);
       if (n.tagName === 'BUTTON') {
         var label = String(n.getAttribute('aria-label') || '').toLowerCase();
         var title = String(n.getAttribute('title') || '').toLowerCase();

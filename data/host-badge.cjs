@@ -28,9 +28,9 @@ const CHANGE_REVIEW_SCHEMA_VERSION = 1;
 const CHANGE_REVIEW_INDEX_DIR = path.join(os.homedir(), '.incipit', 'change-review-v1');
 const CHANGE_REVIEW_DIFF_MAX_BYTES = 768 * 1024;
 const CHANGE_REVIEW_LINE_STATS_VERSION = 2;
-// 2026-06-05: change review is still under development. Keep the backend
-// helpers testable, but do not run its runtime protocol in release apply.
-const CHANGE_REVIEW_RUNTIME_ENABLED = false;
+// Change review is a per-turn runtime surface: after the first successful
+// Write/Edit/MultiEdit it stays visible until that assistant turn finalizes.
+const CHANGE_REVIEW_RUNTIME_ENABLED = true;
 const LINE_DIFF_EXACT_CELL_LIMIT = 12 * 1000 * 1000;
 const PROJECT_INDEX_BATCH_FILES = 2;
 const PROJECT_INDEX_BATCH_BYTES = 8 * 1024 * 1024;
@@ -2135,6 +2135,7 @@ function createParser(filePath, options = {}) {
     changeReviewTurns: new Map(),
     changeReviewAssistantTurns: new Map(),
     changeReviewSnapshotUpdates: new Map(),
+    changeReviewPendingSummaries: new Map(),
     changeReviewCurrentTurnKey: null,
     changeReviewVersion: 0,
     usageVersion: 0,
@@ -2251,16 +2252,58 @@ function compactChangeReviewFile(file) {
   return out;
 }
 
+function compactChangeReviewTurnSummary(summary) {
+  if (!summary || safeTokenNumber(summary.files) <= 0) return null;
+  return {
+    files: safeTokenNumber(summary.files),
+    added: safeTokenNumber(summary.added),
+    removed: safeTokenNumber(summary.removed),
+    hasLineStats: summary.hasLineStats === true,
+    toolIds: Array.from(summary.toolIds instanceof Set ? summary.toolIds : [])
+      .filter(id => typeof id === 'string' && id),
+    firstSeenAt: Number.isFinite(summary.firstSeenAt) ? summary.firstSeenAt : 0,
+    lastSeenAt: Number.isFinite(summary.lastSeenAt) ? summary.lastSeenAt : 0,
+  };
+}
+
+function compactChangeReviewPendingSummary(item) {
+  if (!item || typeof item.id !== 'string' || !item.id) return null;
+  return {
+    id: item.id,
+    name: typeof item.name === 'string' ? item.name : '',
+    ts: typeof item.ts === 'string' ? item.ts : '',
+    turnKey: typeof item.turnKey === 'string' ? item.turnKey : null,
+    assistantUuid: typeof item.assistantUuid === 'string' && item.assistantUuid ? item.assistantUuid : null,
+  };
+}
+
+function hydrateChangeReviewTurnSummary(raw) {
+  if (!raw || typeof raw !== 'object' || safeTokenNumber(raw.files) <= 0) return null;
+  return {
+    files: safeTokenNumber(raw.files),
+    added: safeTokenNumber(raw.added),
+    removed: safeTokenNumber(raw.removed),
+    hasLineStats: raw.hasLineStats === true,
+    toolIds: new Set(Array.isArray(raw.toolIds)
+      ? raw.toolIds.filter(id => typeof id === 'string' && id)
+      : []),
+    firstSeenAt: Number.isFinite(raw.firstSeenAt) ? raw.firstSeenAt : 0,
+    lastSeenAt: Number.isFinite(raw.lastSeenAt) ? raw.lastSeenAt : 0,
+  };
+}
+
 function compactChangeReviewTurn(turn) {
   if (!turn || typeof turn.turnKey !== 'string' || !turn.turnKey || !(turn.files instanceof Map)) return null;
   const files = Array.from(turn.files.values()).map(compactChangeReviewFile).filter(Boolean);
-  if (!files.length) return null;
+  const summary = compactChangeReviewTurnSummary(turn.summary);
+  if (!files.length && !summary) return null;
   return {
     turnKey: turn.turnKey,
     cwd: typeof turn.cwd === 'string' ? turn.cwd : '',
     timestamp: typeof turn.timestamp === 'string' ? turn.timestamp : '',
     lifecycleStartedAt: Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0,
     order: Number.isFinite(turn.order) ? turn.order : 0,
+    summary,
     files,
   };
 }
@@ -2335,6 +2378,11 @@ function serializeUsageCacheParser(parser, stat) {
             .filter(Boolean),
         ])
         .filter(([assistantUuid, updates]) => typeof assistantUuid === 'string' && assistantUuid && updates.length),
+      pendingSummaries: Array.from(parser.changeReviewPendingSummaries instanceof Map
+        ? parser.changeReviewPendingSummaries.values()
+        : [])
+        .map(compactChangeReviewPendingSummary)
+        .filter(Boolean),
       turns: Array.from(parser.changeReviewTurns.values()).map(compactChangeReviewTurn).filter(Boolean),
     },
   };
@@ -2452,6 +2500,7 @@ function hydrateUsageCacheParser(parser, index) {
   parser.changeReviewTurns = new Map();
   parser.changeReviewAssistantTurns = new Map();
   parser.changeReviewSnapshotUpdates = new Map();
+  parser.changeReviewPendingSummaries = new Map();
   parser.changeReviewCurrentTurnKey = typeof review.currentTurnKey === 'string' && review.currentTurnKey
     ? review.currentTurnKey
     : null;
@@ -2471,6 +2520,12 @@ function hydrateUsageCacheParser(parser, index) {
     const compacted = updates.map(compactChangeReviewSnapshotUpdate).filter(Boolean);
     if (compacted.length) parser.changeReviewSnapshotUpdates.set(assistantUuid, compacted);
   }
+  const pendingSummaries = Array.isArray(review.pendingSummaries) ? review.pendingSummaries : [];
+  for (const raw of pendingSummaries) {
+    const item = compactChangeReviewPendingSummary(raw);
+    if (!item || parser.changeReviewPendingSummaries.has(item.id)) continue;
+    parser.changeReviewPendingSummaries.set(item.id, item);
+  }
   const expectedSessionId = path.basename(parser.path, JSONL_SUFFIX);
   const rawTurns = Array.isArray(review.turns) ? review.turns : [];
   const seenTurns = new Set();
@@ -2484,6 +2539,7 @@ function hydrateUsageCacheParser(parser, index) {
       cwd: typeof rawTurn.cwd === 'string' ? rawTurn.cwd : '',
       timestamp: typeof rawTurn.timestamp === 'string' ? rawTurn.timestamp : '',
       files: new Map(),
+      summary: hydrateChangeReviewTurnSummary(rawTurn.summary),
       lifecycleStartedAt: Number.isFinite(rawTurn.lifecycleStartedAt) ? rawTurn.lifecycleStartedAt : 0,
       order: Number.isFinite(rawTurn.order) ? rawTurn.order : parser.changeReviewTurns.size,
     };
@@ -2521,7 +2577,7 @@ function hydrateUsageCacheParser(parser, index) {
       }
       turn.files.set(key, file);
     }
-    if (turn.files.size) parser.changeReviewTurns.set(turn.turnKey, turn);
+    if (turn.files.size || turn.summary) parser.changeReviewTurns.set(turn.turnKey, turn);
   }
   parser.changeReviewVersion = Number.isFinite(review.changeReviewVersion)
     ? review.changeReviewVersion
@@ -2647,6 +2703,16 @@ function processEditActivityEntry(parser, entry) {
     const assistantUuid = typeof entry.uuid === 'string' && entry.uuid ? entry.uuid : '';
     for (const block of blocks) {
       if (!block || block.type !== 'tool_use') continue;
+      const summaryItem = changeReviewSummaryFromToolUse(block, entry.timestamp || '');
+      if (summaryItem && summaryItem.id) {
+        if (!parser.changeReviewPendingSummaries) parser.changeReviewPendingSummaries = new Map();
+        summaryItem.turnKey = parser.changeReviewCurrentTurnKey || null;
+        summaryItem.assistantUuid = assistantUuid || null;
+        if (assistantUuid && summaryItem.turnKey) parser.changeReviewAssistantTurns.set(assistantUuid, summaryItem.turnKey);
+        parser.changeReviewPendingSummaries.set(summaryItem.id, summaryItem);
+        parser.persistDirty = true;
+        continue;
+      }
       const item = editActivityFromToolUse(block, entry.timestamp || '');
       if (!item || !item.id) continue;
       item.turnKey = parser.changeReviewCurrentTurnKey || null;
@@ -2663,17 +2729,32 @@ function processEditActivityEntry(parser, entry) {
   for (const block of blocks) {
     if (!block || block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
     const item = parser.editPending.get(block.tool_use_id);
-    if (!item) continue;
-    parser.editPending.delete(block.tool_use_id);
+    if (item) {
+      parser.editPending.delete(block.tool_use_id);
+      parser.persistDirty = true;
+      if (toolResultIsError(block)) continue;
+      countEditActivity(parser, item);
+      countChangeReviewTool(parser, item);
+      continue;
+    }
+    const summaryItem = parser.changeReviewPendingSummaries &&
+      parser.changeReviewPendingSummaries.get(block.tool_use_id);
+    if (!summaryItem) continue;
+    parser.changeReviewPendingSummaries.delete(block.tool_use_id);
     parser.persistDirty = true;
-    if (toolResultIsError(block)) continue;
-    countEditActivity(parser, item);
-    countChangeReviewTool(parser, item);
+    if (toolResultIsError(block) || !toolUseResultSucceeded(entry.toolUseResult)) continue;
+    countChangeReviewSummaryTool(parser, summaryItem, entry.toolUseResult);
   }
 }
 
 function toolResultIsError(block) {
   return block && block.is_error === true;
+}
+
+function toolUseResultSucceeded(result) {
+  if (!result || typeof result !== 'object') return true;
+  const status = typeof result.status === 'string' ? result.status.toLowerCase() : '';
+  return !status || status === 'completed' || status === 'success' || status === 'succeeded';
 }
 
 function processChangeReviewEntry(parser, entry) {
@@ -2880,6 +2961,7 @@ function ensureChangeReviewTurn(parser, turnKey, meta = {}) {
       cwd: meta.cwd || parser.projectCwd || '',
       timestamp: meta.timestamp || '',
       files: new Map(),
+      summary: null,
       order: parser.changeReviewTurns.size,
     };
     parser.changeReviewTurns.set(turnKey, turn);
@@ -3007,6 +3089,90 @@ function countChangeReviewTool(parser, item) {
     parser.persistDirty = true;
     consumeChangeReviewSnapshotUpdatesForItem(parser, item);
   }
+}
+
+function changeReviewSummaryFromToolUse(block, ts) {
+  if (!block || typeof block.id !== 'string' || block.name !== 'Agent') return null;
+  return {
+    id: block.id,
+    name: block.name,
+    ts: ts || '',
+    turnKey: null,
+    assistantUuid: null,
+  };
+}
+
+function safeToolStatCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function hasFiniteToolStat(stats, key) {
+  return !!(stats && Object.prototype.hasOwnProperty.call(stats, key) &&
+    Number.isFinite(Number(stats[key])));
+}
+
+function changeReviewSummaryStatsFromToolUseResult(result) {
+  const stats = result && typeof result === 'object' &&
+    result.toolStats && typeof result.toolStats === 'object'
+    ? result.toolStats
+    : null;
+  const files = safeToolStatCount(stats && stats.editFileCount);
+  if (!files) return null;
+  const hasLineStats = hasFiniteToolStat(stats, 'linesAdded') || hasFiniteToolStat(stats, 'linesRemoved');
+  return {
+    files,
+    added: hasLineStats ? safeTokenNumber(Number(stats.linesAdded)) : 0,
+    removed: hasLineStats ? safeTokenNumber(Number(stats.linesRemoved)) : 0,
+    hasLineStats,
+  };
+}
+
+function changeReviewSummaryBeforeLifecycle(turn, item) {
+  const startedAt = turn && Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0;
+  if (!startedAt || !item) return false;
+  const summary = turn.summary;
+  if (summary &&
+      summary.toolIds instanceof Set &&
+      typeof item.id === 'string' &&
+      summary.toolIds.has(item.id)) {
+    return true;
+  }
+  const itemMs = timestampMs(item.ts);
+  return !!(itemMs && itemMs + 1000 < startedAt);
+}
+
+function countChangeReviewSummaryTool(parser, item, result) {
+  if (!item || !item.turnKey) return;
+  const stats = changeReviewSummaryStatsFromToolUseResult(result);
+  if (!stats) return;
+  if (item.assistantUuid) parser.changeReviewAssistantTurns.set(item.assistantUuid, item.turnKey);
+  const turn = ensureChangeReviewTurn(parser, item.turnKey, { timestamp: item.ts || '' });
+  if (changeReviewSummaryBeforeLifecycle(turn, item)) return;
+  const startedAt = Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0;
+  if (!turn.summary || (startedAt > 0 &&
+      Number.isFinite(turn.summary.lastSeenAt) &&
+      turn.summary.lastSeenAt < startedAt)) {
+    turn.summary = {
+      files: 0,
+      added: 0,
+      removed: 0,
+      hasLineStats: false,
+      toolIds: new Set(),
+      firstSeenAt: Date.now(),
+      lastSeenAt: Date.now(),
+    };
+  }
+  if (turn.summary.toolIds.has(item.id)) return;
+  turn.summary.files += stats.files;
+  turn.summary.added += stats.added || 0;
+  turn.summary.removed += stats.removed || 0;
+  turn.summary.hasLineStats = turn.summary.hasLineStats || stats.hasLineStats === true;
+  turn.summary.toolIds.add(item.id);
+  if (!turn.summary.firstSeenAt) turn.summary.firstSeenAt = Date.now();
+  turn.summary.lastSeenAt = Date.now();
+  parser.changeReviewVersion += 1;
+  parser.persistDirty = true;
 }
 
 function editActivityFromToolUse(block, ts) {
@@ -3294,20 +3460,18 @@ function buildChangeReviewPayload(parser, reviewState) {
     isChangeReviewTurnActive(reviewState, activeSource.turnKey)
     ? changeReviewTurnPayload(activeSource, reviewState)
     : null;
-  const visibleActiveTurn = activeTurn && activeTurn.files.length ? activeTurn : null;
+  const visibleActiveTurn = changeReviewTurnPayloadHasChanges(activeTurn) ? activeTurn : null;
   const turns = Array.from(parser.changeReviewTurns.values())
-    .filter(turn => turn && turn.files && turn.files.size)
+    .filter(turn => changeReviewTurnHasVisibleChanges(turn, reviewState))
     .filter(turn => isChangeReviewTurnFinalized(reviewState, turn.turnKey))
     .sort((a, b) => a.order - b.order)
     .map(turn => changeReviewTurnPayload(turn, reviewState))
-    .filter(turn => turn.files.length);
+    .filter(changeReviewTurnPayloadHasChanges);
   const latestTurn = turns.length ? turns[turns.length - 1] : null;
   const totals = turns.reduce((sum, turn) => {
-    for (const file of turn.files) {
-      sum.files += 1;
-      sum.added += file.added || 0;
-      sum.removed += file.removed || 0;
-    }
+    sum.files += turn.totals && turn.totals.files || 0;
+    sum.added += turn.totals && turn.totals.added || 0;
+    sum.removed += turn.totals && turn.totals.removed || 0;
     return sum;
   }, { files: 0, added: 0, removed: 0 });
   return {
@@ -3327,21 +3491,40 @@ function changeReviewTurnPayload(turn, reviewState) {
   const files = changeReviewFilesForTurn(turn, reviewState)
     .sort((a, b) => a.displayPath.localeCompare(b.displayPath))
     .map(file => changeReviewFilePayload(file, reviewState));
+  const summary = changeReviewSummaryForTurn(turn, reviewState);
   const totals = files.reduce((sum, file) => {
     sum.files += 1;
     sum.added += file.added || 0;
     sum.removed += file.removed || 0;
+    sum.hasLineStats = sum.hasLineStats || file.hasLineStats === true;
     return sum;
-  }, { files: 0, added: 0, removed: 0 });
+  }, { files: 0, added: 0, removed: 0, hasLineStats: false });
+  if (summary) {
+    totals.files += summary.files || 0;
+    totals.added += summary.added || 0;
+    totals.removed += summary.removed || 0;
+    totals.hasLineStats = totals.hasLineStats || summary.hasLineStats === true;
+  }
   return {
     id: turn.turnKey,
     turnKey: turn.turnKey,
     sessionId: turn.sessionId,
     cwd: turn.cwd || null,
     timestamp: turn.timestamp || '',
+    summary,
     files,
     totals,
   };
+}
+
+function changeReviewTurnPayloadHasChanges(turn) {
+  return !!(turn && turn.totals && safeTokenNumber(turn.totals.files) > 0);
+}
+
+function changeReviewTurnHasVisibleChanges(turn, reviewState) {
+  if (!turn) return false;
+  if (changeReviewFilesForTurn(turn, reviewState).length > 0) return true;
+  return !!changeReviewSummaryForTurn(turn, reviewState);
 }
 
 function changeReviewLifecycleStartedAt(reviewState, turnKey) {
@@ -3354,6 +3537,21 @@ function changeReviewFilesForTurn(turn, reviewState) {
   const startedAt = changeReviewLifecycleStartedAt(reviewState, turn.turnKey);
   return Array.from(turn.files.values())
     .filter(file => !startedAt || (Number.isFinite(file.lastSeenAt) && file.lastSeenAt >= startedAt));
+}
+
+function changeReviewSummaryForTurn(turn, reviewState) {
+  if (!turn || !turn.summary || safeTokenNumber(turn.summary.files) <= 0) return null;
+  const startedAt = changeReviewLifecycleStartedAt(reviewState, turn.turnKey);
+  if (startedAt &&
+      (!Number.isFinite(turn.summary.lastSeenAt) || turn.summary.lastSeenAt < startedAt)) {
+    return null;
+  }
+  return {
+    files: safeTokenNumber(turn.summary.files),
+    added: safeTokenNumber(turn.summary.added),
+    removed: safeTokenNumber(turn.summary.removed),
+    hasLineStats: turn.summary.hasLineStats === true,
+  };
 }
 
 function changeReviewFilePayload(file, reviewState) {
@@ -3519,7 +3717,7 @@ function restoreEmptyChangeReviewTurnStart(reviewState, turn) {
   if (!reviewState || !turn || !turn.turnKey) return false;
   const entry = reviewState.turns && reviewState.turns[turn.turnKey];
   if (!entry || entry.finalized === true || !Object.prototype.hasOwnProperty.call(entry, 'startedAt')) return false;
-  if (changeReviewFilesForTurn(turn, reviewState).length > 0) return false;
+  if (changeReviewTurnHasVisibleChanges(turn, reviewState)) return false;
   entry.finalized = true;
   entry.finalizedAt = Date.now();
   delete entry.startedAt;
@@ -3790,10 +3988,10 @@ function changeReviewFilesForRequest(parser, reviewState, message) {
   return [];
 }
 
-function latestChangeReviewTurnWithFiles(parser) {
+function latestChangeReviewTurnWithChanges(parser, reviewState) {
   if (!parser || !parser.changeReviewTurns) return null;
   const turns = Array.from(parser.changeReviewTurns.values())
-    .filter(turn => turn && turn.files && turn.files.size)
+    .filter(turn => changeReviewTurnHasVisibleChanges(turn, reviewState))
     .sort((a, b) => a.order - b.order);
   return turns.length ? turns[turns.length - 1] : null;
 }
@@ -3834,8 +4032,8 @@ function resolveChangeReviewTurnFinalized(state, comm, message) {
     ? message.turnKey
     : '';
   let turn = turnKey ? findChangeReviewTurn(ctx.parser, turnKey) : null;
-  const visibleFiles = turn ? changeReviewFilesForTurn(turn, ctx.reviewState) : [];
-  if (turnKey && (!turn || !turn.files || !turn.files.size || !visibleFiles.length)) {
+  const hasVisibleChanges = turn ? changeReviewTurnHasVisibleChanges(turn, ctx.reviewState) : false;
+  if (turnKey && (!turn || !hasVisibleChanges)) {
     if (turn && turn.turnKey) {
       if (!restoreEmptyChangeReviewTurnStart(ctx.reviewState, turn)) {
         markChangeReviewTurnFinalized(ctx.reviewState, turn.turnKey);
@@ -3850,7 +4048,7 @@ function resolveChangeReviewTurnFinalized(state, comm, message) {
       ctx.target
     );
   }
-  if (!turn) turn = latestChangeReviewTurnWithFiles(ctx.parser);
+  if (!turn) turn = latestChangeReviewTurnWithChanges(ctx.parser, ctx.reviewState);
   if (!turn || !turn.turnKey) {
     return annotateChangeReviewPayload(
       buildChangeReviewPayload(ctx.parser, ctx.reviewState),

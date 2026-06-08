@@ -37,7 +37,11 @@ function hook(name) {
 }
 
 function conversationIsBusy() {
-  try { return !!kernelConversationIsBusy(); }
+  try {
+    const busy = kernelConversationIsBusy();
+    if (busy === true) return true;
+    if (busy === false) return false;
+  }
   catch (_) {
     const fn = hook('conversationIsBusy');
     if (!fn) return domConversationLooksBusy();
@@ -1237,6 +1241,25 @@ function setupObserver() {
   let contentObs = null;
   let attachedRoot = null;
 
+  function mutationInsideFocusedEditor(mutation) {
+    const active = document.activeElement;
+    return !!(
+      active &&
+      active.isContentEditable &&
+      mutation &&
+      mutation.target &&
+      (mutation.target === active || active.contains(mutation.target))
+    );
+  }
+
+  function mutationsAllInsideFocusedEditor(mutations) {
+    if (!mutations || !mutations.length) return false;
+    for (let i = 0; i < mutations.length; i++) {
+      if (!mutationInsideFocusedEditor(mutations[i])) return false;
+    }
+    return true;
+  }
+
   function attachContent(root) {
     if (!root || root === attachedRoot) return;
     if (contentObs) contentObs.disconnect();
@@ -1267,7 +1290,8 @@ function setupObserver() {
   // Lightweight finder: childList-only on body, so it does NOT affect the
   // editor's IME paint. Its job is to pick up messagesContainer when React
   // mounts or remounts it, and hand it off to the content observer.
-  const finder = new MutationObserver(() => {
+  const finder = new MutationObserver(mutations => {
+    if (mutationsAllInsideFocusedEditor(mutations)) return;
     const root = document.querySelector(MESSAGES_ROOT_SELECTOR);
     if (root && root !== attachedRoot) attachContent(root);
   });

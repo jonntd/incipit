@@ -834,6 +834,41 @@ ${PATCH_START}
       return !!(target && target.closest && target.closest('.monaco-editor'));
     }
 
+    function focusedEditorElement() {
+      return document.activeElement && document.activeElement.closest
+        ? document.activeElement.closest('.monaco-editor')
+        : null;
+    }
+
+    function nodeTouchesEditor(node) {
+      if (!node || node.nodeType !== 1) return false;
+      return !!(
+        node.closest && node.closest('.monaco-editor') ||
+        node.matches && node.matches('.monaco-editor') ||
+        node.querySelector && node.querySelector('.monaco-editor')
+      );
+    }
+
+    function mutationTouchesEditor(mutation) {
+      if (!mutation) return false;
+      if (nodeTouchesEditor(mutation.target)) return true;
+      for (const node of mutation.addedNodes || []) {
+        if (nodeTouchesEditor(node)) return true;
+      }
+      for (const node of mutation.removedNodes || []) {
+        if (nodeTouchesEditor(node)) return true;
+      }
+      return false;
+    }
+
+    function scheduleForEvent(event) {
+      if (visible || eventInEditor(event)) schedule();
+    }
+
+    function scheduleForSelection() {
+      if (visible || focusedEditorElement()) schedule();
+    }
+
     function handleMouseDown(event) {
       if (!event || event.button !== 0 || !eventInEditor(event)) return;
       primaryButtonSelecting = true;
@@ -854,22 +889,27 @@ ${PATCH_START}
       ensureRoot();
       refreshClaudeVisibility(true);
       schedule();
-      const observer = new MutationObserver(schedule);
+      const observer = new MutationObserver(mutations => {
+        if (visible) { schedule(); return; }
+        for (const mutation of mutations) {
+          if (mutationTouchesEditor(mutation)) { schedule(); return; }
+        }
+      });
       // Keep the Workbench-wide observer childList-only. Selection movement is
       // already covered by selectionchange/mouse/keyboard/scroll events; a
       // body-level class/style observer turns every editor chrome repaint into
       // overlay work and couples this experiment to Monaco's private classes.
       observer.observe(document.body, { childList: true, subtree: true });
-      document.addEventListener('selectionchange', schedule, true);
+      document.addEventListener('selectionchange', scheduleForSelection, true);
       document.addEventListener('mousedown', handleMouseDown, true);
-      window.addEventListener('resize', schedule, true);
-      window.addEventListener('scroll', schedule, true);
+      window.addEventListener('resize', () => { if (visible) schedule(); }, true);
+      window.addEventListener('scroll', scheduleForEvent, true);
       window.addEventListener('mouseup', handleMouseUp, true);
-      document.addEventListener('scroll', schedule, true);
-      document.addEventListener('keyup', schedule, true);
+      document.addEventListener('scroll', scheduleForEvent, true);
+      document.addEventListener('keyup', scheduleForEvent, true);
       document.addEventListener('mouseup', handleMouseUp, true);
-      document.addEventListener('focusin', schedule, true);
-      setInterval(schedule, 900);
+      document.addEventListener('focusin', scheduleForEvent, true);
+      setInterval(() => { if (visible || focusedEditorElement()) schedule(); }, 900);
     });
   } catch (error) {
     try { console.warn('[incipit] editor overlay failed during bootstrap', error); } catch (_) {}

@@ -156,9 +156,12 @@
   --app-menu-foreground: #f8f8f6 !important;
   --app-secondary-foreground: #bcbcb9 !important;
   --app-secondary-text: #bcbcb9 !important;
-  --app-mention-chip-background: #3d312d !important;
-  --app-mention-chip-foreground: #e0a18b !important;
-  --incipit-mention-chip-background-hover: #493932 !important;
+  --incipit-message-mention-chip-background: #3d312d;
+  --incipit-message-mention-chip-foreground: #e0a18b;
+  --incipit-message-mention-chip-background-hover: #493932;
+  --incipit-composer-mention-chip-background: #3d312d;
+  --incipit-composer-mention-chip-foreground: #e0a18b;
+  --incipit-composer-mention-chip-background-hover: #493932;
   --incipit-mermaid-text: #f8f8f6;
   --incipit-mermaid-muted: #d8d6ce;
   --incipit-mermaid-inverse-text: #1f1f1e;
@@ -798,54 +801,6 @@ pre.incipit-mermaid-source {
   line-height: 1.5 !important;
 }
 
-/* The input editor follows the body face through webview CSS now. Keep this
-   deliberately narrow: font family/size only, no DOM, composition, caret,
-   line-height, or mention-chip geometry changes. */
-[data-incipit-input-editor] {
-  font-family: var(--incipit-body-font) !important;
-  font-size: var(--incipit-body-size, 13px) !important;
-}
-[data-incipit-input-editor]::before {
-  font-family: var(--incipit-body-font) !important;
-}
-[data-incipit-input-container] [class*="messageInput"][contenteditable],
-[data-incipit-input-container] [class*="mentionMirror"] {
-  font-family: var(--incipit-body-font) !important;
-  font-size: var(--incipit-body-size, 13px) !important;
-}
-/* The host keeps an aria-hidden `mentionMirror` beside the real
-   contenteditable editor. That mirror is the visual text layer for ordinary
-   input as well as @mention chips and dictation interim spans; hiding its
-   text makes the composer look empty while the caret still moves. Only hide
-   it when JS has confirmed the real editor is empty, which catches stale
-   mirror text after send/clear races without breaking active input. */
-[data-incipit-input-container] [class*="mentionMirror"] {
-  color: var(--app-input-foreground, #f8f8f6) !important;
-  caret-color: transparent !important;
-  text-shadow: none !important;
-  user-select: none !important;
-  -webkit-user-select: none !important;
-}
-[data-incipit-input-container][data-incipit-composer-empty="1"] [class*="mentionMirror"],
-[data-incipit-input-container] [class*="messageInput"][contenteditable]:empty + [class*="mentionMirror"] {
-  visibility: hidden !important;
-  opacity: 0 !important;
-}
-[data-incipit-input-container] [class*="mentionMirror"] [class*="inputMentionChip"] {
-  color: var(--app-mention-chip-foreground) !important;
-}
-[data-incipit-input-container] [class*="mentionMirror"] [class*="voiceInterim"] {
-  color: var(--app-input-foreground, #f8f8f6) !important;
-  opacity: 0.64 !important;
-}
-[data-incipit-input-container] [class*="messageInput"][contenteditable]:empty::before,
-[data-incipit-input-container] [class*="messageInput"][contenteditable]::placeholder {
-  font-family: var(--incipit-body-font) !important;
-  font-size: var(--incipit-body-size, 13px) !important;
-  color: rgba(248, 248, 246, 0.46) !important;
-  opacity: 1 !important;
-}
-
 /* Tool headers use the emphasis face with `font-weight: 400` so the browser
    picks the real semibold font file instead of synthetic bold. */
 [data-incipit-tool-name] {
@@ -1425,7 +1380,7 @@ pre.incipit-mermaid-source {
      restated here verbatim. If the input surface tone ever moves, move
      this with it. */
   background: #2c2c2a;
-  color: var(--app-input-foreground, #f8f8f6);
+  color: #f8f8f6;
   border-radius: 5px;
   font-family: var(--incipit-body-font);
   font-size: 12px;
@@ -1974,10 +1929,9 @@ pre.incipit-mermaid-source {
    z-index does NOT create a stacking context. Our
    `[data-incipit-diff-bars]` (z-index 20) and
    `[data-incipit-diff-line-numbers]` (z-index 21) therefore stack at the
-   nearest real context root (effectively the document) and beat
-   `.inputFooter_*` (z-index 6), `.messageInput_*` (z-index 1), and the
-   z-index:auto `.inputContainer_*` — visible as line numbers floating on
-   top of the input box once the message scrolls behind it.
+   nearest real context root (effectively the document) and beat the host
+   composer stack, visible as line numbers floating on top of the input box
+   once the message scrolls behind it.
 
    `isolation: isolate` creates a stacking context with no layout side
    effects (unlike `transform: translateZ(0)`, which can also induce a
@@ -2403,21 +2357,19 @@ pre code {
   color: inherit !important;
 }
 
-/* File/tool mention chips rendered inside messages. The host's default is a
-   VS Code blue slash-command badge; keep its inline geometry and only retone
-   it into the reading palette so sent `@file` references match composer
-   mentions. */
+/* File/tool mention chips rendered inside messages. Keep this scoped to
+   transcript markdown; the live composer mention chip stays host-owned. */
 [data-incipit-markdown-root] [class*="mentionChip"],
 [data-incipit-message] [class*="mentionChip"] {
-  background: var(--app-mention-chip-background) !important;
-  background-color: var(--app-mention-chip-background) !important;
-  color: var(--app-mention-chip-foreground) !important;
+  background: var(--incipit-message-mention-chip-background) !important;
+  background-color: var(--incipit-message-mention-chip-background) !important;
+  color: var(--incipit-message-mention-chip-foreground) !important;
 }
 [data-incipit-markdown-root] [class*="mentionChip"]:hover,
 [data-incipit-message] [class*="mentionChip"]:hover {
-  background: var(--incipit-mention-chip-background-hover) !important;
-  background-color: var(--incipit-mention-chip-background-hover) !important;
-  color: var(--app-mention-chip-foreground) !important;
+  background: var(--incipit-message-mention-chip-background-hover) !important;
+  background-color: var(--incipit-message-mention-chip-background-hover) !important;
+  color: var(--incipit-message-mention-chip-foreground) !important;
   filter: none !important;
 }
 [data-incipit-markdown-root] [class*="mentionChip"] *,
@@ -2479,6 +2431,121 @@ pre code {
 }
 
 /* ============================================================
+   Generic permission request panels.
+
+   Plan acceptance and edit approvals use the same host shell as
+   AskUserQuestion, but without a questionsContainer subtree. Skin the shared
+   shell first; the Ask-specific rules below only add navigator/collapse
+   behavior.
+   ============================================================ */
+[class*="permissionRequestContainer_"] {
+  box-sizing: border-box !important;
+  position: relative !important;
+  background: #2c2c2a !important;
+  background-color: #2c2c2a !important;
+  color: #F5F2E8 !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 8px !important;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34),
+              0 2px 8px rgba(0, 0, 0, 0.22) !important;
+  padding: 7px 8px !important;
+  margin-bottom: 6px !important;
+  overflow: hidden !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="permissionRequestContainerBackground_"] {
+  display: none !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"] {
+  color: #F5F2E8 !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1.42 !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="title_"],
+[class*="permissionRequestContainer_"] [class*="questionText_"],
+[class*="permissionRequestContainer_"] [class*="questionTextLarge_"] {
+  color: #F5F2E8 !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-weight: 400 !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="description_"],
+[class*="permissionRequestContainer_"] [class*="hint_"],
+[class*="permissionRequestContainer_"] [class*="keyboardHints_"] {
+  color: rgba(245, 242, 232, 0.58) !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="option_"],
+[class*="permissionRequestContainer_"] [class*="button_"],
+[class*="permissionRequestContainer_"] [class*="permissionAction_"],
+[class*="permissionRequestContainer_"] [class*="permissionOption_"],
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]) {
+  box-sizing: border-box !important;
+  background: rgba(18, 18, 18, 0.22) !important;
+  background-color: rgba(18, 18, 18, 0.22) !important;
+  border: 1px solid rgba(245, 242, 232, 0.10) !important;
+  border-radius: 5px !important;
+  box-shadow: none !important;
+  color: #F5F2E8 !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-weight: 400 !important;
+}
+
+[class*="permissionRequestContainer_"] [class*="option_"]:hover,
+[class*="permissionRequestContainer_"] [class*="option_"]:focus,
+[class*="permissionRequestContainer_"] [class*="button_"]:hover,
+[class*="permissionRequestContainer_"] [class*="button_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionAction_"]:hover,
+[class*="permissionRequestContainer_"] [class*="permissionAction_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionOption_"]:hover,
+[class*="permissionRequestContainer_"] [class*="permissionOption_"]:focus,
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]):hover,
+[class*="permissionRequestContainer_"] [class*="permissionRequestContent_"]
+  button:not([aria-label]):not(.incipit-ask-collapse-btn):not(.incipit-permission-collapse-btn):not([data-incipit-ask-collapsed-bar]):not([data-incipit-permission-collapsed-bar]):focus {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  border-color: rgba(245, 242, 232, 0.14) !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]),
+[class*="permissionRequestContainer_"] textarea {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  border: none !important;
+  color: #F5F2E8 !important;
+  caret-color: #a8896e !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 242, 232, 0.10) !important;
+  border-radius: 5px !important;
+  font-family: var(--incipit-body-font) !important;
+}
+
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]):hover,
+[class*="permissionRequestContainer_"] input:not([type="checkbox"]):not([type="radio"]):focus,
+[class*="permissionRequestContainer_"] textarea:hover,
+[class*="permissionRequestContainer_"] textarea:focus {
+  border: none !important;
+  outline: none !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 242, 232, 0.10) !important;
+}
+
+[class*="permissionRequestContainer_"] input::placeholder,
+[class*="permissionRequestContainer_"] textarea::placeholder {
+  color: rgba(245, 242, 232, 0.42) !important;
+}
+
+[data-incipit-permission-floating-collapse] [class*="permissionRequestContent_"] {
+  padding-right: 30px !important;
+}
+
+/* ============================================================
    AskUserQuestion permission panel.
 
    Official Claude Code renders this as a generic permission request with a
@@ -2490,14 +2557,6 @@ pre code {
 [class*="permissionRequestContainer_"]:has([class*="questionsContainer_"]) {
   background: #2c2c2a !important;
   background-color: #2c2c2a !important;
-  border: none !important;
-  outline: none !important;
-  border-radius: 8px !important;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34),
-              0 2px 8px rgba(0, 0, 0, 0.22) !important;
-  padding: 7px 8px !important;
-  margin-bottom: 6px !important;
-  overflow: hidden !important;
 }
 
 [data-incipit-ask-request] [class*="permissionRequestContainerBackground_"],
@@ -2701,7 +2760,8 @@ pre code {
   margin-top: 6px !important;
 }
 
-.incipit-ask-collapse-btn {
+.incipit-ask-collapse-btn,
+.incipit-permission-collapse-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2716,7 +2776,15 @@ pre code {
   color: rgba(245, 242, 232, 0.58);
   cursor: pointer;
 }
-.incipit-ask-collapse-btn::before {
+.incipit-ask-collapse-btn[data-incipit-permission-floating],
+.incipit-permission-collapse-btn[data-incipit-permission-floating] {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 6px;
+}
+.incipit-ask-collapse-btn::before,
+.incipit-permission-collapse-btn::before {
   content: "";
   display: block;
   width: 12px;
@@ -2726,16 +2794,20 @@ pre code {
   mask: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 7.5 10 12.5 15 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 .incipit-ask-collapse-btn:hover,
-.incipit-ask-collapse-btn:focus-visible {
+.incipit-ask-collapse-btn:focus-visible,
+.incipit-permission-collapse-btn:hover,
+.incipit-permission-collapse-btn:focus-visible {
   background: #121212;
   color: #F5F2E8;
   outline: none;
 }
 
-.incipit-ask-collapsed-bar {
+.incipit-ask-collapsed-bar,
+.incipit-permission-collapsed-bar {
   display: none;
 }
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"],
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] {
   padding: 0 !important;
   max-height: none !important;
 }
@@ -2746,10 +2818,29 @@ pre code {
 [data-incipit-ask-request][data-incipit-ask-collapsed="1"]
   > [class*="buttonContainer_"],
 [data-incipit-ask-request][data-incipit-ask-collapsed="1"]
-  > [class*="keyboardHints_"] {
+  > [class*="keyboardHints_"],
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > .incipit-ask-collapse-btn,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"]
+  > .incipit-permission-collapse-btn,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > [class*="permissionRequestContainerBackground_"],
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > [class*="permissionRequestContent_"],
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > [class*="buttonContainer_"],
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > [class*="keyboardHints_"],
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > .incipit-ask-collapse-btn,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"]
+  > .incipit-permission-collapse-btn {
   display: none !important;
 }
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2765,7 +2856,10 @@ pre code {
   text-align: left;
   cursor: pointer;
 }
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar::before {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar::before,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar::before,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar::before,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar::before {
   content: "";
   flex: 0 0 12px;
   width: 12px;
@@ -2787,7 +2881,13 @@ pre code {
   font-variant-numeric: tabular-nums;
 }
 [data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:hover,
-[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible {
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar:hover,
+[data-incipit-ask-request][data-incipit-ask-collapsed="1"] > .incipit-permission-collapsed-bar:focus-visible,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar:hover,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-ask-collapsed-bar:focus-visible,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar:hover,
+[data-incipit-permission-request][data-incipit-permission-collapsed="1"] > .incipit-permission-collapsed-bar:focus-visible {
   background: rgba(18, 18, 18, 0.36);
   outline: none;
 }
@@ -2897,6 +2997,11 @@ pre code {
 [data-incipit-input-container][data-permission-mode="bypassPermissions"]:focus-within,
 [data-incipit-input-container][data-permission-mode="auto"],
 [data-incipit-input-container][data-permission-mode="auto"]:focus-within {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  min-inline-size: 0 !important;
   background: #2c2c2a !important;
   background-color: #2c2c2a !important;
   border: none !important;
@@ -2962,25 +3067,24 @@ pre code {
   white-space: normal;
 }
 
-/* Shift-dropped file reference token inside the composer.
-   Keep the host's inline mention geometry intact. Changing display / overflow
-   on a contenteditable mention chip confuses Chromium's caret painting, so we
-   only retone the original blue badge into the input-card palette. */
+/* Host-owned file reference chip inside the composer.
+   Keep the official inline geometry and text/mirror layers intact: this rule
+   only retints the existing chip box so @file references remain readable. */
 [data-incipit-input-container] [class*="inputMentionChip"] {
-  background: var(--app-mention-chip-background) !important;
-  background-color: var(--app-mention-chip-background) !important;
+  background: var(--incipit-composer-mention-chip-background) !important;
+  background-color: var(--incipit-composer-mention-chip-background) !important;
   box-shadow:
-    -4px 0 0 var(--app-mention-chip-background),
-     4px 0 0 var(--app-mention-chip-background) !important;
-  color: var(--app-mention-chip-foreground) !important;
+    -4px 0 0 var(--incipit-composer-mention-chip-background),
+     4px 0 0 var(--incipit-composer-mention-chip-background) !important;
+  color: var(--incipit-composer-mention-chip-foreground) !important;
 }
 [data-incipit-input-container] [class*="inputMentionChip"]:hover {
-  background: var(--incipit-mention-chip-background-hover) !important;
-  background-color: var(--incipit-mention-chip-background-hover) !important;
+  background: var(--incipit-composer-mention-chip-background-hover) !important;
+  background-color: var(--incipit-composer-mention-chip-background-hover) !important;
   box-shadow:
-    -4px 0 0 var(--incipit-mention-chip-background-hover),
-     4px 0 0 var(--incipit-mention-chip-background-hover) !important;
-  color: var(--app-mention-chip-foreground) !important;
+    -4px 0 0 var(--incipit-composer-mention-chip-background-hover),
+     4px 0 0 var(--incipit-composer-mention-chip-background-hover) !important;
+  color: var(--incipit-composer-mention-chip-foreground) !important;
 }
 [data-incipit-input-container] [class*="inputMentionChip"] * {
   background: transparent !important;
@@ -2995,6 +3099,8 @@ pre code {
 [data-incipit-composer-rail] {
   box-sizing: border-box !important;
   width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
   display: flex !important;
   flex-direction: column !important;
   gap: 6px !important;
@@ -3154,6 +3260,171 @@ pre code {
   color: rgba(248, 248, 246, 0.78) !important;
   font-family: var(--incipit-body-font) !important;
   font-size: 13px !important;
+}
+
+/* Custom model dialog.
+
+   Body-portaled from the command menu action. It mirrors the existing
+   incipit popup language: flat card, no blue system ring, one calm input
+   field, and no recent-model list inside the command menu. */
+[data-incipit-custom-model-modal] {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 10000 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 24px !important;
+  background: rgba(0, 0, 0, 0.50) !important;
+}
+[data-incipit-custom-model-dialog] {
+  box-sizing: border-box !important;
+  width: min(420px, calc(100vw - 32px)) !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+  border: none !important;
+  outline: none !important;
+  border-radius: 10px !important;
+  background: #2c2c2a !important;
+  background-color: #2c2c2a !important;
+  color: #f8f8f6 !important;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.55),
+              0 2px 8px rgba(0,0,0,0.35) !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  line-height: 1.45 !important;
+}
+[data-incipit-custom-model-header] {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 40px !important;
+  padding: 0 10px 0 14px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+[data-incipit-custom-model-title] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-weight: 500 !important;
+}
+[data-incipit-custom-model-close] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  flex: 0 0 26px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.72) !important;
+  font-family: Georgia, serif !important;
+  font-size: 20px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+[data-incipit-custom-model-close]:hover,
+[data-incipit-custom-model-close]:focus-visible {
+  background: #121212 !important;
+  color: #f8f8f6 !important;
+  outline: none !important;
+}
+[data-incipit-custom-model-body] {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  padding: 14px !important;
+}
+[data-incipit-custom-model-label] {
+  color: rgba(248, 248, 246, 0.64) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+}
+[data-incipit-custom-model-input] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 34px !important;
+  margin: 0 !important;
+  padding: 6px 9px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 6px !important;
+  background: #1f1f1e !important;
+  background-color: #1f1f1e !important;
+  color: #f8f8f6 !important;
+  caret-color: #a8896e !important;
+  font-family: var(--incipit-code-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1.45 !important;
+  outline: none !important;
+}
+[data-incipit-custom-model-input]::placeholder {
+  color: rgba(248, 248, 246, 0.36) !important;
+  opacity: 1 !important;
+}
+[data-incipit-custom-model-input]:focus {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+[data-incipit-custom-model-error] {
+  min-height: 0 !important;
+  color: #ffd2cd !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1.4 !important;
+  display: none !important;
+}
+[data-incipit-custom-model-error][data-visible="1"] {
+  display: block !important;
+}
+[data-incipit-custom-model-actions] {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  padding-top: 4px !important;
+}
+[data-incipit-custom-model-cancel],
+[data-incipit-custom-model-submit] {
+  box-sizing: border-box !important;
+  min-width: 82px !important;
+  height: 30px !important;
+  padding: 0 10px !important;
+  border-radius: 5px !important;
+  font-family: var(--incipit-body-font) !important;
+  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+[data-incipit-custom-model-cancel] {
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.78) !important;
+}
+[data-incipit-custom-model-cancel]:hover,
+[data-incipit-custom-model-cancel]:focus-visible {
+  background: #121212 !important;
+  color: #f8f8f6 !important;
+  outline: none !important;
+}
+[data-incipit-custom-model-submit] {
+  border: 1px solid transparent !important;
+  background: #a8896e !important;
+  background-color: #a8896e !important;
+  color: #1f1f1e !important;
+  font-weight: 500 !important;
+}
+[data-incipit-custom-model-submit]:hover,
+[data-incipit-custom-model-submit]:focus-visible {
+  filter: brightness(1.08) !important;
+  outline: none !important;
+}
+[data-incipit-custom-model-submit]:disabled,
+[data-incipit-custom-model-input]:disabled {
+  opacity: 0.62 !important;
+  cursor: default !important;
 }
 
 /* Deferred next-message card.

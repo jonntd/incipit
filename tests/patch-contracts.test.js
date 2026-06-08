@@ -97,6 +97,9 @@ function assertWebviewSemanticShape(root, patched, statusLines) {
   assert(
     patched.includes('globalThis.__incipitPublishHostState=function') &&
       patched.includes('new CustomEvent("incipit:hostState"') &&
+      patched.includes('var partialTail=hasPartialTail(messages);') &&
+      patched.includes('pendingInput:pendingInput,partialTail:partialTail') &&
+      patched.includes('prev.pendingInput!==next.pendingInput||prev.partialTail!==next.partialTail') &&
       patched.includes('__incipitPublishHostState(this,"signal")'),
     `${root}: semantic host-state bridge shape missing`,
   );
@@ -573,6 +576,56 @@ function assertRuntimeSourceContracts() {
     );
   }
   const warmWhite = fs.readFileSync(path.join(__dirname, '..', 'data', 'warm-white-override.css'), 'utf8');
+  const customModelStart = legacy.indexOf('Custom model picker.');
+  const customModelEnd = legacy.indexOf('// Look up the *current* record', customModelStart);
+  assert(customModelStart >= 0 && customModelEnd > customModelStart,
+    'custom model picker source block must be present and bounded');
+  const customModel = legacy.slice(customModelStart, customModelEnd);
+  const legacyInit = legacy.match(/\n  function init\(\) \{([\s\S]*?)\n  \}\n\n  whenDOMReady\(init\);/);
+  assert(legacyInit, 'legacy root init() body must be findable for dormant feature audits');
+  assert(
+    customModel.includes("const CUSTOM_MODEL_ACTION_ID = 'incipit-custom-model-id';") &&
+      customModel.includes("label: 'Use custom model ID...'") &&
+      customModel.includes("description: 'Set a model by full ID'") &&
+      customModel.includes("}, 'Model', () => openCustomModelDialog())") &&
+      legacyInit[1].includes('setupCustomModelPicker,') &&
+      /^\s*setupCustomModelPicker\(\);/m.test(legacyInit[1]),
+    'custom model picker must register one pure-text command action in the official Model section',
+  );
+  assert(
+    customModel.includes('locateActiveSessionState()') &&
+      customModel.includes('typeof session.setModel') &&
+      customModel.includes('await session.setModel(makeCustomModelOption(raw))') &&
+      customModel.includes("value,\n      displayName: modelDisplayNameFromId(value),\n      description: 'Custom model ID'"),
+    'custom model picker must call official SessionState.setModel(modelObject) with the entered model ID',
+  );
+  assert(
+    !legacy.includes('/model') &&
+      !customModel.includes('io_message') &&
+      !customModel.includes('session.send') &&
+      !customModel.includes('localStorage') &&
+      !customModel.includes('recentModels') &&
+      !customModel.includes('recent model'),
+    'custom model picker must not simulate slash input or keep recent-model state in the menu',
+  );
+  assert(
+    theme.includes('[data-incipit-custom-model-modal]') &&
+      theme.includes('[data-incipit-custom-model-dialog]') &&
+      theme.includes('[data-incipit-custom-model-input]') &&
+      theme.includes('[data-incipit-custom-model-submit]') &&
+      theme.includes('background: #2c2c2a !important') &&
+      theme.includes('caret-color: #a8896e !important') &&
+      theme.includes('[data-incipit-custom-model-input]:focus') &&
+      theme.includes('box-shadow: none !important') &&
+      theme.includes('background: #a8896e !important') &&
+      warmWhite.includes('[data-incipit-custom-model-modal]') &&
+      warmWhite.includes('[data-incipit-custom-model-dialog]') &&
+      warmWhite.includes('background: #ffffff !important') &&
+      warmWhite.includes('caret-color: #a8896e !important') &&
+      warmWhite.includes('box-shadow: none !important') &&
+      warmWhite.includes('background: #a8896e !important'),
+    'custom model modal must use scoped incipit styling, stable input focus, and effort-slider yellow buttons in both palettes',
+  );
   assert(
     !legacy.includes("./legacy/session_status.js") &&
       !legacy.includes('initLegacySessionStatus(legacyContext)') &&
@@ -583,20 +636,17 @@ function assertRuntimeSourceContracts() {
       !warmWhite.includes('[data-incipit-session-state='),
     'session status prototype must remain dormant: no legacy import/init or shipped CSS',
   );
-  const legacyInit = legacy.match(/\n  function init\(\) \{([\s\S]*?)\n  \}\n\n  whenDOMReady\(init\);/);
-  assert(legacyInit, 'legacy root init() body must be findable for dormant feature audits');
   assert(
     legacy.includes('function setupChangeReviewFileReview()') &&
       legacy.includes('function renderChangeReviewCard()') &&
       legacy.includes('function renderChangeReviewTurnBlocks()') &&
       legacy.includes('function setupChangeReviewChannel()') &&
       legacyInit[1].includes('setupChangeReviewFileReview,') &&
-      legacyInit[1].includes('change review UI is developed but withheld from release apply') &&
-      !/^\s*setupChangeReviewFileReview\(\);/m.test(legacyInit[1]),
-    'change review UI must remain in source but stay dormant in release apply init',
+      /^\s*setupChangeReviewFileReview\(\);/m.test(legacyInit[1]),
+    'change review UI must remain in source and be active in release apply init',
   );
   assert(
-    hostBadge.includes('const CHANGE_REVIEW_RUNTIME_ENABLED = false;') &&
+    hostBadge.includes('const CHANGE_REVIEW_RUNTIME_ENABLED = true;') &&
       hostBadge.includes('function isChangeReviewRuntimeMessage(type)') &&
       hostBadge.includes('if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;') &&
       hostBadge.includes('if (CHANGE_REVIEW_RUNTIME_ENABLED) {') &&
@@ -604,7 +654,7 @@ function assertRuntimeSourceContracts() {
       hostBadge.includes('module.exports.__test = {') &&
       hostBadge.includes('buildChangeReviewPayload,') &&
       hostBadge.includes('resolveChangeReviewReject,'),
-    'change review host runtime protocol must be disabled for release while keeping backend helpers testable',
+    'change review host runtime protocol must be enabled for release while keeping backend helpers testable',
   );
   assert(
     capability.includes('const MISS_REASONS = new Set([') &&
@@ -680,6 +730,19 @@ function assertRuntimeSourceContracts() {
     'host-state semantic bridge must report as runtime.hostState.semanticBridge and must not use the fiber connection fallback internally',
   );
   assert(
+    kernel.includes('export function registerBusyProbe(name, probe)') &&
+      kernel.includes('function compositeBusyState(state = hostState)') &&
+      kernel.includes('if (state && state.pendingInput === true) return true;') &&
+      kernel.includes("const domState = sendButtonDomState();") &&
+      kernel.includes("if (domState === 'stop') return true;") &&
+      kernel.includes("if (domState === 'send' && nowMs() - lastRuntimeDirtyAt > 1500) return false;") &&
+      kernel.includes('if (state && state.partialTail === true) return true;') &&
+      kernel.includes('if (compositeBusyState(hostState) === true)') &&
+      kernel.includes('rawBusy: hostState.busy') &&
+      kernel.includes("emit('assistantTurnFinalized'"),
+    'runtime kernel finalized/busy events must use composite busy: bridge true/pending, DOM stop, stable-send, partial tail, and registered feature probes',
+  );
+  assert(
     !kernel.includes('setupMutationBus') &&
       !kernel.includes('emitAddedNodeEvents') &&
       !kernel.includes('handleMutationBusRecords'),
@@ -700,17 +763,30 @@ function assertRuntimeSourceContracts() {
   assert(
     hostProbe.includes('const CSS_CAPABILITIES = Object.freeze([') &&
       hostProbe.includes("name: 'runtime.cssClass.userBubble'") &&
+      hostProbe.includes('function isInputContainerCandidate(node)') &&
+      hostProbe.includes("classes.includes('inputContainer_')") &&
+      hostProbe.includes("classes.includes('inputContainerBackground')") &&
+      hostProbe.includes("tag === 'fieldset' || hasDirectInputContainerBackground(node)") &&
+      hostProbe.includes('tagStaticSelectors(root);\n  syncInputContainers(root);') &&
+      !hostProbe.includes("['[class*=\"inputContainer_\"]', ATTR.inputContainer]") &&
+      hostProbe.includes("selectors: ['fieldset[class*=\"inputContainer_\"]', '[class*=\"inputContainer_\"]:has(> [class*=\"inputContainerBackground\"])']") &&
       hostProbe.includes("presence: 'whileVisible'") &&
       hostProbe.includes('CSS_ALWAYS_WARMUP_MS = 5000') &&
       hostProbe.includes('function runAlwaysCssCapabilityCheck') &&
       hostProbe.includes('function scheduleVisibleCssCapabilityCheck') &&
       hostProbe.includes("health.set('capability.' + def.name"),
-    'host_probe must expose runtime.cssClass capabilities with presence-gated health reporting',
+    'host_probe must expose runtime.cssClass capabilities and tag only the real composer input container, not the outer positioning wrapper',
   );
   assert.strictEqual(
     (hostProbe.match(/new MutationObserver/g) || []).length,
     1,
     'CSS capability reporting must reuse the existing host_probe MutationObserver',
+  );
+  assert(
+    hostProbe.includes('if (editorFocused && active.contains(node)) continue;') &&
+      hostProbe.includes('if (editorFocused && !hasOutsideMutation) return;') &&
+      hostProbe.includes('scheduleSiblingRescan();'),
+    'host_probe must not tag or rescan focused contenteditable input mutations; only outside/sibling regions may wake the localized rescan',
   );
   assertBodyObserverPolicy({
     host_probe: hostProbe,
@@ -720,6 +796,54 @@ function assertRuntimeSourceContracts() {
     enhance_typography: typography,
     workbench_overlay: workbenchOverlay,
   });
+  assert(
+    footerBadge.includes('function nodeInsideFocusedEditor(node)') &&
+      footerBadge.includes('function mutationInsideFocusedEditor(mutation)') &&
+      footerBadge.includes('function nodeInsideMessagesContainer(node)') &&
+      footerBadge.includes('function mutationTouchesAddedNode(mutation, predicate)') &&
+      footerBadge.includes('function nodeCouldContainFooter(node)') &&
+      footerBadge.includes('mutationTouchesAddedNode(mutation, nodeCouldContainFooter)') &&
+      footerBadge.includes('function nodeCouldContainKbdSymbol(node)') &&
+      footerBadge.includes('nodeCouldContainKbdSymbol(n)') &&
+      footerBadge.includes('function mutationTouchesFooter(m)') &&
+      footerBadge.includes('if (mutationInsideFocusedEditor(m)) return false;') &&
+      footerBadge.includes('nodeInsideMessagesContainer(n)') &&
+      footerBadge.includes('function mutationTouchesHeader(m)'),
+    'footer badge/header/kbd body observers must skip focused editor and message-scroll mutations before any footer/header finder query',
+  );
+  assert(
+    legacy.includes('function mutationInsideFocusedEditor(mutation)') &&
+      legacy.includes('function nodeInsideMessagesContainer(node)') &&
+      legacy.includes('if (mutationInsideFocusedEditor(m)) continue;') &&
+      legacy.includes('if (nodeInsideMessagesContainer(node)) return false;') &&
+      legacy.includes('function mutationTouchesAskSurface(m)') &&
+      legacy.includes('if (!askActive && !structural) continue;') &&
+      legacy.includes('function enqueueAffectedToolUses(node, targetInsideToolUse)') &&
+      legacy.includes('node.firstElementChild && node.querySelectorAll') &&
+      legacy.includes('const targetInsideToolUse = !!(') &&
+      !legacy.includes('for (const node of m.addedNodes) enqueueAffectedToolUses(node);') &&
+      typography.includes('function mutationsAllInsideFocusedEditor(mutations)') &&
+      typography.includes('if (mutationsAllInsideFocusedEditor(mutations)) return;'),
+    'legacy/typography body observers must not wake scan paths for composer-internal mutations, message-scroll composer lookups, inactive Ask panels, or ordinary prose tool-use ancestor walks',
+  );
+  assert(
+    kernel.includes('SEND_BUTTON_DOM_CACHE_MS = 32') &&
+      kernel.includes('function readSendButtonDomState()') &&
+      kernel.includes('if (sendButtonDomCachedAt && now - sendButtonDomCachedAt <= SEND_BUTTON_DOM_CACHE_MS)') &&
+      kernel.includes("if (probeState === 'legacy-false') return false;") &&
+      legacy.includes('SEND_BUTTON_DOM_CACHE_MS = 32') &&
+      legacy.includes('function readSendButtonDomState()') &&
+      legacy.includes('if (sendButtonDomCachedAt && now - sendButtonDomCachedAt <= SEND_BUTTON_DOM_CACHE_MS)'),
+    'busy hot path must cache send/stop DOM scans for a short frame window and avoid kernel re-scanning after legacy composite false',
+  );
+  assert(
+    workbenchOverlay.includes('function scheduleForEvent(event)') &&
+      workbenchOverlay.includes('if (visible || eventInEditor(event)) schedule();') &&
+      workbenchOverlay.includes('function scheduleForSelection()') &&
+      workbenchOverlay.includes('if (visible || focusedEditorElement()) schedule();') &&
+      workbenchOverlay.includes('setInterval(() => { if (visible || focusedEditorElement()) schedule(); }, 900);'),
+    'workbench overlay scroll/key/selection/interval hooks must be gated by visible overlay or an active editor, not all Workbench input/scroll',
+  );
 
   assert(
     !hostBadge.includes('stream.write = function wrappedWrite'),

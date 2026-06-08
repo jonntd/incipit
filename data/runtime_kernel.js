@@ -10,18 +10,18 @@ import { getActiveClaudeSessionId, reportHealth } from './enhance_shared.js';
  * observer; feature modules keep their own filtered observers because
  * centralizing the dispatch turned every added node into a fixed cost.
  *
- * Host state is sourced exclusively from `globalThis.__incipitHostState`
- * (written by the install-time `j4(()=>...)` patch). When the bridge is
- * absent, `getHostState()` reports `busy:false`, leaving each consumer
- * free to fall back to its own probe path — that mirrors the pre-kernel
- * 0.1.10 behavior and avoids piling a second fiber walk on top of the
- * ones legacy/footer already maintain.
+ * Host state is sourced from `globalThis.__incipitHostState` (written by
+ * the install-time `j4(()=>...)` patch), then cross-checked with cheap
+ * runtime evidence before terminal events are emitted. The kernel still
+ * does not own a fiber walk or a body mutation bus: richer feature-local
+ * probes register through `registerBusyProbe()`.
  */
 
 const HOST_STATE_CACHE_MS = 20;
 const PERF_HEALTH_FLUSH_MS = 500;
 const STREAM_DIRTY_MAX_ROOTS = 80;
 const STREAM_SETTLED_QUIET_MS = 360;
+const SEND_BUTTON_DOM_CACHE_MS = 32;
 const MARKDOWN_ROOT_SELECTOR = '[data-incipit-markdown-root], [class*="root_"]';
 
 const subscribers = new Map();
@@ -38,14 +38,20 @@ let lastHostStateAt = 0;
 let lastRuntimeDirtyAt = 0;
 let assistantFinalizedTimer = 0;
 let assistantFinalizedToken = 0;
+let sendButtonDomCachedAt = 0;
+let sendButtonDomCachedValue = null;
 
 const hostState = {
   busy: false,
+  pendingInput: false,
+  partialTail: false,
   sessionId: null,
   messagesVersion: 0,
   source: 'init',
   updatedAt: 0,
 };
+
+const busyProbes = new Map();
 
 function nowMs() {
   return (typeof performance !== 'undefined' && performance.now)
@@ -215,6 +221,92 @@ function bridgeState() {
   return raw;
 }
 
+export function registerBusyProbe(name, probe) {
+  const key = String(name || 'anonymous');
+  if (typeof probe !== 'function') {
+    busyProbes.delete(key);
+    return () => {};
+  }
+  busyProbes.set(key, probe);
+  return () => {
+    if (busyProbes.get(key) === probe) busyProbes.delete(key);
+  };
+}
+
+function runBusyProbes() {
+  let sawFalse = false;
+  let legacyCompositeFalse = false;
+  for (const [name, probe] of busyProbes.entries()) {
+    try {
+      const result = probe();
+      if (result === true) return true;
+      if (result === false) {
+        sawFalse = true;
+        if (name === 'legacy.compositeBusy') legacyCompositeFalse = true;
+      }
+    } catch (_) {}
+  }
+  return legacyCompositeFalse ? 'legacy-false' : (sawFalse ? false : null);
+}
+
+function nodeIsRendered(node) {
+  return !!(
+    node &&
+    (node.offsetWidth || node.offsetHeight ||
+      (node.getClientRects && node.getClientRects().length))
+  );
+}
+
+function readSendButtonDomState() {
+  if (typeof document === 'undefined' || !document.querySelectorAll) return null;
+  let buttons;
+  try {
+    buttons = document.querySelectorAll('[data-incipit-send-button], [class*="sendButton"]');
+  } catch (_) {
+    return null;
+  }
+  let sawSend = false;
+  for (const button of buttons) {
+    if (!nodeIsRendered(button)) continue;
+    if (button.querySelector?.('[class*="stopIcon"], [data-incipit-stop-icon]')) return 'stop';
+    if (button.querySelector?.('[class*="sendIcon"], [data-incipit-send-icon]')) {
+      sawSend = true;
+      continue;
+    }
+    const state = button.getAttribute?.('data-incipit-send-state');
+    if (state === 'stop') return 'stop';
+    if (state === 'send') sawSend = true;
+  }
+  return sawSend ? 'send' : null;
+}
+
+function sendButtonDomState() {
+  const now = nowMs();
+  if (sendButtonDomCachedAt && now - sendButtonDomCachedAt <= SEND_BUTTON_DOM_CACHE_MS) {
+    return sendButtonDomCachedValue;
+  }
+  sendButtonDomCachedValue = readSendButtonDomState();
+  sendButtonDomCachedAt = now;
+  return sendButtonDomCachedValue;
+}
+
+function compositeBusyState(state = hostState) {
+  if (state && state.busy === true) return true;
+  if (state && state.pendingInput === true) return true;
+
+  const probeState = runBusyProbes();
+  if (probeState === true) return true;
+  if (state && state.partialTail === true) return true;
+  if (probeState === 'legacy-false') return false;
+
+  const domState = sendButtonDomState();
+  if (domState === 'stop') return true;
+  if (domState === 'send' && nowMs() - lastRuntimeDirtyAt > 1500) return false;
+
+  if (probeState === false) return false;
+  return null;
+}
+
 function cancelAssistantFinalized() {
   assistantFinalizedToken++;
   if (assistantFinalizedTimer) {
@@ -229,7 +321,10 @@ function scheduleAssistantFinalized(payload) {
   const check = () => {
     assistantFinalizedTimer = 0;
     if (token !== assistantFinalizedToken) return;
-    if (hostState.busy) return;
+    if (compositeBusyState(hostState) === true) {
+      assistantFinalizedTimer = setTimeout(check, STREAM_SETTLED_QUIET_MS);
+      return;
+    }
     const quietFor = nowMs() - lastRuntimeDirtyAt;
     if (quietFor < STREAM_SETTLED_QUIET_MS) {
       assistantFinalizedTimer = setTimeout(check, STREAM_SETTLED_QUIET_MS - quietFor);
@@ -262,6 +357,8 @@ function computeHostState() {
       : hostState.messagesVersion;
     return {
       busy: bridge.busy === true,
+      pendingInput: bridge.pendingInput === true,
+      partialTail: bridge.partialTail === true,
       sessionId,
       messagesVersion,
       source: 'bridge',
@@ -269,6 +366,8 @@ function computeHostState() {
   }
   return {
     busy: false,
+    pendingInput: false,
+    partialTail: false,
     sessionId: getActiveClaudeSessionId({ allowStaleState: true, skipFiber: true }),
     messagesVersion: hostState.messagesVersion,
     source: 'no-bridge',
@@ -277,10 +376,14 @@ function computeHostState() {
 
 export function refreshHostState(reason = 'refresh') {
   const prevBusy = hostState.busy;
+  const prevPendingInput = hostState.pendingInput;
+  const prevPartialTail = hostState.partialTail;
   const prevSessionId = hostState.sessionId;
   const prevMessagesVersion = hostState.messagesVersion;
   const next = computeHostState();
   hostState.busy = next.busy === true;
+  hostState.pendingInput = next.pendingInput === true;
+  hostState.partialTail = next.partialTail === true;
   hostState.sessionId = next.sessionId || null;
   hostState.messagesVersion = Number.isFinite(next.messagesVersion) ? next.messagesVersion : 0;
   hostState.source = next.source || 'unknown';
@@ -290,15 +393,25 @@ export function refreshHostState(reason = 'refresh') {
   if (prevSessionId !== hostState.sessionId) {
     emit('sessionChanged', { ...hostState, reason });
   }
-  if (prevMessagesVersion !== hostState.messagesVersion) {
+  if (prevMessagesVersion !== hostState.messagesVersion ||
+      prevPartialTail !== hostState.partialTail) {
     emit('messagesChanged', { ...hostState, reason });
   }
-  if (prevBusy !== hostState.busy) {
-    const payload = { ...hostState, previousBusy: prevBusy, reason };
+  if (prevBusy !== hostState.busy ||
+      prevPendingInput !== hostState.pendingInput ||
+      prevPartialTail !== hostState.partialTail) {
+    const compositeBusy = compositeBusyState(hostState) === true;
+    const payload = {
+      ...hostState,
+      rawBusy: hostState.busy,
+      busy: compositeBusy,
+      previousBusy: prevBusy,
+      reason,
+    };
     emit('busyChanged', payload);
-    emit(hostState.busy ? 'streamStarted' : 'streamSettled', { ...hostState, reason });
-    if (hostState.busy) cancelAssistantFinalized();
-    else scheduleAssistantFinalized({ ...hostState, reason });
+    emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);
+    if (compositeBusy) cancelAssistantFinalized();
+    else scheduleAssistantFinalized(payload);
   }
   return { ...hostState };
 }
@@ -316,7 +429,10 @@ export function getHostState(options = {}) {
 // NOT mean "not busy" — it means "kernel cannot tell, ask elsewhere".
 export function conversationIsBusy() {
   const state = getHostState();
-  if (state.source === 'bridge') return state.busy === true;
+  const composite = compositeBusyState(state);
+  if (composite === true) return true;
+  if (state.source === 'bridge') return false;
+  if (composite === false) return false;
   throw new Error('host state bridge unavailable');
 }
 

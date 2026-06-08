@@ -360,8 +360,6 @@ export function ensureDomFreeze() {
 const SOFT_BG   = CFG.palette === 'warm-white' ? '#f8f8f6' : '#1f1f1e';
 const SOFT_FG   = CFG.palette === 'warm-white' ? '#0d0d0d' : '#f8f8f6';
 const SOFT_FG_2 = CFG.palette === 'warm-white' ? '#797569' : '#bcbcb9';
-const MENTION_CHIP_BG = CFG.palette === 'warm-white' ? '#ead8cf' : '#3d312d';
-const MENTION_CHIP_FG = CFG.palette === 'warm-white' ? '#8f452b' : '#e0a18b';
 
 export const APP_VAR_OVERRIDES = {
   '--app-background': SOFT_BG,
@@ -379,8 +377,6 @@ export const APP_VAR_OVERRIDES = {
   '--app-menu-foreground': SOFT_FG,
   '--app-secondary-foreground': SOFT_FG_2,
   '--app-secondary-text': SOFT_FG_2,
-  '--app-mention-chip-background': MENTION_CHIP_BG,
-  '--app-mention-chip-foreground': MENTION_CHIP_FG,
   '--app-monospace-font-family': 'var(--incipit-code-font)',
 };
 

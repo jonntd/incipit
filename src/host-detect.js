@@ -96,10 +96,10 @@ const HOSTS = Object.freeze([
   {
     id: 'antigravity',
     label: 'Antigravity',
-    homeNames: ['.antigravity'],
-    appDataNames: ['Antigravity'],
+    homeNames: ['.antigravity-ide', '.antigravity'],
+    appDataNames: ['Antigravity IDE', 'Antigravity'],
     lowercaseAppDataFallback: true,
-    binNames: ['Antigravity.exe', 'antigravity.exe', 'antigravity'],
+    binNames: ['Antigravity IDE.exe', 'Antigravity.exe', 'antigravity-ide.exe', 'antigravity.exe', 'antigravity-ide', 'antigravity'],
     scoopApps: ['antigravity'],
   },
   {
