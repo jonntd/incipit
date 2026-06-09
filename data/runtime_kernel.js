@@ -22,6 +22,8 @@ const PERF_HEALTH_FLUSH_MS = 500;
 const STREAM_DIRTY_MAX_ROOTS = 80;
 const STREAM_SETTLED_QUIET_MS = 360;
 const SEND_BUTTON_DOM_CACHE_MS = 32;
+const COMPOSITE_BUSY_RECHECK_MS = 160;
+const COMPOSITE_BUSY_RECHECK_MAX_MS = 8000;
 const MARKDOWN_ROOT_SELECTOR = '[data-incipit-markdown-root], [class*="root_"]';
 
 const subscribers = new Map();
@@ -40,6 +42,9 @@ let assistantFinalizedTimer = 0;
 let assistantFinalizedToken = 0;
 let sendButtonDomCachedAt = 0;
 let sendButtonDomCachedValue = null;
+let compositeBusyRecheckTimer = 0;
+let compositeBusyRecheckUntil = 0;
+let lastCompositeBusy = null;
 
 const hostState = {
   busy: false,
@@ -307,6 +312,51 @@ function compositeBusyState(state = hostState) {
   return null;
 }
 
+function rawStateLooksIdle(state = hostState) {
+  return !!(
+    state &&
+    state.busy !== true &&
+    state.pendingInput !== true &&
+    state.partialTail !== true
+  );
+}
+
+function cancelCompositeBusyRecheck() {
+  compositeBusyRecheckUntil = 0;
+  if (compositeBusyRecheckTimer) {
+    clearTimeout(compositeBusyRecheckTimer);
+    compositeBusyRecheckTimer = 0;
+  }
+}
+
+function scheduleCompositeBusyRecheck(reason = 'composite-recheck') {
+  if (!rawStateLooksIdle(hostState)) {
+    cancelCompositeBusyRecheck();
+    return;
+  }
+  const now = nowMs();
+  if (!compositeBusyRecheckUntil) {
+    compositeBusyRecheckUntil = now + COMPOSITE_BUSY_RECHECK_MAX_MS;
+  }
+  if (now > compositeBusyRecheckUntil) {
+    compositeBusyRecheckUntil = 0;
+    return;
+  }
+  if (compositeBusyRecheckTimer) return;
+  compositeBusyRecheckTimer = setTimeout(() => {
+    compositeBusyRecheckTimer = 0;
+    try { refreshHostState(reason); } catch (_) {}
+  }, COMPOSITE_BUSY_RECHECK_MS);
+}
+
+function maintainCompositeBusyRecheck(compositeBusy, reason) {
+  if (compositeBusy && rawStateLooksIdle(hostState)) {
+    scheduleCompositeBusyRecheck(reason);
+    return;
+  }
+  cancelCompositeBusyRecheck();
+}
+
 function cancelAssistantFinalized() {
   assistantFinalizedToken++;
   if (assistantFinalizedTimer) {
@@ -390,29 +440,49 @@ export function refreshHostState(reason = 'refresh') {
   hostState.updatedAt = nowMs();
   lastHostStateAt = hostState.updatedAt;
 
-  if (prevSessionId !== hostState.sessionId) {
+  const sessionChanged = prevSessionId !== hostState.sessionId;
+  const rawBusyChanged =
+    prevBusy !== hostState.busy ||
+    prevPendingInput !== hostState.pendingInput ||
+    prevPartialTail !== hostState.partialTail;
+  const prevCompositeBusy = lastCompositeBusy;
+  const compositeBusy = compositeBusyState(hostState) === true;
+  const compositeChanged = !sessionChanged && (
+    prevCompositeBusy !== null
+      ? prevCompositeBusy !== compositeBusy
+      : (rawBusyChanged && compositeBusy)
+  );
+  lastCompositeBusy = compositeBusy;
+
+  if (sessionChanged) {
+    cancelAssistantFinalized();
+    cancelCompositeBusyRecheck();
     emit('sessionChanged', { ...hostState, reason });
   }
   if (prevMessagesVersion !== hostState.messagesVersion ||
       prevPartialTail !== hostState.partialTail) {
     emit('messagesChanged', { ...hostState, reason });
   }
-  if (prevBusy !== hostState.busy ||
-      prevPendingInput !== hostState.pendingInput ||
-      prevPartialTail !== hostState.partialTail) {
-    const compositeBusy = compositeBusyState(hostState) === true;
+  if (rawBusyChanged || compositeChanged) {
     const payload = {
       ...hostState,
       rawBusy: hostState.busy,
       busy: compositeBusy,
-      previousBusy: prevBusy,
+      previousBusy: prevCompositeBusy !== null ? prevCompositeBusy : prevBusy,
+      previousRawBusy: prevBusy,
+      previousCompositeBusy: prevCompositeBusy,
       reason,
     };
     emit('busyChanged', payload);
-    emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);
-    if (compositeBusy) cancelAssistantFinalized();
-    else scheduleAssistantFinalized(payload);
+    if (compositeChanged) {
+      emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);
+      if (compositeBusy) cancelAssistantFinalized();
+      else scheduleAssistantFinalized(payload);
+    } else if (compositeBusy) {
+      cancelAssistantFinalized();
+    }
   }
+  maintainCompositeBusyRecheck(compositeBusy, reason);
   return { ...hostState };
 }
 

@@ -2157,7 +2157,6 @@ import {
   let composerRailEl = null;
 
   const CHANGE_REVIEW_TEXT = Object.freeze({
-    review: 'Review',
     rejectTurn: 'Reject turn',
     rejectFile: 'Reject',
     filesChanged: '{n} files changed',
@@ -2173,11 +2172,7 @@ import {
     diffFail: 'Could not open review diff: {msg}',
   });
   let changeReviewPayload = null;
-  let changeReviewCardEl = null;
-  let changeReviewRenderScheduled = false;
   let changeReviewTurnBlockRenderScheduled = false;
-  let changeReviewExpanded = false;
-  let changeReviewInlineError = '';
   let changeReviewListenerBound = false;
   let changeReviewIdentityTimer = 0;
   let changeReviewStartTimer = 0;
@@ -2286,6 +2281,13 @@ import {
     const busy = signalValue(session && session.busy);
     if (typeof busy === 'boolean') return busy;
     try { return conversationIsBusy(); }
+    catch (_) { return false; }
+  }
+
+  function sessionBusyForDeferredCapture(session) {
+    const busy = signalValue(session && session.busy);
+    if (busy === true) return true;
+    try { return conversationIsBusy() === true; }
     catch (_) { return false; }
   }
 
@@ -2456,7 +2458,7 @@ import {
   function shouldCaptureDeferredSend(session, argsLike) {
     if (deferredNextBypassDepth > 0) return false;
     if (!session || typeof session.send !== 'function') return false;
-    if (!sessionIsBusy(session)) return false;
+    if (!sessionBusyForDeferredCapture(session)) return false;
     if (!deferredPayloadHasContent(argsLike[0], argsLike[1])) return false;
     return true;
   }
@@ -2789,11 +2791,6 @@ import {
     return text;
   }
 
-  function changeReviewActiveTurn() {
-    const turn = changeReviewPayload && changeReviewPayload.activeTurn;
-    return turn && changeReviewTurnFileCount(turn) > 0 ? turn : null;
-  }
-
   function changeReviewTurnFiles(turn) {
     return (turn && Array.isArray(turn.files) ? turn.files : [])
       .filter(file => file);
@@ -2868,41 +2865,6 @@ import {
     return btn;
   }
 
-  function ensureChangeReviewCard() {
-    const turn = changeReviewActiveTurn();
-    if (!turn) {
-      if (changeReviewCardEl) {
-        try { changeReviewCardEl.remove(); } catch (_) {}
-        changeReviewCardEl = null;
-      }
-      return null;
-    }
-    const rail = ensureComposerRail();
-    if (!rail) return null;
-    if (!changeReviewCardEl || !changeReviewCardEl.isConnected) {
-      changeReviewCardEl = document.createElement('div');
-      changeReviewCardEl.setAttribute('data-incipit-change-review-card', '');
-    }
-    const before = rail.rail.firstChild && rail.rail.firstChild !== changeReviewCardEl
-      ? rail.rail.firstChild
-      : null;
-    if (changeReviewCardEl.parentElement !== rail.rail) {
-      rail.rail.insertBefore(changeReviewCardEl, rail.rail.firstChild || null);
-    } else if (before) {
-      rail.rail.insertBefore(changeReviewCardEl, before);
-    }
-    return changeReviewCardEl;
-  }
-
-  function scheduleChangeReviewRender() {
-    if (changeReviewRenderScheduled) return;
-    changeReviewRenderScheduled = true;
-    requestAnimationFrame(() => {
-      changeReviewRenderScheduled = false;
-      renderChangeReviewCard();
-    });
-  }
-
   function scheduleChangeReviewTurnBlocksRender() {
     if (changeReviewTurnBlockRenderScheduled) return;
     changeReviewTurnBlockRenderScheduled = true;
@@ -2910,62 +2872,6 @@ import {
       changeReviewTurnBlockRenderScheduled = false;
       renderChangeReviewTurnBlocks();
     });
-  }
-
-  function renderChangeReviewCard() {
-    const turn = changeReviewActiveTurn();
-    const el = ensureChangeReviewCard();
-    if (!el || !turn) return;
-    const busy = changeReviewBusySafe();
-    const totals = changeReviewTotals(turn);
-    el.toggleAttribute('data-incipit-change-review-expanded', changeReviewExpanded);
-    el.textContent = '';
-
-    const summary = document.createElement('div');
-    summary.setAttribute('data-incipit-change-review-summary', '');
-    summary.addEventListener('click', evt => {
-      if (evt.target && evt.target.closest && evt.target.closest('button')) return;
-      changeReviewExpanded = !changeReviewExpanded;
-      scheduleChangeReviewRender();
-    });
-    const title = document.createElement('button');
-    title.type = 'button';
-    title.setAttribute('data-incipit-change-review-toggle', '');
-    title.textContent = formatChangeReviewSummary(turn);
-    title.addEventListener('click', evt => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      changeReviewExpanded = !changeReviewExpanded;
-      scheduleChangeReviewRender();
-    });
-    summary.appendChild(title);
-    summary.appendChild(changeReviewButton(changeReviewText('review'), 'data-incipit-change-review-review', () => {
-      revealChangeReviewTurn(turn.turnKey);
-    }));
-    const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn', btn => {
-      rejectChangeReviewTurn(turn.turnKey, btn);
-    });
-    reject.disabled = busy || changeReviewRejectableFiles(turn).length <= 0;
-    if (reject.disabled) reject.dataset.incipitDisabled = '1';
-    summary.appendChild(reject);
-    el.appendChild(summary);
-
-    if (changeReviewInlineError) {
-      const err = document.createElement('div');
-      err.setAttribute('data-incipit-change-review-error', '');
-      err.textContent = changeReviewInlineError;
-      el.appendChild(err);
-    }
-
-    const files = changeReviewTurnFiles(turn);
-    if (changeReviewExpanded && files.length) {
-      const list = document.createElement('div');
-      list.setAttribute('data-incipit-change-review-files', '');
-      for (const file of files) {
-        list.appendChild(renderChangeReviewFileRow(file, { compact: true, busy }));
-      }
-      el.appendChild(list);
-    }
   }
 
   function renderChangeReviewFileRow(file, options = {}) {
@@ -3016,18 +2922,6 @@ import {
   function changeReviewBusySafe() {
     try { return conversationIsBusy() === true; }
     catch (_) { return true; }
-  }
-
-  function revealChangeReviewTurn(turnKey) {
-    scheduleChangeReviewRender();
-    setTimeout(() => {
-      const block = document.querySelector('[data-incipit-change-review-turn="' + cssEscapeAttr(turnKey) + '"]');
-      if (block) {
-        try { block.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { block.scrollIntoView(); }
-        block.setAttribute('data-incipit-change-review-flash', '1');
-        setTimeout(() => block.removeAttribute('data-incipit-change-review-flash'), 900);
-      }
-    }, 0);
   }
 
   function cssEscapeAttr(value) {
@@ -3264,8 +3158,6 @@ import {
       const msg = evt && evt.data;
       if (msg && msg.__incipitChangeReview === true && msg.payload) {
         changeReviewPayload = msg.payload;
-        changeReviewInlineError = '';
-        scheduleChangeReviewRender();
         if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
         return;
       }
@@ -3287,7 +3179,6 @@ import {
         if (payload.payload) changeReviewPayload = payload.payload;
         if (payload.ok === false) pending.reject(new Error(payload.error || firstRejectError(payload) || 'Reject failed'));
         else pending.resolve(payload);
-        scheduleChangeReviewRender();
         scheduleChangeReviewTurnBlocksRender();
       }
     });
@@ -3360,15 +3251,12 @@ import {
     if (!turnKey || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
     postChangeReviewRequest('change_review_reject_request', { turnKey })
-      .then(() => { changeReviewInlineError = ''; })
       .catch(error => {
-        changeReviewInlineError = changeReviewText('rejectFail', {
-          msg: error && error.message ? error.message : String(error),
-        });
+        warn('change review reject failed:', error && error.message ? error.message : error);
       })
       .finally(() => {
         if (button) button.removeAttribute('data-incipit-inflight');
-        scheduleChangeReviewRender();
+        scheduleChangeReviewTurnBlocksRender();
       });
   }
 
@@ -3376,15 +3264,12 @@ import {
     if (!fileId || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
     postChangeReviewRequest('change_review_reject_request', { fileId })
-      .then(() => { changeReviewInlineError = ''; })
       .catch(error => {
-        changeReviewInlineError = changeReviewText('rejectFail', {
-          msg: error && error.message ? error.message : String(error),
-        });
+        warn('change review reject failed:', error && error.message ? error.message : error);
       })
       .finally(() => {
         if (button) button.removeAttribute('data-incipit-inflight');
-        scheduleChangeReviewRender();
+        scheduleChangeReviewTurnBlocksRender();
       });
   }
 
@@ -3872,7 +3757,7 @@ import {
   function setupDeferredNextVisibilityObserver() {
     if (deferredNextVisibilityObserver || !document.body) return;
     deferredNextVisibilityObserver = new MutationObserver(muts => {
-      if (!deferredQueue.length && !deferredNextEl && !changeReviewCardEl && !changeReviewActiveTurn()) return;
+      if (!deferredQueue.length && !deferredNextEl) return;
       let touched = false;
       for (const m of muts) {
         if (m.type !== 'childList') continue;
@@ -3894,7 +3779,6 @@ import {
       }
       if (!touched) return;
       scheduleDeferredNextRender();
-      scheduleChangeReviewRender();
       if (deferredQueue.length && !askPanelIsActive() && !deferredConvBusySafe()) {
         armNaturalEndConfirm();
       }
@@ -3930,27 +3814,21 @@ import {
 
   function setupChangeReviewFileReview() {
     setupChangeReviewChannel();
-    setupDeferredNextVisibilityObserver();
     scheduleChangeReviewIdentityUpdate(0);
     subscribeRuntime('sessionChanged', () => {
       changeReviewPayload = null;
-      changeReviewExpanded = false;
-      changeReviewInlineError = '';
       changeReviewStartedTurnKey = '';
       cancelChangeReviewTurnStarted();
       scheduleChangeReviewIdentityUpdate(0);
-      scheduleChangeReviewRender();
       if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
     });
     subscribeRuntime('messagesChanged', () => {
       scheduleChangeReviewIdentityUpdate(250);
       if (changeReviewBusySafe()) scheduleChangeReviewTurnStarted(20);
-      scheduleChangeReviewRender();
     });
     subscribeRuntime('busyChanged', evt => {
       if (evt && evt.busy === true) armChangeReviewTurnStarted();
       else cancelChangeReviewTurnStarted();
-      scheduleChangeReviewRender();
       if (!changeReviewBusySafe()) {
         scheduleChangeReviewIdentityUpdate(250);
       } else {
@@ -3967,7 +3845,6 @@ import {
       changeReviewStartedTurnKey = '';
       scheduleChangeReviewIdentityUpdate(150);
       setTimeout(() => {
-        scheduleChangeReviewRender();
         scheduleChangeReviewTurnBlocksRender();
       }, 220);
     });

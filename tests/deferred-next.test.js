@@ -76,17 +76,21 @@ function cssRuleBody(selector) {
   );
   assert.ok(
     /^\s*setupChangeReviewFileReview\(\);/m.test(init),
-    'release apply must activate the composer mini bar and transcript review blocks',
+    'release apply must activate transcript review blocks',
   );
-  ok('change-review UI: source retained and release init active');
+  ok('change-review transcript UI: source retained and release init active');
 })();
 
 (function sendWrapperKeepsOfficialPath() {
   const wrap = functionBody('wrapDeferredSendOnSession');
+  const captureGate = functionBody('shouldCaptureDeferredSend', 600);
   assert.ok(legacy.includes('const deferredOriginalSendBySession = new WeakMap();'),
     'original SessionState.send must be preserved per session');
   assert.ok(wrap.includes('session.send = function incipitDeferredNextSendWrapper(...args)'),
     'SessionState.send wrapper must be installed');
+  assert.ok(captureGate.includes('sessionBusyForDeferredCapture(session)') &&
+    captureGate.indexOf('sessionBusyForDeferredCapture(session)') < captureGate.indexOf('deferredPayloadHasContent'),
+    'busy capture must use composite busy, not raw session busy alone');
   assert.ok(wrap.includes('shouldCaptureDeferredSend(this, args)') &&
     wrap.includes('captureDeferredNext(this, args);') &&
     wrap.includes('return Promise.resolve();'),
@@ -186,11 +190,13 @@ function cssRuleBody(selector) {
     hide.includes('askPanelIsActive()') &&
     hide.includes('deferredQueueSessionId()'),
     'card hides with the composer, when Ask is up, or off the queue session');
-  assert.ok(observer.includes('!deferredQueue.length && !deferredNextEl && !changeReviewCardEl && !changeReviewActiveTurn()') &&
+  assert.ok(observer.includes('!deferredQueue.length && !deferredNextEl') &&
+    !observer.includes('changeReviewCardEl') &&
+    !observer.includes('changeReviewActiveTurn') &&
     observer.includes('deferredNodeTouchesComposerOrAsk') &&
     observer.includes('mutationInsideFocusedEditor(m)') &&
     observer.includes('armNaturalEndConfirm();'),
-    'observer is cheap when idle, skips focused editor mutations, stays composer/Ask-scoped, and arms (not flushes) on touch');
+    'observer is cheap when idle, skips focused editor mutations, stays deferred/Ask-scoped, and arms (not flushes) on touch');
   assert.ok(observer.includes('deferredNextVisibilityObserver.observe(document.body, { childList: true, subtree: true });') &&
     !observer.includes('attributes: true') &&
     !observer.includes('attributeFilter') &&
@@ -210,7 +216,6 @@ function cssRuleBody(selector) {
   const rail = functionBody('ensureComposerRail', 1300);
   const mountPoint = functionBody('composerRailMountPoint', 500);
   const deferredMount = functionBody('deferredCardMountPoint', 500);
-  const changeMount = functionBody('ensureChangeReviewCard', 1300);
   const inputRule = cssRuleBody('[data-incipit-input-container]');
   const railRule = cssRuleBody('[data-incipit-composer-rail]');
   assert.ok(legacy.includes('let composerRailEl = null') &&
@@ -237,9 +242,6 @@ function cssRuleBody(selector) {
     'AskUserQuestion / hidden composer must hide the whole composer rail');
   assert.ok(deferredMount.includes('return { parent: mount.rail, before: null, input: mount.input };'),
     'deferred-next must mount last in the rail, staying closest to the input');
-  assert.ok(changeMount.includes('rail.rail.insertBefore(changeReviewCardEl, rail.rail.firstChild || null)') &&
-    changeMount.includes('rail.rail.insertBefore(changeReviewCardEl, before)'),
-    'change-review mini bar must stay above deferred-next inside the shared rail');
   assert.ok(theme.includes('[data-incipit-composer-rail]') &&
     theme.includes('flex-direction: column') &&
     theme.includes('[data-incipit-composer-rail-hidden]') &&
@@ -254,44 +256,39 @@ function cssRuleBody(selector) {
   ok('shared composer rail: Ask hides all, deferred queue remains closest to input');
 })();
 
-(function changeReviewMiniBarIsSingleLineUntilExpanded() {
+(function changeReviewComposerMiniBarIsRemoved() {
   const state = functionBody('setupChangeReviewFileReview', 1800);
-  const render = functionBody('renderChangeReviewCard', 2400);
-  const active = functionBody('changeReviewActiveTurn', 600);
   const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
   const format = functionBody('formatChangeReviewSummary', 700);
   const row = functionBody('renderChangeReviewFileRow', 1800);
-  assert.ok(legacy.includes('let changeReviewExpanded = false') &&
-    state.includes('changeReviewExpanded = false'),
-    'change-review mini bar defaults to collapsed on session change');
-  assert.ok(render.includes("summary.setAttribute('data-incipit-change-review-summary', '')") &&
-    render.includes("title.textContent = formatChangeReviewSummary(turn)") &&
-    render.includes("summary.appendChild(changeReviewButton(changeReviewText('review')") &&
-    render.includes("const reject = changeReviewButton(changeReviewText('rejectTurn')"),
-    'collapsed mini bar must show only summary + Review + Reject turn');
-  assert.ok(render.includes('if (changeReviewExpanded && files.length)') &&
-    render.includes("list.setAttribute('data-incipit-change-review-files', '')"),
-    'file rows inside the composer rail must render only after explicit expansion');
-  assert.ok(active.includes('changeReviewPayload && changeReviewPayload.activeTurn') &&
-    active.includes('changeReviewTurnFileCount(turn) > 0') &&
-    !active.includes('changeReviewTurns()') &&
-    !active.includes('latestTurn'),
-    'mini bar must be driven only by the current active lifecycle, never by finalized history');
+  assert.ok(!legacy.includes('function renderChangeReviewCard()') &&
+    !legacy.includes('function ensureChangeReviewCard()') &&
+    !legacy.includes('function changeReviewActiveTurn()') &&
+    !legacy.includes('scheduleChangeReviewRender') &&
+    !legacy.includes('changeReviewExpanded') &&
+    !legacy.includes('changeReviewPayload && changeReviewPayload.activeTurn') &&
+    !theme.includes('[data-incipit-change-review-card]') &&
+    !theme.includes('[data-incipit-change-review-summary]') &&
+    !theme.includes('[data-incipit-change-review-toggle]') &&
+    !theme.includes('[data-incipit-change-review-files]'),
+    'composer change-review mini bar must be removed from webview JS/CSS');
+  assert.ok(!state.includes('setupDeferredNextVisibilityObserver()') &&
+    !state.includes('scheduleChangeReviewRender()'),
+    'change-review setup must not mount or refresh composer rail UI');
   assert.ok(format.includes('changeReviewTotalsHaveLineStats(turn)') &&
     format.includes(': label') &&
     row.includes('changeReviewFileHasLineStats(file)') &&
     row.includes(": ''"),
     'unknown line stats must not render as misleading +0/-0 counts');
   assert.ok(blocks.includes('placeChangeReviewTurnBlock(host, block)') &&
-    !render.includes('renderChangeReviewTurnBlocks()'),
-    'full per-turn review belongs in the transcript body, not expanded above the input');
-  ok('change-review mini bar: single-line default, expands only on demand');
+    !legacy.includes('data-incipit-change-review-card'),
+    'full per-turn review belongs only in the transcript body, never above the input');
+  ok('change-review composer mini bar removed; finalized transcript block remains');
 })();
 
 (function changeReviewTranscriptBlocksWaitForFinalizedTurn() {
   const setup = functionBody('setupChangeReviewFileReview', 3000);
   const channel = functionBody('setupChangeReviewChannel', 1800);
-  const schedule = functionBody('scheduleChangeReviewRender', 500);
   const startNotify = functionBody('notifyChangeReviewTurnStarted', 900);
   const notify = functionBody('notifyChangeReviewTurnFinalized', 1000);
   const lifecycle = functionBody('postChangeReviewTurnLifecycle', 1000);
@@ -306,11 +303,11 @@ function cssRuleBody(selector) {
   const legacyBusyProbe = functionBody('legacyCompositeBusyProbe', 1200);
   const reconcile = functionBody('reconcileAssistantTranscriptActions', 2300);
   const sweep = functionBody('sweepStreamingDisableState', 600);
-  assert.ok(!schedule.includes('renderChangeReviewTurnBlocks()'),
-    'ordinary mini-card render must not insert transcript review blocks');
+  assert.ok(!legacy.includes('function scheduleChangeReviewRender()'),
+    'ordinary composer review render path must not exist');
   assert.ok(setup.includes("subscribeRuntime('messagesChanged'") &&
     !setup.slice(setup.indexOf("subscribeRuntime('messagesChanged'"), setup.indexOf("subscribeRuntime('busyChanged'")).includes('scheduleChangeReviewTurnBlocksRender'),
-    'messagesChanged may refresh payload/mini bar but must not append transcript review blocks mid-stream');
+    'messagesChanged may refresh payload but must not append transcript review blocks mid-stream');
   assert.ok(setup.includes("subscribeRuntime('assistantTurnFinalized'") &&
     setup.includes('if (changeReviewBusySafe())') &&
     setup.includes('removeCurrentBusyChangeReviewTurnBlocks();') &&
@@ -324,10 +321,14 @@ function cssRuleBody(selector) {
     legacyBusyProbe.includes('activeSessionHasPartialTail()') &&
     legacy.includes("registerRuntimeBusyProbe('legacy.compositeBusy', legacyCompositeBusyProbe)") &&
     runtime.includes('function compositeBusyState(state = hostState)') &&
+    runtime.includes('let lastCompositeBusy = null;') &&
+    runtime.includes('function maintainCompositeBusyRecheck(compositeBusy, reason)') &&
+    runtime.includes('const compositeChanged = !sessionChanged') &&
     runtime.includes("if (state && state.pendingInput === true) return true;") &&
     runtime.includes("if (state && state.partialTail === true) return true;") &&
+    runtime.includes("emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);") &&
     runtime.includes("emit('assistantTurnFinalized'"),
-    'bridge busy=false must not by itself mark the assistant turn complete; kernel + legacy share composite stop/partial probes');
+    'bridge busy=false must not by itself mark the assistant turn complete; kernel + legacy share composite stop/partial probes and emit settle only after composite transition');
   assert.ok(typography.includes('conversationIsBusy as kernelConversationIsBusy') &&
     typography.includes('if (conversationIsBusy()) return; // streaming: settle event will re-trigger') &&
     typography.includes('if (conversationIsBusy()) return;') &&

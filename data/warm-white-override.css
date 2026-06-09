@@ -556,7 +556,6 @@
   box-shadow: 0 4px 14px rgba(60,55,40,0.12);
 }
 
-[data-incipit-change-review-card],
 [data-incipit-change-review-turn],
 [data-incipit-deferred-next] {
   background: #efeee9 !important;
@@ -564,23 +563,16 @@
   box-shadow: 0 2px 10px rgba(0,0,0,0.08),
               0 1px 3px rgba(0,0,0,0.06) !important;
 }
-[data-incipit-change-review-toggle],
 [data-incipit-change-review-file-name],
 [data-incipit-change-review-turn-title] {
   color: rgba(13,13,13,0.68) !important;
 }
-[data-incipit-change-review-toggle]::before {
-  color: rgba(13,13,13,0.34) !important;
-}
-[data-incipit-change-review-review],
 [data-incipit-change-review-reject-turn],
 [data-incipit-change-review-reject-file] {
   color: rgba(13,13,13,0.58) !important;
 }
-[data-incipit-change-review-review]:hover,
 [data-incipit-change-review-reject-turn]:hover,
 [data-incipit-change-review-reject-file]:hover,
-[data-incipit-change-review-toggle]:hover,
 [data-incipit-change-review-file-name]:hover {
   background: rgba(13,13,13,0.06) !important;
   color: rgba(13,13,13,0.88) !important;

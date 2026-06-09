@@ -638,12 +638,17 @@ function assertRuntimeSourceContracts() {
   );
   assert(
     legacy.includes('function setupChangeReviewFileReview()') &&
-      legacy.includes('function renderChangeReviewCard()') &&
       legacy.includes('function renderChangeReviewTurnBlocks()') &&
       legacy.includes('function setupChangeReviewChannel()') &&
+      !legacy.includes('function renderChangeReviewCard()') &&
+      !legacy.includes('function ensureChangeReviewCard()') &&
+      !legacy.includes('function changeReviewActiveTurn()') &&
+      !legacy.includes('scheduleChangeReviewRender') &&
+      !legacy.includes('activeTurn:') &&
+      !theme.includes('[data-incipit-change-review-card]') &&
       legacyInit[1].includes('setupChangeReviewFileReview,') &&
       /^\s*setupChangeReviewFileReview\(\);/m.test(legacyInit[1]),
-    'change review UI must remain in source and be active in release apply init',
+    'change review finalized transcript UI must remain active while composer mini bar stays removed',
   );
   assert(
     hostBadge.includes('const CHANGE_REVIEW_RUNTIME_ENABLED = true;') &&
@@ -651,10 +656,12 @@ function assertRuntimeSourceContracts() {
       hostBadge.includes('if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;') &&
       hostBadge.includes('if (CHANGE_REVIEW_RUNTIME_ENABLED) {') &&
       hostBadge.includes('const changeReviewPayload = buildCachedChangeReviewPayload(state, target, parser);') &&
+      !hostBadge.includes('activeTurn:') &&
+      !hostBadge.includes('visibleActiveTurn') &&
       hostBadge.includes('module.exports.__test = {') &&
       hostBadge.includes('buildChangeReviewPayload,') &&
       hostBadge.includes('resolveChangeReviewReject,'),
-    'change review host runtime protocol must be enabled for release while keeping backend helpers testable',
+    'change review host runtime protocol must keep finalized review helpers but not expose active composer-review payloads',
   );
   assert(
     capability.includes('const MISS_REASONS = new Set([') &&
@@ -732,15 +739,21 @@ function assertRuntimeSourceContracts() {
   assert(
     kernel.includes('export function registerBusyProbe(name, probe)') &&
       kernel.includes('function compositeBusyState(state = hostState)') &&
+      kernel.includes('const COMPOSITE_BUSY_RECHECK_MS = 160;') &&
+      kernel.includes('const COMPOSITE_BUSY_RECHECK_MAX_MS = 8000;') &&
+      kernel.includes('let lastCompositeBusy = null;') &&
+      kernel.includes('function maintainCompositeBusyRecheck(compositeBusy, reason)') &&
       kernel.includes('if (state && state.pendingInput === true) return true;') &&
       kernel.includes("const domState = sendButtonDomState();") &&
       kernel.includes("if (domState === 'stop') return true;") &&
       kernel.includes("if (domState === 'send' && nowMs() - lastRuntimeDirtyAt > 1500) return false;") &&
       kernel.includes('if (state && state.partialTail === true) return true;') &&
-      kernel.includes('if (compositeBusyState(hostState) === true)') &&
+      kernel.includes('const compositeChanged = !sessionChanged') &&
+      kernel.includes('if (compositeChanged)') &&
       kernel.includes('rawBusy: hostState.busy') &&
+      kernel.includes('previousCompositeBusy: prevCompositeBusy') &&
       kernel.includes("emit('assistantTurnFinalized'"),
-    'runtime kernel finalized/busy events must use composite busy: bridge true/pending, DOM stop, stable-send, partial tail, and registered feature probes',
+    'runtime kernel finalized/busy events must use composite busy transitions: bridge true/pending, DOM stop, stable-send, partial tail, registered feature probes, and low-frequency idle recheck',
   );
   assert(
     !kernel.includes('setupMutationBus') &&

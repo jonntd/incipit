@@ -135,6 +135,10 @@ function finalizedReviewState(turnKey) {
   return reviewState;
 }
 
+function assertNoActiveTurn(payload, message = 'active composer review payload must not be exposed') {
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(payload, 'activeTurn'), false, message);
+}
+
 (function parsesSnapshotAndAggregatesOneFilePerTurn() {
   const dir = tmp();
   try {
@@ -158,15 +162,12 @@ function finalizedReviewState(turnKey) {
     }));
     const reviewState = { turns: {}, files: {} };
     T.markChangeReviewTurnStarted(reviewState, 'u1');
-    const active = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(active.turns.length, 0, 'unfinished turn must not be promoted to history');
-    assert.strictEqual(active.latestTurn, null);
-    assert.ok(active.activeTurn, 'unfinished turn with successful file tools must be the active composer lifecycle');
-    assert.strictEqual(active.activeTurn.files.length, 1);
-    assert.strictEqual(active.activeTurn.files[0].added, 2);
-    assert.strictEqual(active.activeTurn.files[0].removed, 1);
+    const pending = T.buildChangeReviewPayload(parser, reviewState);
+    assertNoActiveTurn(pending);
+    assert.strictEqual(pending.turns.length, 0, 'unfinished turn must not be promoted to webview payload');
+    assert.strictEqual(pending.latestTurn, null);
     const payload = T.buildChangeReviewPayload(parser, finalizedReviewState('u1'));
-    assert.strictEqual(payload.activeTurn, null);
+    assertNoActiveTurn(payload);
     assert.strictEqual(payload.turns.length, 1);
     assert.strictEqual(payload.latestTurn.files.length, 1);
     assert.strictEqual(payload.latestTurn.totals.files, 1);
@@ -176,20 +177,20 @@ function finalizedReviewState(turnKey) {
     assert.ok(path.isAbsolute(payload.latestTurn.files[0].filePath));
     assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.latestTurn.files[0], 'oldText'), false);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(payload.latestTurn.files[0], 'newText'), false);
-    ok('snapshot parse + same-turn file aggregation across active/finalized payloads');
+    ok('snapshot parse + same-turn file aggregation, exposed only after finalized');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 })();
 
-(function activeReviewPersistsAcrossMultipleFileToolsUntilTurnFinalized() {
+(function pendingReviewPersistsAcrossMultipleFileToolsUntilTurnFinalized() {
   const dir = tmp();
   try {
     const parser = T.createParser(path.join(dir, 's1.jsonl'));
     T.processChangeReviewEntry(parser, userLine('s1', dir, 'u1'));
     const reviewState = { turns: {}, files: {} };
     T.markChangeReviewTurnStarted(reviewState, 'u1');
-    assert.strictEqual(T.buildChangeReviewPayload(parser, reviewState).activeTurn, null);
+    assertNoActiveTurn(T.buildChangeReviewPayload(parser, reviewState));
 
     T.countChangeReviewTool(parser, {
       id: 'tool-1',
@@ -199,9 +200,7 @@ function finalizedReviewState(turnKey) {
       removed: 0,
     });
     const first = T.buildChangeReviewPayload(parser, reviewState);
-    assert.ok(first.activeTurn, 'first successful file tool starts the visible composer review lifecycle');
-    assert.strictEqual(first.activeTurn.turnKey, 'u1');
-    assert.strictEqual(first.activeTurn.files.length, 1);
+    assertNoActiveTurn(first);
     assert.strictEqual(first.turns.length, 0);
 
     T.countChangeReviewTool(parser, {
@@ -212,20 +211,15 @@ function finalizedReviewState(turnKey) {
       removed: 2,
     });
     const second = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(second.activeTurn.turnKey, 'u1');
-    assert.deepStrictEqual(
-      second.activeTurn.files.map(file => file.displayPath.replace(/\\/g, '/')).sort(),
-      ['a.txt', 'b.txt'],
-      'later file tools must update the same active review instead of ending the lifecycle',
-    );
-    assert.strictEqual(second.activeTurn.totals.files, 2);
+    assertNoActiveTurn(second);
+    assert.strictEqual(second.turns.length, 0, 'pending lifecycle stays hidden until finalized');
 
     T.markChangeReviewTurnFinalized(reviewState, 'u1');
     const final = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(final.activeTurn, null, 'composer mini bar disappears only when the assistant turn finalizes');
+    assertNoActiveTurn(final);
     assert.strictEqual(final.turns.length, 1);
     assert.strictEqual(final.latestTurn.files.length, 2);
-    ok('active review persists across multiple file tools until turn finalized');
+    ok('pending review persists across multiple file tools until turn finalized');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -238,7 +232,7 @@ function finalizedReviewState(turnKey) {
     const reviewState = { turns: {}, files: {} };
     T.processChangeReviewEntry(parser, userLine('s1', dir, 'u1'));
     T.markChangeReviewTurnStarted(reviewState, 'u1');
-    assert.strictEqual(T.buildChangeReviewPayload(parser, reviewState).activeTurn, null);
+    assertNoActiveTurn(T.buildChangeReviewPayload(parser, reviewState));
 
     T.processEditActivityEntry(parser, assistantToolLine('s1', dir, 'assistant-agent', 'tool-agent', 'Agent', {
       description: 'delegate file edits',
@@ -256,32 +250,18 @@ function finalizedReviewState(turnKey) {
       },
     }));
 
-    const active = T.buildChangeReviewPayload(parser, reviewState);
-    assert.ok(active.activeTurn, 'Agent toolStats must start the visible composer review lifecycle');
-    assert.strictEqual(active.activeTurn.turnKey, 'u1');
-    assert.strictEqual(active.activeTurn.files.length, 0, 'summary-only Agent stats must not invent file rows');
-    assert.deepStrictEqual(active.activeTurn.summary, {
-      files: 2,
-      added: 533,
-      removed: 0,
-      hasLineStats: true,
-    });
-    assert.deepStrictEqual(active.activeTurn.totals, {
-      files: 2,
-      added: 533,
-      removed: 0,
-      hasLineStats: true,
-    });
-    assert.strictEqual(active.turns.length, 0);
+    const pending = T.buildChangeReviewPayload(parser, reviewState);
+    assertNoActiveTurn(pending);
+    assert.strictEqual(pending.turns.length, 0);
 
     T.markChangeReviewTurnFinalized(reviewState, 'u1');
     const final = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(final.activeTurn, null);
+    assertNoActiveTurn(final);
     assert.strictEqual(final.turns.length, 1);
     assert.strictEqual(final.latestTurn.files.length, 0);
     assert.strictEqual(final.latestTurn.totals.files, 2);
     assert.strictEqual(final.latestTurn.totals.added, 533);
-    ok('Agent toolStats create a summary-only active/finalized change review');
+    ok('Agent toolStats create a summary-only finalized change review');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -305,20 +285,21 @@ function finalizedReviewState(turnKey) {
         },
       },
     }));
-    const active = T.buildChangeReviewPayload(parser, reviewState);
-    assert.ok(active.activeTurn);
-    assert.strictEqual(active.activeTurn.files.length, 0);
-    assert.strictEqual(active.activeTurn.totals.files, 2);
-    assert.strictEqual(active.activeTurn.totals.added, 0);
-    assert.strictEqual(active.activeTurn.totals.removed, 0);
-    assert.strictEqual(active.activeTurn.totals.hasLineStats, false);
+    T.markChangeReviewTurnFinalized(reviewState, 'u1');
+    const final = T.buildChangeReviewPayload(parser, reviewState);
+    assertNoActiveTurn(final);
+    assert.strictEqual(final.latestTurn.files.length, 0);
+    assert.strictEqual(final.latestTurn.totals.files, 2);
+    assert.strictEqual(final.latestTurn.totals.added, 0);
+    assert.strictEqual(final.latestTurn.totals.removed, 0);
+    assert.strictEqual(final.latestTurn.totals.hasLineStats, false);
     ok('Agent summary-only review without line stats does not claim +0/-0 data');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 })();
 
-(function historicalTurnWithoutLifecycleStateDoesNotBecomeActiveMiniBar() {
+(function historicalTurnWithoutLifecycleStateDoesNotEnterPayload() {
   const dir = tmp();
   try {
     const parser = T.createParser(path.join(dir, 's1.jsonl'));
@@ -331,12 +312,12 @@ function finalizedReviewState(turnKey) {
       removed: 0,
     });
     const payload = T.buildChangeReviewPayload(parser, { turns: {}, files: {} });
-    assert.strictEqual(payload.activeTurn, null);
+    assertNoActiveTurn(payload);
     assert.strictEqual(payload.turns.length, 0);
     assert.strictEqual(payload.empty, true);
     const staleState = T.buildChangeReviewPayload(parser, { turns: { u1: { finalized: false } }, files: {} });
-    assert.strictEqual(staleState.activeTurn, null, 'stale unfinalized state without lifecycle start must stay hidden');
-    ok('historical turn without lifecycle state does not become active mini bar');
+    assertNoActiveTurn(staleState, 'stale unfinalized state without lifecycle start must stay hidden');
+    ok('historical turn without lifecycle state does not enter payload');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -359,7 +340,7 @@ function finalizedReviewState(turnKey) {
     const result = T.resolveChangeReviewTurnStarted(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
     const reviewState = state.changeReviewStates.get(sessionId);
     assert.strictEqual(reviewState.turns.u1.finalized, true, 'stale start must not unfinalize the previous turn');
-    assert.strictEqual(result.activeTurn, null);
+    assertNoActiveTurn(result);
     assert.strictEqual(result.turns.length, 1);
     assert.strictEqual(result.latestTurn.turnKey, 'u1');
     ok('stale start for previous turn is ignored once next user is current');
@@ -419,7 +400,7 @@ function finalizedReviewState(turnKey) {
     const startedAt = T.markChangeReviewTurnStarted(reviewState, 'u1');
     turn.lifecycleStartedAt = startedAt;
     const active = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(active.activeTurn, null);
+    assertNoActiveTurn(active);
     assert.strictEqual(active.turns.length, 0);
     T.markChangeReviewTurnFinalized(reviewState, 'u1');
     const wrongFinal = T.buildChangeReviewPayload(parser, reviewState);
@@ -443,7 +424,7 @@ function finalizedReviewState(turnKey) {
       cwd: dir,
       turnKey: 'u1',
     });
-    assert.strictEqual(result.activeTurn, null);
+    assertNoActiveTurn(result);
     assert.strictEqual(result.turns.length, 1);
     assert.strictEqual(result.latestTurn.files[0].displayPath.replace(/\\/g, '/'), 'a.txt');
     assert.strictEqual(result.latestTurn.files[0].added, 4);
@@ -500,7 +481,7 @@ function finalizedReviewState(turnKey) {
     assert.strictEqual(file.added, 1, 'old snapshot update must not reset additions to zero');
     assert.strictEqual(file.backupFileName, 'backup-a@v1', 'old snapshot update must not replace backup metadata');
     const payload = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(payload.activeTurn, null);
+    assertNoActiveTurn(payload);
     assert.strictEqual(payload.turns.length, 0);
     ok('stale snapshot update cannot revive old lifecycle files');
   } finally {
@@ -568,7 +549,7 @@ function finalizedReviewState(turnKey) {
       },
     }));
     const payload = T.buildChangeReviewPayload(parser, finalizedReviewState('u1'));
-    assert.strictEqual(payload.activeTurn, null);
+    assertNoActiveTurn(payload);
     assert.strictEqual(payload.latestTurn, null);
     assert.strictEqual(payload.turns.length, 0);
     assert.strictEqual(payload.empty, true);
@@ -810,7 +791,7 @@ function finalizedReviewState(turnKey) {
     turn.lifecycleStartedAt = startedAt;
     const emptyActive = T.buildChangeReviewPayload(parser, reviewState);
     assert.strictEqual(emptyActive.turns.length, 0);
-    assert.strictEqual(emptyActive.activeTurn, null, 'rerun without a fresh file tool must not show the old mini bar');
+    assertNoActiveTurn(emptyActive, 'rerun without a fresh file tool must not expose an active review');
     T.countChangeReviewTool(parser, {
       id: 'tool-2',
       turnKey: 'u1',
@@ -819,14 +800,11 @@ function finalizedReviewState(turnKey) {
       removed: 1,
     });
     const active = T.buildChangeReviewPayload(parser, reviewState);
+    assertNoActiveTurn(active);
     assert.strictEqual(active.turns.length, 0);
-    assert.strictEqual(active.activeTurn.files.length, 1);
-    assert.strictEqual(active.activeTurn.files[0].displayPath.replace(/\\/g, '/'), 'b.txt');
-    assert.strictEqual(active.activeTurn.files[0].added, 2);
-    assert.strictEqual(active.activeTurn.files[0].removed, 1);
     T.markChangeReviewTurnFinalized(reviewState, 'u1');
     const final = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(final.activeTurn, null);
+    assertNoActiveTurn(final);
     assert.strictEqual(final.turns.length, 1);
     assert.strictEqual(final.latestTurn.files.length, 1);
     assert.strictEqual(final.latestTurn.files[0].displayPath.replace(/\\/g, '/'), 'b.txt');
@@ -869,9 +847,8 @@ function finalizedReviewState(turnKey) {
     assert.strictEqual(activeFile.removed, 4, 'same-file rerun must reset old lifecycle removals');
     assert.strictEqual(activeFile.backupFileName, undefined, 'same-file rerun must wait for a fresh snapshot');
     const active = T.buildChangeReviewPayload(parser, reviewState);
-    assert.strictEqual(active.activeTurn.files.length, 1);
-    assert.strictEqual(active.activeTurn.files[0].added, 5);
-    assert.strictEqual(active.activeTurn.files[0].removed, 4);
+    assertNoActiveTurn(active);
+    assert.strictEqual(active.turns.length, 0);
     ok('same-uuid rerun resets same-file lifecycle summary');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1078,7 +1055,7 @@ function finalizedReviewState(turnKey) {
     const staleOld = Array.from(turn.files.values())[0];
     staleOld.lastSeenAt = 1;
     const started = T.resolveChangeReviewTurnStarted(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
-    assert.strictEqual(started.activeTurn, null, 'same-uuid rerun starts with no visible old lifecycle file');
+    assertNoActiveTurn(started, 'same-uuid rerun starts with no active payload');
     T.processChangeReviewEntry(parser, snapshotUpdateLine('assistant-new', {
       'new.txt': {
         backupFileName: null,
@@ -1095,7 +1072,7 @@ function finalizedReviewState(turnKey) {
       removed: 0,
     });
     const newFinal = T.resolveChangeReviewTurnFinalized(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
-    assert.strictEqual(newFinal.activeTurn, null);
+    assertNoActiveTurn(newFinal);
     assert.strictEqual(newFinal.latestTurn.files.length, 1);
     assert.strictEqual(newFinal.latestTurn.files[0].displayPath.replace(/\\/g, '/'), 'new.txt');
     const reviewState = state.changeReviewStates.get(sessionId);

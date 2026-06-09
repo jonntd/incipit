@@ -2040,7 +2040,6 @@ function emptyChangeReviewPayload(sessionId, target) {
     src: target || null,
     cwd: null,
     ts: Date.now(),
-    activeTurn: null,
     latestTurn: null,
     turns: [],
     totals: { files: 0, added: 0, removed: 0 },
@@ -3453,14 +3452,6 @@ function buildEditActivityPayload(parser) {
 
 function buildChangeReviewPayload(parser, reviewState) {
   if (!parser) return emptyChangeReviewPayload(null, null);
-  const activeSource = parser.changeReviewCurrentTurnKey
-    ? parser.changeReviewTurns.get(parser.changeReviewCurrentTurnKey)
-    : null;
-  const activeTurn = activeSource &&
-    isChangeReviewTurnActive(reviewState, activeSource.turnKey)
-    ? changeReviewTurnPayload(activeSource, reviewState)
-    : null;
-  const visibleActiveTurn = changeReviewTurnPayloadHasChanges(activeTurn) ? activeTurn : null;
   const turns = Array.from(parser.changeReviewTurns.values())
     .filter(turn => changeReviewTurnHasVisibleChanges(turn, reviewState))
     .filter(turn => isChangeReviewTurnFinalized(reviewState, turn.turnKey))
@@ -3475,12 +3466,11 @@ function buildChangeReviewPayload(parser, reviewState) {
     return sum;
   }, { files: 0, added: 0, removed: 0 });
   return {
-    empty: turns.length === 0 && !visibleActiveTurn,
+    empty: turns.length === 0,
     sessionId: path.basename(parser.path, JSONL_SUFFIX),
     src: parser.path,
     cwd: parser.projectCwd || null,
     ts: Date.now(),
-    activeTurn: visibleActiveTurn,
     latestTurn,
     turns,
     totals,
@@ -3675,13 +3665,6 @@ function changeReviewTurnStateEntry(reviewState, turnKey) {
 function isChangeReviewTurnFinalized(reviewState, turnKey) {
   const entry = reviewState && reviewState.turns && reviewState.turns[turnKey];
   return !!(entry && entry.finalized === true);
-}
-
-function isChangeReviewTurnActive(reviewState, turnKey) {
-  const entry = reviewState && reviewState.turns && reviewState.turns[turnKey];
-  return !!(entry &&
-    entry.finalized !== true &&
-    Object.prototype.hasOwnProperty.call(entry, 'startedAt'));
 }
 
 function markChangeReviewTurnFinalized(reviewState, turnKey) {
