@@ -849,6 +849,61 @@ function assertRuntimeSourceContracts() {
       legacy.includes('if (sendButtonDomCachedAt && now - sendButtonDomCachedAt <= SEND_BUTTON_DOM_CACHE_MS)'),
     'busy hot path must cache send/stop DOM scans for a short frame window and avoid kernel re-scanning after legacy composite false',
   );
+
+  // ---- busy tri-state (2026-06-09): "all probes missed" must never collapse
+  // to idle on a state-mutating path. The probe answers true/false/null; the
+  // kernel throws instead of vouching idle off a stale bridge; mutating gates
+  // ride the fail-closed predicate while visual surfaces stay fail-open.
+  assert(
+    /function legacyCompositeBusyProbe\(\)[\s\S]{0,2200}?if \(sessionBusy === false\) return false;\r?\n\s*return null;/.test(legacy),
+    'legacyCompositeBusyProbe must be tri-state: fiber not-busy evidence returns false, an all-miss (no fiber, no send/stop DOM, no partial tail) returns null — a bare trailing `return false` reopens the silent-green-light hole',
+  );
+  assert(
+    kernel.includes('const BRIDGE_IDLE_TRUST_MS = 30000;') &&
+      kernel.includes('bridgeUpdatedAt: Number(bridge.updatedAt) || 0,') &&
+      kernel.includes('hostState.bridgeUpdatedAt = Number(next.bridgeUpdatedAt) || 0;') &&
+      kernel.includes('state.bridgeUpdatedAt > 0 &&') &&
+      kernel.includes('Date.now() - state.bridgeUpdatedAt <= BRIDGE_IDLE_TRUST_MS)') &&
+      kernel.includes("throw new Error('host state bridge unavailable')") &&
+      install.includes('updatedAt:Date.now()'),
+    'kernel conversationIsBusy may let the bridge vouch for idle only while the bridge object is fresh (producer Date.now() clock); stale or timestamp-less bridges with no composite evidence must throw',
+  );
+  assert(
+    legacy.includes('function conversationBusyTriState()') &&
+      legacy.includes('return conversationBusyTriState() === true;') &&
+      legacy.includes('function conversationBusyOrUnknown()') &&
+      legacy.includes('return conversationBusyTriState() !== false;') &&
+      legacy.includes('function blockMutationWhileBusyOrUnknown()'),
+    'legacy must expose the tri-state resolver plus the fail-open (visual) and fail-closed (mutating) predicates',
+  );
+  assert.strictEqual(
+    (legacy.match(/if \(blockMutationWhileBusyOrUnknown\(\)\) return;/g) || []).length,
+    6,
+    'all six user-triggered mutating entries (fork, rewind-only, rerun-with-rewind, fork-with-rewind, save-and-rerun, inline save) must gate through the fail-closed mutation blocker',
+  );
+  assert(
+    /function requestTranscriptMutation\(op, payload, options\)[\s\S]{0,900}?conversationBusyTriState\(\)/.test(legacy) &&
+      legacy.includes('local-history edit blocked'),
+    'the JSONL mutation choke point must distinguish busy from unknown and reject both with distinct messages',
+  );
+  assert(
+    legacy.includes("if (conversationBusyOrUnknown()) return 'busy';") &&
+      legacy.includes('if (!conversationBusyOrUnknown() && (checked || !o.rollbackToken ||'),
+    'rerun hand-off quiesce (phase 1) and cut-confirm (phase 2) must treat unknown busy as busy so they time out cleanly instead of cutting under an unobservable stream',
+  );
+  assert(
+    /function sessionIsBusy\(session\)[\s\S]{0,520}?return conversationBusyOrUnknown\(\);/.test(legacy) &&
+      /function sessionBusyForDeferredCapture\(session\)[\s\S]{0,620}?return conversationBusyOrUnknown\(\);/.test(legacy) &&
+      /function deferredConvBusySafe\(\)[\s\S]{0,520}?return conversationBusyOrUnknown\(\);/.test(legacy),
+    'deferred capture/flush busy fallbacks must be fail-closed (unknown ⇒ busy ⇒ capture/freeze, manual Guide stays available)',
+  );
+  assert(
+    /function busyHysteresisReady\(\)[\s\S]{0,320}?if \(conversationIsBusy\(\)\)/.test(legacy) &&
+      /function sweepStreamingDisableState\(\)[\s\S]{0,220}?const busy = conversationIsBusy\(\);/.test(legacy) &&
+      /function changeReviewBusySafe\(\)[\s\S]{0,560}?return conversationIsBusy\(\);/.test(legacy) &&
+      /function openInlineEditor\(\{[\s\S]{0,420}?if \(conversationIsBusy\(\)\) return;/.test(legacy),
+    'read-only/visual surfaces (action-row hysteresis, disable sweep, change-review render timing, editor open) must stay on the fail-open predicate so a dead probe surface degrades visually instead of bricking the UI',
+  );
   assert(
     workbenchOverlay.includes('function scheduleForEvent(event)') &&
       workbenchOverlay.includes('if (visible || eventInEditor(event)) schedule();') &&

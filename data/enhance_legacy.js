@@ -2230,8 +2230,10 @@ import {
     return false;
   }
   function deferredConvBusySafe() {
-    try { return conversationIsBusy() === true; }
-    catch (_) { return true; }  // bridge unknown → treat busy (fail-closed)
+    // Fail-closed: unknown ⇒ busy. The old catch-based version only covered
+    // the kernel-throw branch; the registered probe collapsing all-miss to
+    // false slipped past it (2026-06-09). Tri-state closes that hole.
+    return conversationBusyOrUnknown();
   }
   function deferredTurnLooksNatural() {
     if (deferredConvBusySafe()) return false;
@@ -2287,15 +2289,18 @@ import {
   function sessionIsBusy(session) {
     const busy = signalValue(session && session.busy);
     if (typeof busy === 'boolean') return busy;
-    try { return conversationIsBusy(); }
-    catch (_) { return false; }
+    // Only the deferred flush gate consumes this: a session whose busy
+    // signal is unreadable must count as busy (fail-closed), not idle.
+    return conversationBusyOrUnknown();
   }
 
   function sessionBusyForDeferredCapture(session) {
     const busy = signalValue(session && session.busy);
     if (busy === true) return true;
-    try { return conversationIsBusy() === true; }
-    catch (_) { return false; }
+    // Fail-closed: when nothing can prove the conversation is idle, a
+    // composer submit is captured into the queue (user can still release
+    // it manually via Guide) instead of racing a possibly-live stream.
+    return conversationBusyOrUnknown();
   }
 
   function askPanelIsActive() {
@@ -2989,8 +2994,11 @@ import {
   }
 
   function changeReviewBusySafe() {
-    try { return conversationIsBusy() === true; }
-    catch (_) { return true; }
+    // Read-only / visual: gates WHEN the finalized review block renders,
+    // never whether files change. Fail-open (unknown ⇒ idle) so a broken
+    // probe surface cannot permanently brick review rendering; the
+    // busy-resume sweep already retracts a block minted into a live turn.
+    return conversationIsBusy();
   }
 
   function cssEscapeAttr(value) {
@@ -3904,8 +3912,16 @@ import {
 
   function requestTranscriptMutation(op, payload, options) {
     const allowBusy = !!(options && options.allowBusy);
-    if (!allowBusy && conversationIsBusy()) {
-      return Promise.reject(new Error('Wait for the current reply to finish before editing local history.'));
+    if (!allowBusy) {
+      // Fail-closed: this is the single choke point for every local-history
+      // write (edit/delete/truncate). Unknown busy must reject, not pass.
+      const busy = conversationBusyTriState();
+      if (busy === true) {
+        return Promise.reject(new Error('Wait for the current reply to finish before editing local history.'));
+      }
+      if (busy !== false) {
+        return Promise.reject(new Error('incipit cannot confirm the conversation is idle (host probes unavailable); local-history edit blocked.'));
+      }
     }
     setupTranscriptMutationChannel();
     const api = getIncipitVsCodeApi();
@@ -4083,6 +4099,13 @@ import {
     return null;
   }
 
+  // Tri-state: true / false / null. null means "every probe surface missed"
+  // (no session fiber, no rendered send/stop button, no partial-tail signal)
+  // and is NOT the same as false. Before 2026-06-09 this collapsed to false,
+  // which meant one host refactor that moves the class stems AND the fiber
+  // shape silently green-lit rerun/save/flush into a possibly-live stream.
+  // Do not "simplify" the trailing null back to false: state-mutating
+  // callers treat null as busy (fail-closed), visual callers as idle.
   function legacyCompositeBusyProbe() {
     // A bridge busy=true is authoritative. A bridge/session busy=false is not:
     // Claude Code can briefly drop it between assistant text and follow-up
@@ -4097,9 +4120,11 @@ import {
     // stopped changing; while mutations are fresh, prefer the partial
     // transcript flag because it closes the send→stop transition race.
     if (domState === 'send' && nowMs() - lastTranscriptMutationAt > 1500) return false;
-    const partialTail = activeSessionHasPartialTail();
-    if (!partialTail) return false;
-    return true;
+    if (activeSessionHasPartialTail()) return true;
+    // Real fiber evidence: the SessionState was reachable and reported
+    // not-busy (partial tail above was readable from the same instance).
+    if (sessionBusy === false) return false;
+    return null;
   }
 
   let runtimeBusyProbeRegistered = false;
@@ -4114,12 +4139,53 @@ import {
     }
   }
 
-  function conversationIsBusy() {
+  // Tri-state busy resolution: true / false / null(unknown). The kernel
+  // throws when no probe surface can answer; the legacy probe returns null
+  // for the same condition. Both funnel here so the two predicates below
+  // stay the single source of "how does unknown behave".
+  function conversationBusyTriState() {
     try {
       return kernelConversationIsBusy() === true;
     }
-    catch (_) { /* Fall through to the legacy probes below. */ }
-    return legacyCompositeBusyProbe() === true;
+    catch (_) { /* Kernel cannot tell — fall through to the legacy probe. */ }
+    try {
+      return legacyCompositeBusyProbe();
+    }
+    catch (_) { return null; }
+  }
+
+  // Fail-open predicate for read-only / visual surfaces (action rows,
+  // disable sweeps, typography, badges): unknown counts as idle, so a
+  // broken probe surface degrades to "UI stays alive", never to "every
+  // feature bricks". State-mutating paths must NOT use this one.
+  function conversationIsBusy() {
+    return conversationBusyTriState() === true;
+  }
+
+  // Fail-closed predicate for state-mutating paths (rerun/send hand-off,
+  // deferred capture/flush, JSONL mutation, fork/rewind, edit save):
+  // unknown counts as busy. "All probes missed" must never green-light an
+  // action that can feed a second stream into the host's root assembler
+  // or rewrite the transcript under a live turn (2026-06-09).
+  function conversationBusyOrUnknown() {
+    return conversationBusyTriState() !== false;
+  }
+
+  // Entry gate for user-triggered mutating actions (fork/rewind/save).
+  // Returns true when the action must be blocked. The buttons themselves
+  // stay enabled fail-open, so when the answer is unknown we surface a
+  // toast instead of silently eating the click — a broken probe surface
+  // should look broken, not dead.
+  function blockMutationWhileBusyOrUnknown() {
+    const busy = conversationBusyTriState();
+    if (busy === false) return false;
+    if (busy === null) {
+      showTranscriptToast(
+        'incipit cannot confirm the reply stream is idle; action blocked to protect the conversation.',
+        'warn',
+      );
+    }
+    return true;
   }
 
   // "Is the OLD streaming process actually stopped?" — the pre-truncate
@@ -4135,7 +4201,10 @@ import {
   // 8s stall + bubble-vanish-then-revert regression. The post-cut peek
   // (a real foreign-write signal) covers the residual-flush case.
   function activeSessionTailUnsafeReason() {
-    if (conversationIsBusy()) return 'busy';
+    // Fail-closed: an unknown busy answer reads as 'busy', so the quiesce
+    // loop keeps waiting and times out cleanly pre-truncate instead of
+    // cutting the JSONL under a stream nobody can observe.
+    if (conversationBusyOrUnknown()) return 'busy';
     if (sinceLastChannelInterrupt() < CHANNEL_INTERRUPT_COOLDOWN_MS) return 'interrupt-cooldown';
     return null;
   }
@@ -4227,7 +4296,8 @@ import {
       // Quiet once the cut reads un-advanced and we are not busy. If the
       // token expired (checked stays false) fall back to the busy gate
       // only — phase 1 already established the stream had stopped.
-      if (!conversationIsBusy() && (checked || !o.rollbackToken ||
+      // Fail-closed: unknown busy keeps polling until the budget runs out.
+      if (!conversationBusyOrUnknown() && (checked || !o.rollbackToken ||
           sinceLastChannelInterrupt() >= CHANNEL_INTERRUPT_COOLDOWN_MS)) {
         return { ok: true };
       }
@@ -4729,7 +4799,7 @@ import {
     record = liveTranscriptRecord(record.uuid, record);
     if (record.isSynthetic || transcriptHasToolResult(record)) return;
     if (isCompactSummaryRecord(record)) return;
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
 
     const session = locateActiveSessionState();
     const ctx = locateActiveAppContext();
@@ -4776,7 +4846,7 @@ import {
     if (!record || record.type !== 'user') return;
     record = liveTranscriptRecord(record.uuid, record);
     if (isCompactSummaryRecord(record)) return;
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
     if (button) button.dataset.incipitInflight = '1';
     try { await performRewindCode(record); }
     finally { if (button) button.removeAttribute('data-incipit-inflight'); }
@@ -4787,7 +4857,7 @@ import {
     record = liveTranscriptRecord(record.uuid, record);
     if (record.isSynthetic || transcriptHasToolResult(record)) return;
     if (isCompactSummaryRecord(record)) return;
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
     if (button) button.dataset.incipitInflight = '1';
     let rewound = false;
     try {
@@ -4807,7 +4877,7 @@ import {
     record = liveTranscriptRecord(record.uuid, record);
     if (record.isSynthetic || transcriptHasToolResult(record)) return;
     if (isCompactSummaryRecord(record)) return;
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
     if (button) button.dataset.incipitInflight = '1';
     let rewound = false;
     try {
@@ -5160,7 +5230,7 @@ import {
       await saveInlineEditor(uuid);
       return;
     }
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
     const text = state.textarea.value;
     const blocksSpec = buildUserEditBlocksSpec(state, text);
     const rerunPayload = buildRerunPayloadFromEditorDraft(state.record, text, state.chips);
@@ -5187,7 +5257,7 @@ import {
   async function saveInlineEditor(uuid) {
     const state = inlineEditByUuid.get(uuid);
     if (!state) return;
-    if (conversationIsBusy()) return;
+    if (blockMutationWhileBusyOrUnknown()) return;
     const text = state.textarea.value;
     const op = state.kind === 'assistant' ? 'edit_assistant_text' : 'edit_user';
 

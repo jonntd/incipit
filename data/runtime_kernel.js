@@ -24,6 +24,14 @@ const STREAM_SETTLED_QUIET_MS = 360;
 const SEND_BUTTON_DOM_CACHE_MS = 32;
 const COMPOSITE_BUSY_RECHECK_MS = 160;
 const COMPOSITE_BUSY_RECHECK_MAX_MS = 8000;
+// How recently the bridge object must have been produced for its busy=false
+// to vouch for "idle" when every other probe missed. Producer writes
+// `updatedAt` with Date.now() (see install.js buildHostStateBridgePreamble),
+// so the comparison must stay in the Date.now() clock domain — never mix
+// with performance.now(). Streaming refreshes the bridge many times per
+// second (messages signal), so 30s is generous; a bridge frozen past it
+// with zero corroborating DOM/fiber evidence is a zombie, not an idle vote.
+const BRIDGE_IDLE_TRUST_MS = 30000;
 const MARKDOWN_ROOT_SELECTOR = '[data-incipit-markdown-root], [class*="root_"]';
 
 const subscribers = new Map();
@@ -54,6 +62,7 @@ const hostState = {
   messagesVersion: 0,
   source: 'init',
   updatedAt: 0,
+  bridgeUpdatedAt: 0,
 };
 
 const busyProbes = new Map();
@@ -412,6 +421,7 @@ function computeHostState() {
       sessionId,
       messagesVersion,
       source: 'bridge',
+      bridgeUpdatedAt: Number(bridge.updatedAt) || 0,
     };
   }
   return {
@@ -421,6 +431,7 @@ function computeHostState() {
     sessionId: getActiveClaudeSessionId({ allowStaleState: true, skipFiber: true }),
     messagesVersion: hostState.messagesVersion,
     source: 'no-bridge',
+    bridgeUpdatedAt: 0,
   };
 }
 
@@ -437,6 +448,7 @@ export function refreshHostState(reason = 'refresh') {
   hostState.sessionId = next.sessionId || null;
   hostState.messagesVersion = Number.isFinite(next.messagesVersion) ? next.messagesVersion : 0;
   hostState.source = next.source || 'unknown';
+  hostState.bridgeUpdatedAt = Number(next.bridgeUpdatedAt) || 0;
   hostState.updatedAt = nowMs();
   lastHostStateAt = hostState.updatedAt;
 
@@ -494,15 +506,27 @@ export function getHostState(options = {}) {
   return { ...hostState };
 }
 
-// Throws when the semantic bridge is unavailable so legacy/footer fall back
-// to their own probes (fiber walk / DOM send-state). Bridge-less mode does
-// NOT mean "not busy" — it means "kernel cannot tell, ask elsewhere".
+// Throws when no probe surface can answer, so callers fall back to their
+// own probes (fiber walk / DOM send-state). Bridge-less mode does NOT mean
+// "not busy" — it means "kernel cannot tell, ask elsewhere". Order matters:
+// a composite false carries real evidence (legacy probe false, or a rendered
+// send icon plus a quiet window) and never needs the bridge to vouch for it.
+// The bare bridge short-circuit only covers "composite unknown", and there a
+// stale bridge must NOT pass: a bridge object whose producer effect died
+// (host swapped SessionState internals without a webview reload) freezes
+// busy=false forever, and with every DOM/fiber probe already missing there
+// is nothing left to catch a live stream. Fresh-bridge-or-throw keeps the
+// 2026-06-09 "all probes missed must not collapse to idle" guarantee.
 export function conversationIsBusy() {
   const state = getHostState();
   const composite = compositeBusyState(state);
   if (composite === true) return true;
-  if (state.source === 'bridge') return false;
   if (composite === false) return false;
+  if (state.source === 'bridge' &&
+      state.bridgeUpdatedAt > 0 &&
+      Date.now() - state.bridgeUpdatedAt <= BRIDGE_IDLE_TRUST_MS) {
+    return false;
+  }
   throw new Error('host state bridge unavailable');
 }
 

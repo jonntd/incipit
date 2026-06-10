@@ -148,9 +148,13 @@ function cssRuleBody(selector) {
     arm.includes('if (!deferredTurnLooksNatural()) return;') &&
     arm.includes('flushDeferredNextIfReady();'),
     'the confirm window must re-check natural-ness before releasing');
-  // bridge-unknown is treated as busy (fail-closed)
-  assert.ok(/function deferredConvBusySafe[\s\S]*catch \(_\) \{ return true; \}/.test(legacy),
+  // bridge-unknown is treated as busy (fail-closed). The old catch-only shim
+  // missed the probe-collapses-all-miss-to-false hole (2026-06-09); the gate
+  // must ride the tri-state fail-closed predicate instead.
+  assert.ok(/function deferredConvBusySafe\(\)[\s\S]{0,500}?return conversationBusyOrUnknown\(\);/.test(legacy),
     'unknown host state must be treated as busy, never as a free pass to send');
+  assert.ok(!/function deferredConvBusySafe\(\)[\s\S]{0,500}?catch \(_\) \{ return true; \}/.test(legacy),
+    'deferredConvBusySafe must not regress to the throw-only fail-closed shim (it never fired: the registered probe returned false on all-miss instead of throwing)');
   ok('natural-end gate: interrupted/error/partial freeze the queue');
 })();
 
@@ -333,9 +337,10 @@ function cssRuleBody(selector) {
     setup.includes('notifyChangeReviewTurnFinalized();') &&
     setup.includes('scheduleChangeReviewTurnBlocksRender();'),
     'transcript review blocks are appended after assistantTurnFinalized only when composite busy is false');
-  assert.ok(conversationBusy.includes('return kernelConversationIsBusy() === true;') &&
-    !conversationBusy.includes('if (kernelConversationIsBusy()) return true;') &&
+  assert.ok(conversationBusy.includes('return conversationBusyTriState() === true;') &&
     !conversationBusy.includes('return !!kernelConversationIsBusy();') &&
+    legacy.includes('function conversationBusyTriState()') &&
+    /function conversationBusyTriState\(\)[\s\S]{0,400}?return kernelConversationIsBusy\(\) === true;/.test(legacy) &&
     legacyBusyProbe.includes("if (domState === 'stop') return true") &&
     legacyBusyProbe.includes('activeSessionHasPartialTail()') &&
     legacy.includes("registerRuntimeBusyProbe('legacy.compositeBusy', legacyCompositeBusyProbe)") &&
