@@ -1052,6 +1052,129 @@ function assertHostStateBridgePatchVariants() {
   console.log('patch-contracts: ok host-state bridge variants');
 }
 
+// ---- Monaco diff span anchors (2026-06-09) ----
+// The Monaco option patches must anchor on the `.createDiffEditor(` business
+// seed plus brace matching, and rewrite only their own option inside each
+// span. These fixtures lock the drift class that killed the old anchors:
+// upstream inserting or reordering neighboring options must not break any
+// option patch, and legacy incipit-patched shapes must normalize.
+const MONACO_STOCK_INLINE =
+  '{readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!1,scrollBeyondLastLine:!1,minimap:{enabled:!1},automaticLayout:!0,theme:"vs-dark",fontSize:12,lineNumbers:"off",lightbulb:{enabled:Q.ShowLightbulbIconMode.Off},wordWrap:"on",wrappingIndent:"same",scrollbar:{vertical:"hidden",horizontal:"hidden",verticalScrollbarSize:0,handleMouseWheel:!1}}';
+const MONACO_STOCK_MODAL =
+  '{readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!0,scrollBeyondLastLine:!1,minimap:{enabled:!1},automaticLayout:!0,theme:"vs-dark",fontSize:12,lineNumbers:"off",wordWrap:"on",wrappingIndent:"same",scrollbar:{vertical:"auto",horizontal:"auto"}}';
+const MONACO_DRIFT_INLINE =
+  '{readOnly:!0,renderOverviewRuler:!1,inlayHints:{enabled:"off"},renderSideBySide:!0,theme:"vs-dark",fontSize:12,stickyScroll:{enabled:!1},lineNumbers:"off",wordWrap:"on",lightbulb:{enabled:Q.ShowLightbulbIconMode.Off},wrappingIndent:"same",scrollbar:{vertical:"hidden",horizontal:"hidden",verticalScrollbarSize:0,handleMouseWheel:!1}}';
+const MONACO_DRIFT_MODAL =
+  '{readOnly:!0,wordWrap:"on",renderSideBySide:!0,renderOverviewRuler:!0,theme:"vs-dark",experimental:{useTrueInlineView:!1},fontSize:12,lineNumbers:"off",wrappingIndent:"same",scrollbar:{vertical:"auto",horizontal:"auto"}}';
+
+function monacoDiffFixture(inlineOpts, modalOpts) {
+  return [
+    'var Q={ShowLightbulbIconMode:{Off:"off"}};',
+    'var ed={createDiffEditor:function(a,b){return{updateOptions:function(){},dispose:function(){}}}};',
+    `function mountInline(o,l){var x=ed.createDiffEditor(o.current,${inlineOpts});var C=new ResizeObserver((y)=>{for(let w of y){let E=w.contentRect.width>700;l(!E),x.updateOptions({renderSideBySide:E})}});return x}`,
+    `function mountModal(i){var a=ed.createDiffEditor(i.current,${modalOpts});return a}`,
+  ].join('\n');
+}
+
+function applyMonacoDiffPipeline(content) {
+  const lines = [];
+  let updated = content;
+  for (const fn of [
+    __test.patchMonacoDiffTheme,
+    __test.patchMonacoDiffFont,
+    __test.patchMonacoDiffWordWrap,
+    __test.patchMonacoDiffOverview,
+    __test.patchMonacoDiffInlineLayout,
+    __test.patchMonacoDiffModalLayout,
+    __test.patchMonacoDiffModalScrollbar,
+  ]) {
+    const [next, line] = fn(updated);
+    updated = next;
+    lines.push(line);
+  }
+  return [updated, lines];
+}
+
+function countLiteral(text, literal) {
+  return text.split(literal).length - 1;
+}
+
+function assertMonacoDiffSpanPatchVariants() {
+  const variants = [
+    ['stock 2.1.170 shape', MONACO_STOCK_INLINE, MONACO_STOCK_MODAL],
+    ['inserted/reordered options drift', MONACO_DRIFT_INLINE, MONACO_DRIFT_MODAL],
+  ];
+  for (const [label, inlineOpts, modalOpts] of variants) {
+    const source = monacoDiffFixture(inlineOpts, modalOpts);
+    const spans = __test.monacoDiffEditorOptionSpans(source);
+    assert.strictEqual(spans.length, 2, `${label}: expected two diff editor option spans`);
+    const [patched, lines] = applyMonacoDiffPipeline(source);
+    assert(lines.every(line => !/降级/.test(line)),
+      `${label}: no Monaco patch may degrade: ${lines.join(' | ')}`);
+    assert.strictEqual(countLiteral(patched, 'theme:(globalThis.__incipitPickMonacoDiffTheme'), 2,
+      `${label}: both spans get the theme expression`);
+    assert.strictEqual(countLiteral(patched, 'fontSize:12,fontFamily:"\'Rec Mono Linear\''), 2,
+      `${label}: font family inserted after fontSize in both spans`);
+    assert.strictEqual(countLiteral(patched, 'lineNumbers:"on",lineDecorationsWidth:0'), 2,
+      `${label}: line numbers enabled in both spans`);
+    assert.strictEqual(countLiteral(patched, 'lineNumbers:"off"'), 0,
+      `${label}: no span keeps lineNumbers off`);
+    assert.strictEqual(countLiteral(patched, 'wordWrap:"off"'), 2,
+      `${label}: word wrap disabled in both spans`);
+    assert.strictEqual(countLiteral(patched, 'renderOverviewRuler:!1'), 2,
+      `${label}: overview ruler off in both spans`);
+    assert.strictEqual(countLiteral(patched, 'renderOverviewRuler:!0'), 0,
+      `${label}: no overview ruler left on`);
+    assert.strictEqual(countLiteral(patched, 'renderSideBySide:!1'), 3,
+      `${label}: both spans plus the forced resize handler are single-column`);
+    assert(patched.includes('l(!0),x.updateOptions({renderSideBySide:!1})'),
+      `${label}: inline resize handler forced single-column`);
+    assert.strictEqual(countLiteral(patched, 'scrollbar:{vertical:"auto",horizontal:"auto"}'), 1,
+      `${label}: modal scrollbar stays auto`);
+    assert.doesNotThrow(
+      () => new vm.Script(patched, { filename: `monaco-diff-${label}.js` }),
+      `${label}: patched fixture must remain valid JavaScript`,
+    );
+    const [repatched, relines] = applyMonacoDiffPipeline(patched);
+    assert.strictEqual(repatched, patched, `${label}: second pass must be idempotent`);
+    assert(relines.every(line => /已存在/.test(line)),
+      `${label}: second pass should report 已存在: ${relines.join(' | ')}`);
+  }
+
+  // Legacy incipit-patched shapes (pre-picker theme expression, font family
+  // present but lineNumbers:"on" without decorations width, modal scrollbar
+  // forced hidden) must normalize without double-patching.
+  const legacyThemeExpr =
+    'theme:(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette==="warm-white"?"vs":"vs-dark")';
+  const legacyInline = MONACO_STOCK_INLINE
+    .replace('theme:"vs-dark"', legacyThemeExpr)
+    .replace('fontSize:12,', 'fontSize:12,fontFamily:"\'Rec Mono Linear\', Consolas, Monaco, \'Courier New\', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0",')
+    .replace('lineNumbers:"off"', 'lineNumbers:"on"');
+  const legacyModal = MONACO_STOCK_MODAL
+    .replace('scrollbar:{vertical:"auto",horizontal:"auto"}', 'scrollbar:{vertical:"auto",horizontal:"hidden"}');
+  const legacySource = monacoDiffFixture(legacyInline, legacyModal);
+  const [legacyPatched, legacyLines] = applyMonacoDiffPipeline(legacySource);
+  assert(legacyLines.every(line => !/降级/.test(line)),
+    `legacy shapes: no Monaco patch may degrade: ${legacyLines.join(' | ')}`);
+  assert.strictEqual(countLiteral(legacyPatched, 'theme:(globalThis.__incipitPickMonacoDiffTheme'), 2,
+    'legacy theme expression upgraded in both spans');
+  assert.strictEqual(countLiteral(legacyPatched, 'lineNumbers:"on",lineDecorationsWidth:0'), 2,
+    'legacy lineNumbers gains decorations width');
+  assert.strictEqual(countLiteral(legacyPatched, 'fontFamily:"\'Rec Mono Linear\''), 2,
+    'legacy font family not duplicated');
+  assert.strictEqual(countLiteral(legacyPatched, 'scrollbar:{vertical:"auto",horizontal:"auto"}'), 1,
+    'legacy hidden modal scrollbar restored to auto');
+
+  // Anchor miss must degrade without mutating the bundle.
+  const noEditors = 'var x = 1;';
+  for (const fn of [__test.patchMonacoDiffTheme, __test.patchMonacoDiffModalScrollbar]) {
+    const [unchanged, line] = fn(noEditors);
+    assert.strictEqual(unchanged, noEditors, 'missing createDiffEditor must not mutate content');
+    assert(/降级/.test(line), 'missing createDiffEditor must degrade');
+  }
+  console.log('patch-contracts: ok monaco diff span anchors');
+}
+
 function testFixture(root) {
   const extensionPath = path.join(root, 'extension.js');
   const webviewPath = path.join(root, 'webview', 'index.js');
@@ -1279,6 +1402,7 @@ function assertAtMentionBridgePatchDegrades(root) {
 
 assertRuntimeSourceContracts();
 assertHostStateBridgePatchVariants();
+assertMonacoDiffSpanPatchVariants();
 
 const fixtures = collectFixtureRoots();
 if (!fixtures.length) {

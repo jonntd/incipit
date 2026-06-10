@@ -273,38 +273,38 @@ const MONACO_DIFF_THEME_LEGACY_PATCHED_RE =
   /theme:\(globalThis\.__incipitConfig&&globalThis\.__incipitConfig\.theme&&globalThis\.__incipitConfig\.theme\.palette==="warm-white"\?"vs":"vs-dark"\)/g;
 const MONACO_DIFF_THEME_PATCHED_RE =
   /theme:\(globalThis\.__incipitPickMonacoDiffTheme\?globalThis\.__incipitPickMonacoDiffTheme\(m\$\):\(globalThis\.__incipitConfig&&globalThis\.__incipitConfig\.theme&&globalThis\.__incipitConfig\.theme\.palette==="warm-white"\?"vs":"vs-dark"\)\)/g;
-const MONACO_DIFF_FONT_OPTIONS =
-  'fontSize:12,fontFamily:"\'Rec Mono Linear\', Consolas, Monaco, \'Courier New\', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0"';
-const MONACO_DIFF_FONT_LAYOUT_OPTIONS =
-  `${MONACO_DIFF_FONT_OPTIONS},lineNumbers:"on",lineDecorationsWidth:0`;
-const MONACO_DIFF_FONT_HARDCODED_RE = /fontSize:12,lineNumbers:"off"/g;
-const MONACO_DIFF_FONT_LEGACY_PATCHED_RE =
-  /fontSize:12,fontFamily:"'Rec Mono Linear', Consolas, Monaco, 'Courier New', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0",lineNumbers:"off"/g;
-const MONACO_DIFF_FONT_OLD_PATCHED_RE =
-  /fontSize:12,fontFamily:"'Rec Mono Linear', Consolas, Monaco, 'Courier New', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0",lineNumbers:"on"(?!,lineDecorationsWidth:0)/g;
-const MONACO_DIFF_FONT_PATCHED_RE =
-  /fontSize:12,fontFamily:"'Rec Mono Linear', Consolas, Monaco, 'Courier New', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0",lineNumbers:"on",lineDecorationsWidth:0/g;
-const MONACO_DIFF_WORD_WRAP_HARDCODED_RE = /wordWrap:"on",wrappingIndent:"same"/g;
-const MONACO_DIFF_WORD_WRAP_PATCHED_RE = /wordWrap:"off",wrappingIndent:"same"/g;
-const MONACO_DIFF_OVERVIEW_HARDCODED_RE =
-  /readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!0/g;
-const MONACO_DIFF_OVERVIEW_PATCHED_RE =
-  /readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!1/g;
-const MONACO_DIFF_OVERVIEW_INLINE_LAYOUT_PATCHED_RE =
-  /readOnly:!0,renderSideBySide:!1,renderOverviewRuler:!1/g;
-const MONACO_DIFF_INLINE_LAYOUT_HARDCODED_RE =
-  /([\w$]+\.createDiffEditor\([^,]+,\{readOnly:!0,)renderSideBySide:!0(,renderOverviewRuler:!1,[\s\S]{0,1800}?lightbulb:\{enabled:[\w$]+\.ShowLightbulbIconMode\.Off\})/g;
-const MONACO_DIFF_INLINE_LAYOUT_PATCHED_RE =
-  /[\w$]+\.createDiffEditor\([^,]+,\{readOnly:!0,renderSideBySide:!1,renderOverviewRuler:!1,[\s\S]{0,1800}?lightbulb:\{enabled:[\w$]+\.ShowLightbulbIconMode\.Off\}/g;
+// ---- Monaco diff option anchors (span-scoped, 2026-06-09) ----
+// Anchor law: every Monaco option patch first locates the two
+// `.createDiffEditor(<node>,{...})` option objects via the business-literal
+// seed `.createDiffEditor(` plus brace matching, then rewrites only its own
+// option's minimal span inside that object. Never anchor on neighboring
+// options, option order, or `[\s\S]{0,N}` context windows — the pre-2026-06-09
+// anchors did exactly that and would break the moment upstream inserted or
+// reordered an option (same failure class as the 2.1.170 bridge anchor).
+const MONACO_DIFF_FONT_FAMILY_OPTIONS =
+  'fontFamily:"\'Rec Mono Linear\', Consolas, Monaco, \'Courier New\', monospace",fontLigatures:false,fontVariations:"\\"MONO\\" 1, \\"CASL\\" 0, \\"slnt\\" 0"';
+const MONACO_DIFF_FONT_FAMILY_PATCHED_RE = /fontFamily:"'Rec Mono Linear'/g;
+// `(?![\d.])` keeps the seed from matching fontSize:120 / fontSize:12.5.
+const MONACO_DIFF_FONT_SIZE_SEED_RE = /fontSize:12(?![\d.])/g;
+const MONACO_DIFF_LINE_NUMBERS_OFF_RE = /lineNumbers:"off"/g;
+const MONACO_DIFF_LINE_NUMBERS_LEGACY_ON_RE = /lineNumbers:"on"(?!,lineDecorationsWidth:0)/g;
+const MONACO_DIFF_LINE_NUMBERS_PATCHED_RE = /lineNumbers:"on",lineDecorationsWidth:0/g;
+const MONACO_DIFF_WORD_WRAP_ON_RE = /wordWrap:"on"/g;
+const MONACO_DIFF_WORD_WRAP_OFF_RE = /wordWrap:"off"/g;
+const MONACO_DIFF_OVERVIEW_ON_RE = /renderOverviewRuler:!0/g;
+const MONACO_DIFF_OVERVIEW_OFF_RE = /renderOverviewRuler:!1/g;
+const MONACO_DIFF_SIDE_BY_SIDE_ON_RE = /renderSideBySide:!0/g;
+const MONACO_DIFF_SIDE_BY_SIDE_OFF_RE = /renderSideBySide:!1/g;
+// Span classifiers, grounded on real bundles (2.1.121–2.1.170): the inline
+// preview editor carries `lightbulb:{enabled:...}` and a hidden scrollbar;
+// the expanded modal editor has no lightbulb and an auto scrollbar.
+const MONACO_DIFF_INLINE_MARK_RE = /lightbulb:\{enabled:/;
+const MONACO_DIFF_MODAL_MARK_RE = /scrollbar:\{vertical:"auto"/;
 const MONACO_DIFF_INLINE_RESIZE_HARDCODED_RE =
   /([\w$]+)\(!([\w$]+)\),([\w$]+)\.updateOptions\(\{renderSideBySide:\2\}\)/g;
 const MONACO_DIFF_INLINE_RESIZE_PATCHED_RE =
   /[\w$]+\(!0\),[\w$]+\.updateOptions\(\{renderSideBySide:!1\}\)/g;
-const MONACO_DIFF_MODAL_LAYOUT_HARDCODED_RE =
-  /([\w$]+\.createDiffEditor\([^,]+,\{readOnly:!0,)renderSideBySide:!0(,renderOverviewRuler:!1,[\s\S]{0,1800}?scrollbar:\{vertical:"auto",horizontal:"(?:auto|hidden)"\})/g;
-const MONACO_DIFF_MODAL_LAYOUT_PATCHED_RE =
-  /[\w$]+\.createDiffEditor\([^,]+,\{readOnly:!0,renderSideBySide:!1,renderOverviewRuler:!1,[\s\S]{0,1800}?scrollbar:\{vertical:"auto",horizontal:"(?:auto|hidden)"\}/g;
-const MONACO_DIFF_MODAL_SCROLLBAR_HARDCODED_RE =
+const MONACO_DIFF_MODAL_SCROLLBAR_AUTO_RE =
   /scrollbar:\{vertical:"auto",horizontal:"auto"\}/g;
 const MONACO_DIFF_MODAL_SCROLLBAR_LEGACY_HIDDEN_RE =
   /scrollbar:\{vertical:"auto",horizontal:"hidden"\}/g;
@@ -2053,144 +2053,261 @@ function patchWebviewConfig(content, features, theme, language, installContracts
   ];
 }
 
+// Locate every `.createDiffEditor(<node>,{...})` options object: scan from
+// the business-literal seed, take the first top-level object-literal argument
+// of that call, and bound it with string-aware brace matching. This is the
+// span every Monaco option patch is scoped to — uniqueness checks and
+// rewrites never look outside it.
+function monacoDiffEditorOptionSpans(content) {
+  const spans = [];
+  const seed = '.createDiffEditor(';
+  let cursor = 0;
+  while (true) {
+    const hit = content.indexOf(seed, cursor);
+    if (hit < 0) break;
+    cursor = hit + seed.length;
+    let parenDepth = 1;
+    let quote = null;
+    for (let i = cursor; i < content.length && parenDepth > 0; i += 1) {
+      const ch = content[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+      if (ch === '(') { parenDepth += 1; continue; }
+      if (ch === ')') { parenDepth -= 1; continue; }
+      if (ch === '{') {
+        const close = findMatchingBrace(content, i);
+        if (close < 0) break;
+        if (parenDepth === 1) {
+          spans.push({ start: i, end: close + 1 });
+          break;
+        }
+        // Object literal nested inside another argument expression: skip it.
+        i = close;
+      }
+    }
+  }
+  return spans;
+}
+
+function monacoDiffSpanText(content, span) {
+  return content.slice(span.start, span.end);
+}
+
+function countInMonacoDiffSpan(content, span, re) {
+  return (monacoDiffSpanText(content, span).match(re) || []).length;
+}
+
+// Rewrite one span in place. Callers that touch several spans must process
+// them in descending `start` order so earlier span offsets stay valid.
+function rewriteMonacoDiffSpan(content, span, rewrite) {
+  const next = rewrite(monacoDiffSpanText(content, span));
+  return content.slice(0, span.start) + next + content.slice(span.end);
+}
+
+function monacoDiffInlineSpans(content, spans) {
+  return spans.filter(span => MONACO_DIFF_INLINE_MARK_RE.test(monacoDiffSpanText(content, span)));
+}
+
+function monacoDiffModalSpans(content, spans) {
+  return spans.filter(span => {
+    const text = monacoDiffSpanText(content, span);
+    return !MONACO_DIFF_INLINE_MARK_RE.test(text) && MONACO_DIFF_MODAL_MARK_RE.test(text);
+  });
+}
+
 function patchMonacoDiffTheme(content) {
-  const hardcoded = (content.match(MONACO_DIFF_THEME_HARDCODED_RE) || []).length;
-  const legacyPatched = (content.match(MONACO_DIFF_THEME_LEGACY_PATCHED_RE) || []).length;
-  const patched = (content.match(MONACO_DIFF_THEME_PATCHED_RE) || []).length;
-  if (hardcoded === 0 && legacyPatched === 0 && patched === 2) {
-    return [content, `${padLabel('diff 主题')}: 已存在`];
+  const label = padLabel('diff 主题');
+  const spans = monacoDiffEditorOptionSpans(content);
+  if (spans.length === 0) {
+    return [content, `${label}: 降级 (未找到 createDiffEditor 选项锚点)`];
   }
-  if (hardcoded + legacyPatched + patched !== 2) {
-    return [content, `${padLabel('diff 主题')}: 降级 (未找到唯一渲染锚点)`];
+  const pending = [];
+  for (const span of spans) {
+    const hardcoded = countInMonacoDiffSpan(content, span, MONACO_DIFF_THEME_HARDCODED_RE);
+    const legacy = countInMonacoDiffSpan(content, span, MONACO_DIFF_THEME_LEGACY_PATCHED_RE);
+    const patched = countInMonacoDiffSpan(content, span, MONACO_DIFF_THEME_PATCHED_RE);
+    if (hardcoded + legacy + patched !== 1) {
+      return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
+    }
+    if (hardcoded || legacy) pending.push(span);
   }
-  const updated = content
-    .replace(MONACO_DIFF_THEME_HARDCODED_RE, `theme:${MONACO_DIFF_THEME_EXPR}`)
-    .replace(MONACO_DIFF_THEME_LEGACY_PATCHED_RE, `theme:${MONACO_DIFF_THEME_EXPR}`);
-  return [
-    updated,
-    `${padLabel('diff 主题')}: 已写入`,
-  ];
+  if (pending.length === 0) return [content, `${label}: 已存在`];
+  let updated = content;
+  for (const span of pending.sort((a, b) => b.start - a.start)) {
+    updated = rewriteMonacoDiffSpan(updated, span, text => text
+      .replace(MONACO_DIFF_THEME_HARDCODED_RE, `theme:${MONACO_DIFF_THEME_EXPR}`)
+      .replace(MONACO_DIFF_THEME_LEGACY_PATCHED_RE, `theme:${MONACO_DIFF_THEME_EXPR}`));
+  }
+  return [updated, `${label}: 已写入`];
 }
 
 function patchMonacoDiffFont(content) {
-  const hardcoded = (content.match(MONACO_DIFF_FONT_HARDCODED_RE) || []).length;
-  const legacyPatched = (content.match(MONACO_DIFF_FONT_LEGACY_PATCHED_RE) || []).length;
-  const oldPatched = (content.match(MONACO_DIFF_FONT_OLD_PATCHED_RE) || []).length;
-  const patched = (content.match(MONACO_DIFF_FONT_PATCHED_RE) || []).length;
-  if (hardcoded === 0 && legacyPatched === 0 && oldPatched === 0 && patched === 2) {
-    return [content, `${padLabel('diff 字体/行号')}: 已存在`];
+  const label = padLabel('diff 字体/行号');
+  const spans = monacoDiffEditorOptionSpans(content);
+  if (spans.length === 0) {
+    return [content, `${label}: 降级 (未找到 createDiffEditor 选项锚点)`];
   }
-  if (hardcoded + legacyPatched + oldPatched + patched !== 2) {
-    return [content, `${padLabel('diff 字体/行号')}: 降级 (未找到唯一渲染锚点)`];
+  const ops = [];
+  for (const span of spans) {
+    const needFamily = countInMonacoDiffSpan(content, span, MONACO_DIFF_FONT_FAMILY_PATCHED_RE) === 0;
+    if (needFamily && countInMonacoDiffSpan(content, span, MONACO_DIFF_FONT_SIZE_SEED_RE) !== 1) {
+      return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
+    }
+    const lineOff = countInMonacoDiffSpan(content, span, MONACO_DIFF_LINE_NUMBERS_OFF_RE);
+    const lineLegacyOn = countInMonacoDiffSpan(content, span, MONACO_DIFF_LINE_NUMBERS_LEGACY_ON_RE);
+    const linePatched = countInMonacoDiffSpan(content, span, MONACO_DIFF_LINE_NUMBERS_PATCHED_RE);
+    if (lineOff + lineLegacyOn + linePatched !== 1) {
+      return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
+    }
+    if (needFamily || lineOff > 0 || lineLegacyOn > 0) {
+      ops.push({ span, needFamily, lineOff: lineOff > 0, lineLegacyOn: lineLegacyOn > 0 });
+    }
   }
-  return [
-    content
-      .replace(MONACO_DIFF_FONT_HARDCODED_RE, MONACO_DIFF_FONT_LAYOUT_OPTIONS)
-      .replace(MONACO_DIFF_FONT_LEGACY_PATCHED_RE, MONACO_DIFF_FONT_LAYOUT_OPTIONS)
-      .replace(MONACO_DIFF_FONT_OLD_PATCHED_RE, MONACO_DIFF_FONT_LAYOUT_OPTIONS),
-    `${padLabel('diff 字体/行号')}: 已写入`,
-  ];
+  if (ops.length === 0) return [content, `${label}: 已存在`];
+  let updated = content;
+  for (const op of ops.sort((a, b) => b.span.start - a.span.start)) {
+    updated = rewriteMonacoDiffSpan(updated, op.span, text => {
+      let next = text;
+      if (op.needFamily) {
+        next = next.replace(MONACO_DIFF_FONT_SIZE_SEED_RE, `fontSize:12,${MONACO_DIFF_FONT_FAMILY_OPTIONS}`);
+      }
+      if (op.lineOff) {
+        next = next.replace(MONACO_DIFF_LINE_NUMBERS_OFF_RE, 'lineNumbers:"on",lineDecorationsWidth:0');
+      } else if (op.lineLegacyOn) {
+        next = next.replace(MONACO_DIFF_LINE_NUMBERS_LEGACY_ON_RE, 'lineNumbers:"on",lineDecorationsWidth:0');
+      }
+      return next;
+    });
+  }
+  return [updated, `${label}: 已写入`];
 }
 
 function patchMonacoDiffWordWrap(content) {
-  const hardcoded = (content.match(MONACO_DIFF_WORD_WRAP_HARDCODED_RE) || []).length;
-  const patched = (content.match(MONACO_DIFF_WORD_WRAP_PATCHED_RE) || []).length;
-  if (hardcoded === 0 && patched === 2) {
-    return [content, `${padLabel('diff 换行')}: 已存在`];
+  const label = padLabel('diff 换行');
+  const spans = monacoDiffEditorOptionSpans(content);
+  if (spans.length === 0) {
+    return [content, `${label}: 降级 (未找到 createDiffEditor 选项锚点)`];
   }
-  if (hardcoded + patched !== 2) {
-    return [content, `${padLabel('diff 换行')}: 降级 (未找到唯一渲染锚点)`];
+  const pending = [];
+  for (const span of spans) {
+    const on = countInMonacoDiffSpan(content, span, MONACO_DIFF_WORD_WRAP_ON_RE);
+    const off = countInMonacoDiffSpan(content, span, MONACO_DIFF_WORD_WRAP_OFF_RE);
+    if (on + off !== 1) {
+      return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
+    }
+    if (on) pending.push(span);
   }
-  return [
-    content.replace(MONACO_DIFF_WORD_WRAP_HARDCODED_RE, 'wordWrap:"off",wrappingIndent:"same"'),
-    `${padLabel('diff 换行')}: 已写入`,
-  ];
+  if (pending.length === 0) return [content, `${label}: 已存在`];
+  let updated = content;
+  for (const span of pending.sort((a, b) => b.start - a.start)) {
+    updated = rewriteMonacoDiffSpan(updated, span, text =>
+      text.replace(MONACO_DIFF_WORD_WRAP_ON_RE, 'wordWrap:"off"'));
+  }
+  return [updated, `${label}: 已写入`];
 }
 
 function patchMonacoDiffOverview(content) {
-  const hardcoded = (content.match(MONACO_DIFF_OVERVIEW_HARDCODED_RE) || []).length;
-  const patched = (content.match(MONACO_DIFF_OVERVIEW_PATCHED_RE) || []).length;
-  const inlineLayoutPatched = (content.match(MONACO_DIFF_OVERVIEW_INLINE_LAYOUT_PATCHED_RE) || []).length;
-  // The inline diff editor already ships with `renderOverviewRuler:!1`; the
-  // expanded modal is the single `!0` we migrate. Therefore the final patched
-  // state has two `!1` matches for this option prefix. The inline preview may
-  // later be forced into single-column mode (`renderSideBySide:!1`), so accept
-  // that as one of the two overview-patched diff editors.
-  if (hardcoded === 0 && patched + inlineLayoutPatched === 2) {
-    return [content, `${padLabel('diff 概览条')}: 已存在`];
+  const label = padLabel('diff 概览条');
+  const spans = monacoDiffEditorOptionSpans(content);
+  if (spans.length === 0) {
+    return [content, `${label}: 降级 (未找到 createDiffEditor 选项锚点)`];
   }
-  if (hardcoded !== 1 || patched + inlineLayoutPatched !== 1) {
-    return [content, `${padLabel('diff 概览条')}: 降级 (未找到唯一 modal 锚点)`];
+  const pending = [];
+  for (const span of spans) {
+    const on = countInMonacoDiffSpan(content, span, MONACO_DIFF_OVERVIEW_ON_RE);
+    const off = countInMonacoDiffSpan(content, span, MONACO_DIFF_OVERVIEW_OFF_RE);
+    if (on + off !== 1) {
+      return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
+    }
+    if (on) pending.push(span);
   }
-  return [
-    content.replace(MONACO_DIFF_OVERVIEW_HARDCODED_RE, 'readOnly:!0,renderSideBySide:!0,renderOverviewRuler:!1'),
-    `${padLabel('diff 概览条')}: 已写入`,
-  ];
+  if (pending.length === 0) return [content, `${label}: 已存在`];
+  let updated = content;
+  for (const span of pending.sort((a, b) => b.start - a.start)) {
+    updated = rewriteMonacoDiffSpan(updated, span, text =>
+      text.replace(MONACO_DIFF_OVERVIEW_ON_RE, 'renderOverviewRuler:!1'));
+  }
+  return [updated, `${label}: 已写入`];
 }
 
 function patchMonacoDiffInlineLayout(content) {
-  const layoutHardcoded = (content.match(MONACO_DIFF_INLINE_LAYOUT_HARDCODED_RE) || []).length;
-  const layoutPatched = (content.match(MONACO_DIFF_INLINE_LAYOUT_PATCHED_RE) || []).length;
+  const label = padLabel('diff inline 布局');
+  const spans = monacoDiffEditorOptionSpans(content);
+  const inlineSpans = monacoDiffInlineSpans(content, spans);
   const resizeHardcoded = (content.match(MONACO_DIFF_INLINE_RESIZE_HARDCODED_RE) || []).length;
   const resizePatched = (content.match(MONACO_DIFF_INLINE_RESIZE_PATCHED_RE) || []).length;
-
-  if (layoutHardcoded === 0 && layoutPatched === 1 && resizeHardcoded === 0 && resizePatched === 1) {
-    return [content, `${padLabel('diff inline 布局')}: 已存在`];
+  if (inlineSpans.length !== 1 || resizeHardcoded + resizePatched !== 1) {
+    return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
   }
-  if (layoutHardcoded + layoutPatched !== 1 || resizeHardcoded + resizePatched !== 1) {
-    return [content, `${padLabel('diff inline 布局')}: 降级 (未找到唯一渲染锚点)`];
+  const span = inlineSpans[0];
+  const on = countInMonacoDiffSpan(content, span, MONACO_DIFF_SIDE_BY_SIDE_ON_RE);
+  const off = countInMonacoDiffSpan(content, span, MONACO_DIFF_SIDE_BY_SIDE_OFF_RE);
+  if (on + off !== 1) {
+    return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
   }
-
-  const updated = content
-    .replace(
-      MONACO_DIFF_INLINE_LAYOUT_HARDCODED_RE,
-      '$1renderSideBySide:!1$2',
-    )
-    .replace(
+  if (on === 0 && resizeHardcoded === 0) {
+    return [content, `${label}: 已存在`];
+  }
+  let updated = content;
+  if (on) {
+    updated = rewriteMonacoDiffSpan(updated, span, text =>
+      text.replace(MONACO_DIFF_SIDE_BY_SIDE_ON_RE, 'renderSideBySide:!1'));
+  }
+  if (resizeHardcoded) {
+    updated = updated.replace(
       MONACO_DIFF_INLINE_RESIZE_HARDCODED_RE,
       '$1(!0),$3.updateOptions({renderSideBySide:!1})',
     );
-  return [
-    updated,
-    `${padLabel('diff inline 布局')}: 已写入`,
-  ];
+  }
+  return [updated, `${label}: 已写入`];
 }
 
 function patchMonacoDiffModalLayout(content) {
-  const hardcoded = (content.match(MONACO_DIFF_MODAL_LAYOUT_HARDCODED_RE) || []).length;
-  const patched = (content.match(MONACO_DIFF_MODAL_LAYOUT_PATCHED_RE) || []).length;
-
-  if (hardcoded === 0 && patched === 1) {
-    return [content, `${padLabel('diff modal 布局')}: 已存在`];
+  const label = padLabel('diff modal 布局');
+  const spans = monacoDiffEditorOptionSpans(content);
+  const modalSpans = monacoDiffModalSpans(content, spans);
+  if (modalSpans.length !== 1) {
+    return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
   }
-  if (hardcoded + patched !== 1) {
-    return [content, `${padLabel('diff modal 布局')}: 降级 (未找到唯一渲染锚点)`];
+  const span = modalSpans[0];
+  const on = countInMonacoDiffSpan(content, span, MONACO_DIFF_SIDE_BY_SIDE_ON_RE);
+  const off = countInMonacoDiffSpan(content, span, MONACO_DIFF_SIDE_BY_SIDE_OFF_RE);
+  if (on + off !== 1) {
+    return [content, `${label}: 降级 (未找到唯一渲染锚点)`];
   }
+  if (on === 0) return [content, `${label}: 已存在`];
   return [
-    content.replace(
-      MONACO_DIFF_MODAL_LAYOUT_HARDCODED_RE,
-      '$1renderSideBySide:!1$2',
-    ),
-    `${padLabel('diff modal 布局')}: 已写入`,
+    rewriteMonacoDiffSpan(content, span, text =>
+      text.replace(MONACO_DIFF_SIDE_BY_SIDE_ON_RE, 'renderSideBySide:!1')),
+    `${label}: 已写入`,
   ];
 }
 
 function patchMonacoDiffModalScrollbar(content) {
-  const hardcoded = (content.match(MONACO_DIFF_MODAL_SCROLLBAR_HARDCODED_RE) || []).length;
-  const legacyHidden = (content.match(MONACO_DIFF_MODAL_SCROLLBAR_LEGACY_HIDDEN_RE) || []).length;
-  if (hardcoded === 1 && legacyHidden === 0) {
-    return [content, `${padLabel('diff 横向滚动')}: 已存在`];
+  const label = padLabel('diff 横向滚动');
+  const spans = monacoDiffEditorOptionSpans(content);
+  const modalSpans = monacoDiffModalSpans(content, spans);
+  if (modalSpans.length !== 1) {
+    return [content, `${label}: 降级 (未找到唯一滚动锚点)`];
   }
-  if (hardcoded === 0 && legacyHidden === 1) {
+  const span = modalSpans[0];
+  const auto = countInMonacoDiffSpan(content, span, MONACO_DIFF_MODAL_SCROLLBAR_AUTO_RE);
+  const legacyHidden = countInMonacoDiffSpan(content, span, MONACO_DIFF_MODAL_SCROLLBAR_LEGACY_HIDDEN_RE);
+  if (auto === 1 && legacyHidden === 0) {
+    return [content, `${label}: 已存在`];
+  }
+  if (auto === 0 && legacyHidden === 1) {
     return [
-      content.replace(MONACO_DIFF_MODAL_SCROLLBAR_LEGACY_HIDDEN_RE, 'scrollbar:{vertical:"auto",horizontal:"auto"}'),
-      `${padLabel('diff 横向滚动')}: 已恢复`,
+      rewriteMonacoDiffSpan(content, span, text =>
+        text.replace(MONACO_DIFF_MODAL_SCROLLBAR_LEGACY_HIDDEN_RE, 'scrollbar:{vertical:"auto",horizontal:"auto"}')),
+      `${label}: 已恢复`,
     ];
   }
-  if (hardcoded + legacyHidden !== 1) {
-    return [content, `${padLabel('diff 横向滚动')}: 降级 (未找到唯一滚动锚点)`];
-  }
-  return [content, `${padLabel('diff 横向滚动')}: 已存在`];
+  return [content, `${label}: 降级 (未找到唯一滚动锚点)`];
 }
 
 function patchWebviewIndex(content, features, theme, language, installContracts = []) {
@@ -2557,5 +2674,13 @@ module.exports = {
     assessWebviewPatchContracts,
     assessImplicitSelectionSendContact,
     assessHostStateBridgeContact,
+    monacoDiffEditorOptionSpans,
+    patchMonacoDiffTheme,
+    patchMonacoDiffFont,
+    patchMonacoDiffWordWrap,
+    patchMonacoDiffOverview,
+    patchMonacoDiffInlineLayout,
+    patchMonacoDiffModalLayout,
+    patchMonacoDiffModalScrollbar,
   },
 };
