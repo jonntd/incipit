@@ -567,13 +567,18 @@
 [data-incipit-change-review-turn-title] {
   color: rgba(13,13,13,0.68) !important;
 }
+[data-incipit-change-review-turn-title] {
+  color: rgba(13,13,13,0.88) !important;
+}
 [data-incipit-change-review-reject-turn],
 [data-incipit-change-review-reject-file] {
   color: rgba(13,13,13,0.58) !important;
 }
 [data-incipit-change-review-reject-turn]:hover,
 [data-incipit-change-review-reject-file]:hover,
-[data-incipit-change-review-file-name]:hover {
+[data-incipit-change-review-file-name]:hover,
+[data-incipit-change-review-file][data-incipit-change-review-clickable="1"]:hover
+  [data-incipit-change-review-file-name] {
   background: rgba(13,13,13,0.06) !important;
   color: rgba(13,13,13,0.88) !important;
 }
@@ -591,6 +596,16 @@
 [data-incipit-change-review-counts],
 [data-incipit-change-review-status] {
   color: rgba(13,13,13,0.48) !important;
+}
+[data-incipit-change-review-source="subagent"] [data-incipit-change-review-file-name],
+[data-incipit-change-review-source="subagent"] [data-incipit-change-review-file-name]:hover {
+  background: transparent !important;
+  color: rgba(13,13,13,0.52) !important;
+}
+[data-incipit-change-review-subagent-badge] {
+  border-color: rgba(13,13,13,0.14) !important;
+  color: rgba(13,13,13,0.50) !important;
+  background: rgba(13,13,13,0.045) !important;
 }
 [data-incipit-change-review-modal] {
   background: rgba(60,55,40,0.32) !important;

@@ -2134,6 +2134,7 @@ function createParser(filePath, options = {}) {
     changeReviewTurns: new Map(),
     changeReviewAssistantTurns: new Map(),
     changeReviewSnapshotUpdates: new Map(),
+    changeReviewTurnBaselines: new Map(),
     changeReviewPendingSummaries: new Map(),
     changeReviewCurrentTurnKey: null,
     changeReviewVersion: 0,
@@ -2254,6 +2255,10 @@ function compactChangeReviewFile(file) {
 function compactChangeReviewTurnSummary(summary) {
   if (!summary || safeTokenNumber(summary.files) <= 0) return null;
   return {
+    source: typeof summary.source === 'string' && summary.source ? summary.source : 'subagent',
+    sourceLabel: typeof summary.sourceLabel === 'string' && summary.sourceLabel ? summary.sourceLabel : 'Sub-agent',
+    agentTypes: Array.from(summary.agentTypes instanceof Set ? summary.agentTypes : [])
+      .filter(type => typeof type === 'string' && type),
     files: safeTokenNumber(summary.files),
     added: safeTokenNumber(summary.added),
     removed: safeTokenNumber(summary.removed),
@@ -2270,6 +2275,11 @@ function compactChangeReviewPendingSummary(item) {
   return {
     id: item.id,
     name: typeof item.name === 'string' ? item.name : '',
+    source: typeof item.source === 'string' && item.source ? item.source : 'subagent',
+    sourceLabel: typeof item.sourceLabel === 'string' && item.sourceLabel ? item.sourceLabel : 'Sub-agent',
+    agentTypes: Array.isArray(item.agentTypes)
+      ? item.agentTypes.filter(type => typeof type === 'string' && type)
+      : [],
     ts: typeof item.ts === 'string' ? item.ts : '',
     turnKey: typeof item.turnKey === 'string' ? item.turnKey : null,
     assistantUuid: typeof item.assistantUuid === 'string' && item.assistantUuid ? item.assistantUuid : null,
@@ -2279,6 +2289,11 @@ function compactChangeReviewPendingSummary(item) {
 function hydrateChangeReviewTurnSummary(raw) {
   if (!raw || typeof raw !== 'object' || safeTokenNumber(raw.files) <= 0) return null;
   return {
+    source: typeof raw.source === 'string' && raw.source ? raw.source : 'subagent',
+    sourceLabel: typeof raw.sourceLabel === 'string' && raw.sourceLabel ? raw.sourceLabel : 'Sub-agent',
+    agentTypes: new Set(Array.isArray(raw.agentTypes)
+      ? raw.agentTypes.filter(type => typeof type === 'string' && type)
+      : []),
     files: safeTokenNumber(raw.files),
     added: safeTokenNumber(raw.added),
     removed: safeTokenNumber(raw.removed),
@@ -2377,6 +2392,16 @@ function serializeUsageCacheParser(parser, stat) {
             .filter(Boolean),
         ])
         .filter(([assistantUuid, updates]) => typeof assistantUuid === 'string' && assistantUuid && updates.length),
+      turnBaselines: Array.from(parser.changeReviewTurnBaselines instanceof Map
+        ? parser.changeReviewTurnBaselines.entries()
+        : [])
+        .map(([turnKey, updates]) => [
+          turnKey,
+          Array.from(updates instanceof Map ? updates.values() : [])
+            .map(compactChangeReviewSnapshotUpdate)
+            .filter(Boolean),
+        ])
+        .filter(([turnKey, updates]) => typeof turnKey === 'string' && turnKey && updates.length),
       pendingSummaries: Array.from(parser.changeReviewPendingSummaries instanceof Map
         ? parser.changeReviewPendingSummaries.values()
         : [])
@@ -2499,6 +2524,7 @@ function hydrateUsageCacheParser(parser, index) {
   parser.changeReviewTurns = new Map();
   parser.changeReviewAssistantTurns = new Map();
   parser.changeReviewSnapshotUpdates = new Map();
+  parser.changeReviewTurnBaselines = new Map();
   parser.changeReviewPendingSummaries = new Map();
   parser.changeReviewCurrentTurnKey = typeof review.currentTurnKey === 'string' && review.currentTurnKey
     ? review.currentTurnKey
@@ -2518,6 +2544,20 @@ function hydrateUsageCacheParser(parser, index) {
     if (!assistantUuid || !updates.length) continue;
     const compacted = updates.map(compactChangeReviewSnapshotUpdate).filter(Boolean);
     if (compacted.length) parser.changeReviewSnapshotUpdates.set(assistantUuid, compacted);
+  }
+  const turnBaselines = Array.isArray(review.turnBaselines) ? review.turnBaselines : [];
+  for (const pair of turnBaselines) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const turnKey = typeof pair[0] === 'string' && pair[0] ? pair[0] : '';
+    const updates = Array.isArray(pair[1]) ? pair[1] : [];
+    if (!turnKey || !updates.length) continue;
+    const map = new Map();
+    for (const rawUpdate of updates) {
+      const update = compactChangeReviewSnapshotUpdate(rawUpdate);
+      const key = changeReviewTurnBaselineKey(update);
+      if (key && update) map.set(key, update);
+    }
+    if (map.size) parser.changeReviewTurnBaselines.set(turnKey, map);
   }
   const pendingSummaries = Array.isArray(review.pendingSummaries) ? review.pendingSummaries : [];
   for (const raw of pendingSummaries) {
@@ -2776,9 +2816,31 @@ function processChangeReviewEntry(parser, entry) {
   // Plain snapshots are the host's baseline file-history state for a user
   // prompt. They include files changed by earlier turns, so they must never
   // create a "this turn changed files" review row. Only successful
-  // Write/Edit/MultiEdit tool results create rows; snapshot updates merely
-  // attach the official backup metadata needed for Reject.
-  if (entry.isSnapshotUpdate !== true) return;
+  // Write/Edit/MultiEdit tool results create rows. The baseline snapshot can
+  // still provide the pre-turn backup for a later Edit of an already-tracked
+  // file, so cache it by turn and apply it only after a real tool row appears.
+  if (entry.isSnapshotUpdate !== true) {
+    const turnKey = typeof entry.messageId === 'string' && entry.messageId
+      ? entry.messageId
+      : '';
+    if (turnKey) {
+      const meta = {
+        timestamp: snapshot.timestamp || entry.timestamp || '',
+        cwd: parser.projectCwd || entry.cwd || '',
+      };
+      for (const [rawPath, backup] of Object.entries(snapshot.trackedFileBackups || {})) {
+        if (!rawPath || !backup || typeof backup !== 'object') continue;
+        rememberChangeReviewTurnBaseline(parser, turnKey, rawPath, {
+          backupFileName: Object.prototype.hasOwnProperty.call(backup, 'backupFileName')
+            ? backup.backupFileName
+            : undefined,
+          version: Number.isFinite(backup.version) ? backup.version : null,
+          backupTime: typeof backup.backupTime === 'string' ? backup.backupTime : '',
+        }, meta);
+      }
+    }
+    return;
+  }
   const assistantUuid = typeof entry.messageId === 'string' && entry.messageId
     ? entry.messageId
     : '';
@@ -2834,6 +2896,10 @@ function changeReviewAssistantHasFileTools(parser, assistantUuid) {
 
 function changeReviewSnapshotUpdateKey(update) {
   return changeReviewFileKey(update && update.filePath ? update.filePath : '');
+}
+
+function changeReviewTurnBaselineKey(update) {
+  return changeReviewSnapshotUpdateKey(update) || String(update && update.rawPath || '');
 }
 
 function makeChangeReviewSnapshotUpdate(parser, rawPath, patch, meta) {
@@ -2920,6 +2986,93 @@ function rememberChangeReviewSnapshotUpdate(parser, assistantUuid, rawPath, patc
   parser.changeReviewSnapshotUpdates.set(assistantUuid, list);
   parser.persistDirty = true;
   return true;
+}
+
+function rememberChangeReviewTurnBaseline(parser, turnKey, rawPath, patch, meta = {}) {
+  if (!parser || !turnKey || !rawPath) return false;
+  const update = makeChangeReviewSnapshotUpdate(parser, rawPath, patch, meta);
+  const key = changeReviewTurnBaselineKey(update);
+  if (!key) return false;
+  let baselines = parser.changeReviewTurnBaselines.get(turnKey);
+  if (!(baselines instanceof Map)) {
+    baselines = new Map();
+    parser.changeReviewTurnBaselines.set(turnKey, baselines);
+  }
+  const existing = baselines.get(key);
+  if (!existing ||
+      (!Object.prototype.hasOwnProperty.call(existing, 'backupFileName') &&
+        Object.prototype.hasOwnProperty.call(update, 'backupFileName'))) {
+    baselines.set(key, update);
+    parser.persistDirty = true;
+  }
+
+  const turn = parser.changeReviewTurns && parser.changeReviewTurns.get(turnKey);
+  if (turn && turn.files) {
+    for (const file of turn.files.values()) {
+      if (!file || changeReviewFileKey(file.filePath) !== key) continue;
+      if (applyChangeReviewTurnBaselineToFile(parser, turn, file)) return true;
+    }
+  }
+  return true;
+}
+
+function applyChangeReviewTurnBaselineToFile(parser, turn, file) {
+  if (!parser || !turn || !file || file.backupFileName !== undefined) return false;
+  const baselines = parser.changeReviewTurnBaselines && parser.changeReviewTurnBaselines.get(turn.turnKey);
+  if (!(baselines instanceof Map)) return false;
+  const key = changeReviewFileKey(file.filePath);
+  const update = key ? baselines.get(key) : null;
+  if (!update || !Object.prototype.hasOwnProperty.call(update, 'backupFileName')) return false;
+  if (!patchChangeReviewFileBackup(file, update)) return false;
+  parser.changeReviewVersion += 1;
+  parser.persistDirty = true;
+  return true;
+}
+
+function repairChangeReviewFileBackupFromBaseline(parser, file) {
+  if (!parser || !file || file.backupFileName !== undefined || !file.turnKey) return false;
+  const turn = parser.changeReviewTurns && parser.changeReviewTurns.get(file.turnKey);
+  if (turn && applyChangeReviewTurnBaselineToFile(parser, turn, file)) return true;
+
+  // Back-compat for usage-cache parsers created before turn baselines were
+  // serialized: rescan only this transcript's plain baseline snapshot for the
+  // requested turn. It still does not create review rows.
+  if (!parser.path || !fs.existsSync(parser.path)) return false;
+  let changed = false;
+  try {
+    const lines = fs.readFileSync(parser.path, 'utf8').split('\n');
+    for (const line of lines) {
+      if (!line) continue;
+      const entry = parseJsonLine(line);
+      if (!entry || entry.type !== 'file-history-snapshot' ||
+          entry.isSnapshotUpdate === true ||
+          entry.messageId !== file.turnKey) continue;
+      const snapshot = entry.snapshot && typeof entry.snapshot === 'object' ? entry.snapshot : null;
+      const backups = snapshot && snapshot.trackedFileBackups && typeof snapshot.trackedFileBackups === 'object'
+        ? snapshot.trackedFileBackups
+        : null;
+      if (!backups) continue;
+      const meta = {
+        timestamp: snapshot.timestamp || entry.timestamp || '',
+        cwd: parser.projectCwd || entry.cwd || '',
+      };
+      for (const [rawPath, backup] of Object.entries(backups)) {
+        if (!rawPath || !backup || typeof backup !== 'object') continue;
+        rememberChangeReviewTurnBaseline(parser, file.turnKey, rawPath, {
+          backupFileName: Object.prototype.hasOwnProperty.call(backup, 'backupFileName')
+            ? backup.backupFileName
+            : undefined,
+          version: Number.isFinite(backup.version) ? backup.version : null,
+          backupTime: typeof backup.backupTime === 'string' ? backup.backupTime : '',
+        }, meta);
+      }
+      changed = file.backupFileName !== undefined;
+      if (changed) break;
+    }
+  } catch (_) {
+    return false;
+  }
+  return changed;
 }
 
 function consumeChangeReviewSnapshotUpdatesForItem(parser, item) {
@@ -3084,6 +3237,7 @@ function countChangeReviewTool(parser, item) {
     toolId: item.id,
   });
   if (file) {
+    applyChangeReviewTurnBaselineToFile(parser, turn, file);
     parser.changeReviewVersion += 1;
     parser.persistDirty = true;
     consumeChangeReviewSnapshotUpdatesForItem(parser, item);
@@ -3092,9 +3246,16 @@ function countChangeReviewTool(parser, item) {
 
 function changeReviewSummaryFromToolUse(block, ts) {
   if (!block || typeof block.id !== 'string' || block.name !== 'Agent') return null;
+  const input = block.input && typeof block.input === 'object' ? block.input : {};
+  const agentType = typeof input.subagent_type === 'string' && input.subagent_type
+    ? input.subagent_type
+    : '';
   return {
     id: block.id,
     name: block.name,
+    source: 'subagent',
+    sourceLabel: 'Sub-agent',
+    agentTypes: agentType ? [agentType] : [],
     ts: ts || '',
     turnKey: null,
     assistantUuid: null,
@@ -3153,6 +3314,9 @@ function countChangeReviewSummaryTool(parser, item, result) {
       Number.isFinite(turn.summary.lastSeenAt) &&
       turn.summary.lastSeenAt < startedAt)) {
     turn.summary = {
+      source: item.source || 'subagent',
+      sourceLabel: item.sourceLabel || 'Sub-agent',
+      agentTypes: new Set(),
       files: 0,
       added: 0,
       removed: 0,
@@ -3167,6 +3331,10 @@ function countChangeReviewSummaryTool(parser, item, result) {
   turn.summary.added += stats.added || 0;
   turn.summary.removed += stats.removed || 0;
   turn.summary.hasLineStats = turn.summary.hasLineStats || stats.hasLineStats === true;
+  if (!(turn.summary.agentTypes instanceof Set)) turn.summary.agentTypes = new Set();
+  for (const type of (Array.isArray(item.agentTypes) ? item.agentTypes : [])) {
+    if (typeof type === 'string' && type) turn.summary.agentTypes.add(type);
+  }
   turn.summary.toolIds.add(item.id);
   if (!turn.summary.firstSeenAt) turn.summary.firstSeenAt = Date.now();
   turn.summary.lastSeenAt = Date.now();
@@ -3537,6 +3705,10 @@ function changeReviewSummaryForTurn(turn, reviewState) {
     return null;
   }
   return {
+    source: typeof turn.summary.source === 'string' && turn.summary.source ? turn.summary.source : 'subagent',
+    sourceLabel: typeof turn.summary.sourceLabel === 'string' && turn.summary.sourceLabel ? turn.summary.sourceLabel : 'Sub-agent',
+    agentTypes: Array.from(turn.summary.agentTypes instanceof Set ? turn.summary.agentTypes : [])
+      .filter(type => typeof type === 'string' && type),
     files: safeTokenNumber(turn.summary.files),
     added: safeTokenNumber(turn.summary.added),
     removed: safeTokenNumber(turn.summary.removed),
@@ -3549,13 +3721,12 @@ function changeReviewFilePayload(file, reviewState) {
   const status = stateEntry && typeof stateEntry.status === 'string'
     ? stateEntry.status
     : 'pending';
-  return {
+  const out = {
     id: file.id,
     sessionId: file.sessionId,
     turnKey: file.turnKey,
     filePath: file.filePath,
     displayPath: file.displayPath || file.rawPath || file.filePath,
-    backupFileName: file.backupFileName === undefined ? null : file.backupFileName,
     hasBackup: typeof file.backupFileName === 'string' && !!file.backupFileName,
     isCreated: file.backupFileName === null,
     version: Number.isFinite(file.version) ? file.version : null,
@@ -3565,6 +3736,8 @@ function changeReviewFilePayload(file, reviewState) {
     hasLineStats: file.hasLineStats === true,
     status,
   };
+  if (file.backupFileName !== undefined) out.backupFileName = file.backupFileName;
+  return out;
 }
 
 function timestampMs(value) {
@@ -3770,6 +3943,10 @@ function captureChangeReviewGuards(parser, reviewState, options = {}) {
     if (onlyTurnKey && turn.turnKey !== onlyTurnKey) continue;
     if (onlyFinalized && !isChangeReviewTurnFinalized(reviewState, turn.turnKey)) continue;
     for (const file of changeReviewFilesForTurn(turn, reviewState)) {
+      if (file.backupFileName === undefined &&
+          repairChangeReviewFileBackupFromBaseline(parser, file)) {
+        parserChanged = true;
+      }
       if (file.backupFileName === undefined) continue;
       const entry = changeReviewStateEntry(reviewState, file);
       if (!entry || entry.status === 'rejected') continue;
@@ -4090,6 +4267,8 @@ function resolveChangeReviewReject(state, comm, message) {
   const ctx = changeReviewContext(state, comm, message);
   const files = changeReviewFilesForRequest(ctx.parser, ctx.reviewState, message);
   if (!files.length) throw new Error('No matching file changes were found.');
+  for (const file of files) repairChangeReviewFileBackupFromBaseline(ctx.parser, file);
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
   const results = files.map(file => rejectOneChangeReviewFile(ctx.reviewState, file));
   if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
   const ok = results.every(item => item.ok);
@@ -4125,6 +4304,11 @@ function resolveChangeReviewDiff(state, comm, message) {
   const ctx = changeReviewContext(state, comm, message);
   const file = findChangeReviewFile(ctx.parser, message.fileId);
   if (!file) throw new Error('No matching file change was found.');
+  repairChangeReviewFileBackupFromBaseline(ctx.parser, file);
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  if (file.backupFileName === undefined) {
+    throw new Error('No file history snapshot is available yet.');
+  }
   const currentText = readReviewTextFile(file.filePath, 'Current file');
   let oldText = '';
   if (file.backupFileName !== null) {

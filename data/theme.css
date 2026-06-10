@@ -3136,7 +3136,7 @@ pre code {
   border: none !important;
   outline: none !important;
   background: transparent !important;
-  color: rgba(248, 248, 246, 0.78) !important;
+  color: rgba(248, 248, 246, 0.66) !important;
   font-family: var(--incipit-body-font) !important;
   font-size: inherit !important;
   line-height: 1.35 !important;
@@ -3146,6 +3146,9 @@ pre code {
   white-space: nowrap !important;
   padding: 2px 3px !important;
   border-radius: 6px !important;
+  cursor: pointer !important;
+}
+[data-incipit-change-review-file][data-incipit-change-review-clickable="1"] {
   cursor: pointer !important;
 }
 [data-incipit-change-review-reject-turn],
@@ -3165,7 +3168,9 @@ pre code {
 }
 [data-incipit-change-review-reject-turn]:hover,
 [data-incipit-change-review-reject-file]:hover,
-[data-incipit-change-review-file-name]:hover {
+[data-incipit-change-review-file-name]:hover,
+[data-incipit-change-review-file][data-incipit-change-review-clickable="1"]:hover
+  [data-incipit-change-review-file-name] {
   background: rgba(248, 248, 246, 0.08) !important;
   color: rgba(248, 248, 246, 0.94) !important;
 }
@@ -3201,7 +3206,17 @@ pre code {
 }
 [data-incipit-change-review-counts] {
   flex: 0 0 auto !important;
+  display: inline-flex !important;
+  align-items: baseline !important;
+  gap: 4px !important;
   color: rgba(248, 248, 246, 0.5) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+[data-incipit-change-review-turn-title] [data-incipit-tool-added],
+[data-incipit-change-review-turn-title] [data-incipit-tool-removed],
+[data-incipit-change-review-counts] [data-incipit-tool-added],
+[data-incipit-change-review-counts] [data-incipit-tool-removed] {
+  flex: 0 0 auto !important;
   font-variant-numeric: tabular-nums !important;
 }
 [data-incipit-change-review-status] {
@@ -3209,17 +3224,53 @@ pre code {
   color: rgba(248, 248, 246, 0.52) !important;
   font-size: 11px !important;
 }
+[data-incipit-change-review-source="subagent"] [data-incipit-change-review-file-name] {
+  color: rgba(248, 248, 246, 0.58) !important;
+  cursor: default !important;
+}
+[data-incipit-change-review-source="subagent"] [data-incipit-change-review-file-name]:hover {
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.58) !important;
+}
+[data-incipit-change-review-subagent-badge] {
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 18px !important;
+  padding: 0 5px !important;
+  border: 1px solid rgba(248, 248, 246, 0.14) !important;
+  border-radius: 5px !important;
+  color: rgba(248, 248, 246, 0.52) !important;
+  background: rgba(248, 248, 246, 0.045) !important;
+  font-family: var(--incipit-code-font) !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  white-space: nowrap !important;
+}
 [data-incipit-change-review-turn] {
-  margin: 8px 0 4px !important;
+  margin: 8px 0 16px !important;
   padding: 7px 8px !important;
 }
 [data-incipit-change-review-turn-title] {
+  display: flex !important;
+  align-items: baseline !important;
+  gap: 4px !important;
   flex: 1 1 auto !important;
   min-width: 0 !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-  color: rgba(248, 248, 246, 0.78) !important;
+  color: rgba(248, 248, 246, 0.92) !important;
+  font-weight: 500 !important;
+}
+[data-incipit-change-review-title-label] {
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 [data-incipit-change-review-flash] {
   box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.42),

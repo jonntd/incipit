@@ -151,6 +151,11 @@ const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
     extensionSha256: 'e73d08fdf2f35870a5db7370b9a86810931fe1b982c6dd64f7e5d590faab2dd7',
     webviewSha256: '57879b6a03a6d01a9ee165cebf3a34340c2854b7111ac439860de21179acacac',
   },
+  {
+    version: '2.1.170',
+    extensionSha256: '106dd629f9c2456af8a26261f8a3ad7d68362d6fb54a521f8f03c6cfb9693615',
+    webviewSha256: 'ed5906fb7658b52c60b4f3ea0856a09725511c2984e97fe7a74631101cd28824',
+  },
 ]);
 
 function sanitizeFontFamilyValue(raw) {
@@ -206,15 +211,18 @@ const STREAM_UNHANDLED_CASE_PATCHED_RE =
   /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{try\{var __incipitCase=[\s\S]{0,500}ignored unknown Claude stream case/;
 const STREAM_DELTA_SWITCH_PATTERN =
   /function [A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=[A-Za-z_$][\w$]*\.delta;switch\([A-Za-z_$][\w$]*\.type\)\{/g;
-// SessionState still exposes the same signals across 2.1.145 -> 2.1.154, but
-// the bundled Preact signal effect helper was renamed (`j4` -> `G4`) and the
-// effect block moved from class-field adjacency into the constructor. Capture
-// the local effect helper from the neighboring settings-error effect instead
-// of pinning one minified helper name.
+// SessionState still exposes the same signals across 2.1.145 -> 2.1.170, but
+// the bundled Preact signal effect helper keeps getting renamed (`j4` -> `G4`
+// -> `Ao`) and neighbors keep moving: 2.1.154 moved the effect into the
+// constructor, 2.1.170 appended a new userDialogResolved effect after it. So
+// the anchor is the settings-error effect block ONLY — capture the local
+// effect helper from it, and never encode surrounding context (a trailing
+// constructor `}` or `isOffline` adjacency) into the anchor or the patched
+// check; that adjacency is exactly what broke on 2.1.170 (2026-06-09).
 const HOST_STATE_BRIDGE_PATTERN =
-  /(([A-Za-z_$][\w$]*)\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))\}/g;
+  /(([A-Za-z_$][\w$]*)\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\))/g;
 const HOST_STATE_BRIDGE_PATCHED_RE =
-  /,[A-Za-z_$][\w$]*\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)\}isOffline/;
+  /,[A-Za-z_$][\w$]*\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)/;
 const HOST_STATE_BRIDGE_BROKEN_RE =
   /(([A-Za-z_$][\w$]*)\(\(\)=>\{if\(\(this\.config\.value\?\.claudeSettings\?\.errors\?\?\[\]\)\.length===0&&this\.dismissedSettingsErrorsKey\.value\)this\.dismissedSettingsErrorsKey\.value=null\}\)),[A-Za-z_$][\w$]*\(\(\)=>\{globalThis\.__incipitPublishHostState&&globalThis\.__incipitPublishHostState\(this,"signal"\)\}\)(?=isOffline)/g;
 
@@ -1987,7 +1995,7 @@ function patchHostStateSemanticBridge(content) {
   const updated = content.replace(
       HOST_STATE_BRIDGE_PATTERN,
       (_match, anchor, effectName) =>
-        `${anchor},${hostStateBridgeSignalEffect(effectName)}}`,
+        `${anchor},${hostStateBridgeSignalEffect(effectName)}`,
   );
   const assessment = assessHostStateBridgeContact(updated);
   requireHighRiskContract(

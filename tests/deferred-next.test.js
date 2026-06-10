@@ -259,8 +259,11 @@ function cssRuleBody(selector) {
 (function changeReviewComposerMiniBarIsRemoved() {
   const state = functionBody('setupChangeReviewFileReview', 1800);
   const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
+  const updateBlock = functionBody('updateChangeReviewTurnBlock', 1600);
   const format = functionBody('formatChangeReviewSummary', 700);
+  const stats = functionBody('appendChangeReviewLineStats', 700);
   const row = functionBody('renderChangeReviewFileRow', 1800);
+  const summaryRow = functionBody('renderChangeReviewSummaryRow', 1400);
   assert.ok(!legacy.includes('function renderChangeReviewCard()') &&
     !legacy.includes('function ensureChangeReviewCard()') &&
     !legacy.includes('function changeReviewActiveTurn()') &&
@@ -275,11 +278,27 @@ function cssRuleBody(selector) {
   assert.ok(!state.includes('setupDeferredNextVisibilityObserver()') &&
     !state.includes('scheduleChangeReviewRender()'),
     'change-review setup must not mount or refresh composer rail UI');
-  assert.ok(format.includes('changeReviewTotalsHaveLineStats(turn)') &&
-    format.includes(': label') &&
+  assert.ok(format.includes('return label;') &&
+    stats.includes("add.setAttribute('data-incipit-tool-added', '')") &&
+    stats.includes("del.setAttribute('data-incipit-tool-removed', '')") &&
+    updateBlock.includes('if (changeReviewTotalsHaveLineStats(turn))') &&
+    updateBlock.includes('appendChangeReviewLineStats(title, totals.added, totals.removed)') &&
     row.includes('changeReviewFileHasLineStats(file)') &&
-    row.includes(": ''"),
-    'unknown line stats must not render as misleading +0/-0 counts');
+    row.includes('appendChangeReviewLineStats(counts, file.added, file.removed)') &&
+    row.includes("row.setAttribute('data-incipit-change-review-source', 'main')") &&
+    row.includes("row.setAttribute('data-incipit-change-review-clickable', '1')"),
+    'unknown line stats must not render as misleading +0/-0 counts, while known stats use semantic +/- spans');
+  assert.ok(summaryRow.includes("row.setAttribute('data-incipit-change-review-source', summary && summary.source || 'subagent')") &&
+    summaryRow.includes("badge.setAttribute('data-incipit-change-review-subagent-badge', '')") &&
+    summaryRow.includes('formatChangeReviewSummaryFileLabel(summary)') &&
+    summaryRow.includes('appendChangeReviewLineStats(counts, summary.added, summary.removed)') &&
+    !summaryRow.includes('openChangeReviewDiff'),
+    'Agent/subagent summary rows must be visibly labeled and must not offer a fake diff');
+  assert.ok(theme.includes('[data-incipit-change-review-subagent-badge]') &&
+    theme.includes('[data-incipit-change-review-source="subagent"]') &&
+    theme.includes('margin: 8px 0 16px') &&
+    theme.includes('[data-incipit-change-review-counts] [data-incipit-tool-added]'),
+    'change-review CSS must style subagent rows, breathing room, and semantic +/- counters');
   assert.ok(blocks.includes('placeChangeReviewTurnBlock(host, block)') &&
     !legacy.includes('data-incipit-change-review-card'),
     'full per-turn review belongs only in the transcript body, never above the input');
@@ -381,23 +400,33 @@ function cssRuleBody(selector) {
   ok('change-review transcript block: finalized/historical only, not stream-time');
 })();
 
-(function changeReviewDiffIsOnDemandAndReusesDiffIslandShell() {
+(function changeReviewDiffIsOnDemandAndReusesWriteDiffModal() {
   const request = functionBody('openChangeReviewDiff', 900);
-  const modal = functionBody('openChangeReviewDiffModal', 1100);
-  const fill = functionBody('fillChangeReviewDiffBody', 1400);
+  const modal = functionBody('openChangeReviewDiffModal', 2200);
+  const register = functionBody('registerChangeReviewWriteDiffRenderer', 500);
   assert.ok(request.includes("postChangeReviewRequest('change_review_diff_request', { fileId: file.id }, 12000)"),
     'diff text must be requested on demand per file, not shipped in the ordinary payload');
-  assert.ok(modal.includes("island.setAttribute('data-incipit-diff-island', '')") &&
-    modal.includes("island.setAttribute('data-incipit-write-diff', '')") &&
-    modal.includes("body.setAttribute('data-incipit-diff-island-body', '')") &&
-    modal.includes("body.setAttribute('data-incipit-write-diff-body', '')") &&
-    modal.includes('island.appendChild(body)'),
-    'change-review diff modal must reuse the existing diff island outer shell + body structure');
-  assert.ok(fill.includes("rowEl.setAttribute('data-incipit-diff-island-row', row.kind)") &&
-    fill.includes("pre.setAttribute('data-incipit-write-diff-pre', '')") &&
-    fill.includes('code.textContent = row.text'),
-    'diff rows must render as text/code nodes through the diff island hooks');
-  ok('change-review diff: on-demand payload, shared diff island shell');
+  assert.ok(register.includes('changeReviewWriteDiffRenderer = { openModal, languageClassForPath };') &&
+    legacy.includes('registerChangeReviewWriteDiffRenderer(openWriteDiffModal, languageClassForFilePath)'),
+    'the existing write-diff modal renderer must be registered for change-review reuse');
+  assert.ok(modal.includes('const renderer = changeReviewWriteDiffRenderer') &&
+    modal.includes('renderer.languageClassForPath(filePath)') &&
+    modal.includes('closeChangeReviewModal();') &&
+    modal.includes('renderer.openModal(payload, block, stats, languageClass, null)') &&
+    !modal.includes('data-incipit-change-review-diff-grid') &&
+    !modal.includes('fillChangeReviewDiffBody'),
+    'change-review successful diff open must delegate to the existing write-diff modal');
+  assert.ok(!legacy.includes('function changeReviewDiffRows') &&
+    !legacy.includes('function fillChangeReviewDiffBody') &&
+    !legacy.includes('data-incipit-change-review-diff-grid') &&
+    !theme.includes('[data-incipit-change-review-diff-grid]') &&
+    !warm.includes('[data-incipit-change-review-diff-grid]'),
+    'the isolated change-review diff grid implementation must stay deleted');
+  assert.ok(theme.includes('[data-incipit-write-diff-modal]') &&
+    theme.includes('[data-incipit-write-diff-modal-content]') &&
+    warm.includes('[data-incipit-write-diff-modal-content]'),
+    'change-review diff should inherit the existing black/warm-white write-diff modal themes');
+  ok('change-review diff: on-demand payload, existing write-diff modal');
 })();
 
 (function reorderIsPointerDragNotNativeDnD() {

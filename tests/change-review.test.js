@@ -259,6 +259,9 @@ function assertNoActiveTurn(payload, message = 'active composer review payload m
     assertNoActiveTurn(final);
     assert.strictEqual(final.turns.length, 1);
     assert.strictEqual(final.latestTurn.files.length, 0);
+    assert.strictEqual(final.latestTurn.summary.source, 'subagent');
+    assert.strictEqual(final.latestTurn.summary.sourceLabel, 'Sub-agent');
+    assert.deepStrictEqual(final.latestTurn.summary.agentTypes, ['general-purpose']);
     assert.strictEqual(final.latestTurn.totals.files, 2);
     assert.strictEqual(final.latestTurn.totals.added, 533);
     ok('Agent toolStats create a summary-only finalized change review');
@@ -289,6 +292,7 @@ function assertNoActiveTurn(payload, message = 'active composer review payload m
     const final = T.buildChangeReviewPayload(parser, reviewState);
     assertNoActiveTurn(final);
     assert.strictEqual(final.latestTurn.files.length, 0);
+    assert.strictEqual(final.latestTurn.summary.source, 'subagent');
     assert.strictEqual(final.latestTurn.totals.files, 2);
     assert.strictEqual(final.latestTurn.totals.added, 0);
     assert.strictEqual(final.latestTurn.totals.removed, 0);
@@ -940,6 +944,8 @@ function assertNoActiveTurn(payload, message = 'active composer review payload m
     const payload = T.buildChangeReviewPayload(hydrated, finalizedReviewState('u1'));
     assert.strictEqual(payload.turns.length, 1);
     assert.strictEqual(payload.latestTurn.files.length, 0);
+    assert.strictEqual(payload.latestTurn.summary.source, 'subagent');
+    assert.strictEqual(payload.latestTurn.summary.sourceLabel, 'Sub-agent');
     assert.strictEqual(payload.latestTurn.summary.files, 2);
     assert.strictEqual(payload.latestTurn.totals.added, 533);
     assert.strictEqual(payload.latestTurn.totals.hasLineStats, true);
@@ -1029,6 +1035,76 @@ function assertNoActiveTurn(payload, message = 'active composer review payload m
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(hist, { recursive: true, force: true });
+    fs.rmSync(reviewStatePath(sessionId), { force: true });
+  }
+})();
+
+(function plainTurnBaselineSnapshotSuppliesBackupForLaterEditDiff() {
+  const dir = tmp();
+  const sessionId = 'cr-baseline-' + Date.now();
+  const hist = backupDir(sessionId);
+  try {
+    fs.mkdirSync(hist, { recursive: true });
+    fs.writeFileSync(path.join(hist, 'old@v1'), 'old line\nkeep\n');
+    fs.writeFileSync(path.join(dir, 'target.txt'), 'new line\nkeep\nextra\n');
+    const { state, comm } = makeHarness(dir, sessionId, [
+      userLine(sessionId, dir, 'u1'),
+      snapshotLine('u1', {
+        'target.txt': {
+          backupFileName: 'old@v1',
+          version: 1,
+          backupTime: '2026-06-03T10:00:00.001Z',
+        },
+      }),
+      assistantToolLine(sessionId, dir, 'assistant-u1', 'tool-u1', 'Edit', {
+        file_path: 'target.txt',
+        old_string: 'old line\nkeep\n',
+        new_string: 'new line\nkeep\nextra\n',
+      }),
+      toolResultLine(sessionId, dir, 'tool-result-u1', 'tool-u1', 'assistant-u1'),
+    ]);
+    const finalized = T.resolveChangeReviewTurnFinalized(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
+    const file = finalized.latestTurn.files[0];
+    assert.strictEqual(file.backupFileName, 'old@v1');
+    assert.strictEqual(file.hasBackup, true);
+    assert.strictEqual(file.isCreated, false);
+    const diff = T.resolveChangeReviewDiff(state, comm, { sessionId, cwd: dir, fileId: file.id });
+    assert.strictEqual(diff.ok, true);
+    assert.strictEqual(diff.diff.oldText, 'old line\nkeep\n');
+    assert.strictEqual(diff.diff.newText, 'new line\nkeep\nextra\n');
+    ok('plain turn baseline snapshot supplies backup for later Edit diff');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(hist, { recursive: true, force: true });
+    fs.rmSync(reviewStatePath(sessionId), { force: true });
+  }
+})();
+
+(function unknownBackupIsUnavailableNotInvalidName() {
+  const dir = tmp();
+  const sessionId = 'cr-no-backup-' + Date.now();
+  try {
+    fs.writeFileSync(path.join(dir, 'target.txt'), 'new line\n');
+    const { state, comm } = makeHarness(dir, sessionId, [
+      userLine(sessionId, dir, 'u1'),
+      assistantToolLine(sessionId, dir, 'assistant-u1', 'tool-u1', 'Edit', {
+        file_path: 'target.txt',
+        old_string: 'old line\n',
+        new_string: 'new line\n',
+      }),
+      toolResultLine(sessionId, dir, 'tool-result-u1', 'tool-u1', 'assistant-u1'),
+    ]);
+    const finalized = T.resolveChangeReviewTurnFinalized(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
+    const file = finalized.latestTurn.files[0];
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(file, 'backupFileName'), false);
+    assert.strictEqual(file.hasBackup, false);
+    assert.strictEqual(file.isCreated, false);
+    assert.throws(() => {
+      T.resolveChangeReviewDiff(state, comm, { sessionId, cwd: dir, fileId: file.id });
+    }, /No file history snapshot is available yet/);
+    ok('unknown backup is unavailable, not an invalid backup-name failure');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(reviewStatePath(sessionId), { force: true });
   }
 })();

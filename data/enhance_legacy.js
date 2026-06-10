@@ -2159,6 +2159,7 @@ import {
   const CHANGE_REVIEW_TEXT = Object.freeze({
     rejectTurn: 'Reject turn',
     rejectFile: 'Reject',
+    subagentLabel: 'Sub-agent',
     filesChanged: '{n} files changed',
     oneFileChanged: '1 file changed',
     noFiles: 'No file changes',
@@ -2182,6 +2183,12 @@ import {
   const changeReviewDiffPending = new Map();
   const changeReviewRejectPending = new Map();
   let changeReviewModal = null;
+  let changeReviewWriteDiffRenderer = null;
+
+  function registerChangeReviewWriteDiffRenderer(openModal, languageClassForPath) {
+    if (typeof openModal !== 'function' || typeof languageClassForPath !== 'function') return;
+    changeReviewWriteDiffRenderer = { openModal, languageClassForPath };
+  }
 
   function deferredHead() { return deferredQueue[0] || null; }
   function deferredFindById(id) {
@@ -2796,6 +2803,13 @@ import {
       .filter(file => file);
   }
 
+  function changeReviewTurnSummary(turn) {
+    const summary = turn && turn.summary && typeof turn.summary === 'object'
+      ? turn.summary
+      : null;
+    return summary && changeReviewNumber(summary.files) > 0 ? summary : null;
+  }
+
   function changeReviewNumber(value) {
     return Number.isFinite(value) && value > 0 ? value : 0;
   }
@@ -2836,6 +2850,10 @@ import {
     return !!(file && file.hasLineStats === true);
   }
 
+  function changeReviewSummaryHasLineStats(summary) {
+    return !!(summary && summary.hasLineStats === true);
+  }
+
   function changeReviewTotalsHaveLineStats(turn) {
     if (turn && turn.totals && turn.totals.hasLineStats === true) return true;
     return changeReviewTurnFiles(turn).some(changeReviewFileHasLineStats);
@@ -2846,9 +2864,19 @@ import {
     const label = totals.files === 1
       ? changeReviewText('oneFileChanged')
       : changeReviewText('filesChanged', { n: totals.files });
-    return changeReviewTotalsHaveLineStats(turn)
-      ? label + ' +' + totals.added + ' \u2212' + totals.removed
-      : label;
+    return label;
+  }
+
+  function appendChangeReviewLineStats(parent, added, removed) {
+    if (!parent) return;
+    const add = document.createElement('span');
+    add.setAttribute('data-incipit-tool-added', '');
+    add.textContent = '+' + changeReviewNumber(added);
+    const del = document.createElement('span');
+    del.setAttribute('data-incipit-tool-removed', '');
+    del.textContent = '\u2212' + changeReviewNumber(removed);
+    parent.appendChild(add);
+    parent.appendChild(del);
   }
 
   function changeReviewButton(label, attr, onClick) {
@@ -2877,23 +2905,31 @@ import {
   function renderChangeReviewFileRow(file, options = {}) {
     const row = document.createElement('div');
     row.setAttribute('data-incipit-change-review-file', '');
+    row.setAttribute('data-incipit-change-review-source', 'main');
+    row.setAttribute('data-incipit-change-review-clickable', '1');
     row.dataset.incipitChangeReviewFileId = file.id || '';
     const name = document.createElement('button');
     name.type = 'button';
     name.setAttribute('data-incipit-change-review-file-name', '');
     name.textContent = file.displayPath || file.filePath || 'file';
-    name.addEventListener('click', evt => {
+    const open = evt => {
       evt.preventDefault();
       evt.stopPropagation();
       openChangeReviewDiff(file);
+    };
+    name.addEventListener('click', open);
+    row.addEventListener('click', evt => {
+      if (evt.target && evt.target.closest &&
+          evt.target.closest('[data-incipit-change-review-reject-file]')) return;
+      open(evt);
     });
     row.appendChild(name);
 
     const counts = document.createElement('span');
     counts.setAttribute('data-incipit-change-review-counts', '');
-    counts.textContent = changeReviewFileHasLineStats(file)
-      ? '+' + (file.added || 0) + ' \u2212' + (file.removed || 0)
-      : '';
+    if (changeReviewFileHasLineStats(file)) {
+      appendChangeReviewLineStats(counts, file.added, file.removed);
+    }
     row.appendChild(counts);
 
     if (file.status && file.status !== 'pending') {
@@ -2909,6 +2945,39 @@ import {
     reject.disabled = !!options.busy || file.status === 'rejected' || file.status === 'stale' || file.status === 'unavailable';
     if (reject.disabled) reject.dataset.incipitDisabled = '1';
     row.appendChild(reject);
+    return row;
+  }
+
+  function formatChangeReviewSummaryFileLabel(summary) {
+    const files = changeReviewNumber(summary && summary.files);
+    return files === 1
+      ? changeReviewText('oneFileChanged')
+      : changeReviewText('filesChanged', { n: files });
+  }
+
+  function renderChangeReviewSummaryRow(summary) {
+    const row = document.createElement('div');
+    row.setAttribute('data-incipit-change-review-file', '');
+    row.setAttribute('data-incipit-change-review-source', summary && summary.source || 'subagent');
+
+    const name = document.createElement('span');
+    name.setAttribute('data-incipit-change-review-file-name', '');
+    name.setAttribute('data-incipit-change-review-summary-name', '');
+    name.textContent = formatChangeReviewSummaryFileLabel(summary);
+    row.appendChild(name);
+
+    const badge = document.createElement('span');
+    badge.setAttribute('data-incipit-change-review-subagent-badge', '');
+    badge.textContent = summary && summary.sourceLabel || changeReviewText('subagentLabel');
+    row.appendChild(badge);
+
+    const counts = document.createElement('span');
+    counts.setAttribute('data-incipit-change-review-counts', '');
+    if (changeReviewSummaryHasLineStats(summary)) {
+      appendChangeReviewLineStats(counts, summary.added, summary.removed);
+    }
+    row.appendChild(counts);
+
     return row;
   }
 
@@ -3130,7 +3199,14 @@ import {
     header.setAttribute('data-incipit-change-review-turn-header', '');
     const title = document.createElement('div');
     title.setAttribute('data-incipit-change-review-turn-title', '');
-    title.textContent = formatChangeReviewSummary(turn);
+    const titleLabel = document.createElement('span');
+    titleLabel.setAttribute('data-incipit-change-review-title-label', '');
+    titleLabel.textContent = formatChangeReviewSummary(turn);
+    title.appendChild(titleLabel);
+    if (changeReviewTotalsHaveLineStats(turn)) {
+      const totals = changeReviewTotals(turn);
+      appendChangeReviewLineStats(title, totals.added, totals.removed);
+    }
     header.appendChild(title);
     const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn', btn => {
       rejectChangeReviewTurn(turn.turnKey, btn);
@@ -3141,12 +3217,14 @@ import {
     block.appendChild(header);
 
     const files = changeReviewTurnFiles(turn);
-    if (files.length) {
+    const summary = changeReviewTurnSummary(turn);
+    if (files.length || summary) {
       const list = document.createElement('div');
       list.setAttribute('data-incipit-change-review-turn-files', '');
       for (const file of files) {
         list.appendChild(renderChangeReviewFileRow(file, { busy }));
       }
+      if (summary) list.appendChild(renderChangeReviewSummaryRow(summary));
       block.appendChild(list);
     }
   }
@@ -3342,83 +3420,41 @@ import {
   }
 
   function openChangeReviewDiffModal(file, diff) {
-    openChangeReviewModalShell(file.displayPath || diff.displayPath || diff.filePath || 'diff', '');
-    if (!changeReviewModal || !changeReviewModal.content) return;
-    const content = changeReviewModal.content;
-    const msg = content.querySelector('[data-incipit-change-review-modal-message]');
-    if (msg) msg.remove();
-    const scroll = document.createElement('div');
-    scroll.setAttribute('data-incipit-write-diff-modal-scroll', '');
-    const island = document.createElement('div');
-    island.setAttribute('data-incipit-diff-island', '');
-    island.setAttribute('data-incipit-write-diff', '');
-    const body = document.createElement('div');
-    body.setAttribute('data-incipit-diff-island-body', '');
-    body.setAttribute('data-incipit-write-diff-body', '');
-    fillChangeReviewDiffBody(body, diff.oldText || '', diff.newText || '');
-    island.appendChild(body);
-    scroll.appendChild(island);
-    content.appendChild(scroll);
-    const typography = globalThis.__incipitTypography;
-    if (typography && typeof typography.highlightAllCode === 'function') {
-      typography.highlightAllCode(content);
+    const renderer = changeReviewWriteDiffRenderer;
+    const title =
+      (file && (file.displayPath || file.filePath)) ||
+      (diff && (diff.displayPath || diff.filePath)) ||
+      'diff';
+    if (!renderer) {
+      openChangeReviewModalShell(title, changeReviewText('diffFail', { msg: 'diff renderer unavailable' }));
+      return;
     }
-  }
-
-  function changeReviewDiffRows(oldText, newText) {
-    const oldLines = oldText === '' ? [] : String(oldText).split('\n');
-    const newLines = newText === '' ? [] : String(newText).split('\n');
-    const m = oldLines.length;
-    const n = newLines.length;
-    if (!m) return newLines.map((text, i) => ({ kind: 'add', oldLine: null, newLine: i + 1, text }));
-    if (!n) return oldLines.map((text, i) => ({ kind: 'del', oldLine: i + 1, newLine: null, text }));
-    if (m * n > 500000) {
-      return oldLines.map((text, i) => ({ kind: 'del', oldLine: i + 1, newLine: null, text }))
-        .concat(newLines.map((text, i) => ({ kind: 'add', oldLine: null, newLine: i + 1, text })));
-    }
-    const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
-    for (let i = m - 1; i >= 0; i--) {
-      for (let j = n - 1; j >= 0; j--) {
-        dp[i][j] = oldLines[i] === newLines[j]
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-    const rows = [];
-    let i = 0, j = 0;
-    while (i < m && j < n) {
-      if (oldLines[i] === newLines[j]) rows.push({ kind: 'ctx', oldLine: i + 1, newLine: j + 1, text: newLines[j++] }), i++;
-      else if (dp[i + 1][j] >= dp[i][j + 1]) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i++] });
-      else rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j++] });
-    }
-    while (i < m) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i++] });
-    while (j < n) rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j++] });
-    return rows;
-  }
-
-  function fillChangeReviewDiffBody(body, oldText, newText) {
-    body.textContent = '';
-    for (const row of changeReviewDiffRows(oldText, newText)) {
-      const rowEl = document.createElement('div');
-      rowEl.setAttribute('data-incipit-diff-island-row', row.kind);
-      rowEl.setAttribute('data-incipit-write-diff-row', row.kind);
-      const num = document.createElement('span');
-      num.setAttribute('data-incipit-diff-island-number', '');
-      num.setAttribute('data-incipit-write-diff-number', '');
-      num.textContent = row.kind === 'del'
-        ? (row.oldLine ? String(row.oldLine) : '')
-        : (row.newLine ? String(row.newLine) : '');
-      const pre = document.createElement('pre');
-      pre.setAttribute('data-incipit-diff-island-pre', '');
-      pre.setAttribute('data-incipit-write-diff-pre', '');
-      const code = document.createElement('code');
-      code.setAttribute('data-incipit-diff-island-code', '');
-      code.setAttribute('data-incipit-write-diff-code', '');
-      code.textContent = row.text;
-      pre.appendChild(code);
-      rowEl.appendChild(num);
-      rowEl.appendChild(pre);
-      body.appendChild(rowEl);
+    const filePath =
+      (diff && (diff.filePath || diff.displayPath)) ||
+      (file && (file.filePath || file.displayPath)) ||
+      '';
+    const payload = {
+      filePath,
+      oldText: diff && typeof diff.oldText === 'string' ? diff.oldText : '',
+      newText: diff && typeof diff.newText === 'string' ? diff.newText : '',
+    };
+    const stats = changeReviewFileHasLineStats(file)
+      ? {
+          added: changeReviewNumber(file.added),
+          removed: changeReviewNumber(file.removed),
+        }
+      : null;
+    const block = {
+      name: 'ChangeReview',
+      input: { file_path: filePath },
+    };
+    const languageClass = renderer.languageClassForPath(filePath);
+    closeChangeReviewModal();
+    try {
+      renderer.openModal(payload, block, stats, languageClass, null);
+    } catch (error) {
+      openChangeReviewModalShell(title,
+        changeReviewText('diffFail', { msg: error && error.message ? error.message : String(error) }));
     }
   }
 
@@ -8989,6 +9025,8 @@ import {
       document.body.appendChild(backdrop);
       highlightDiffIsland(content);
     }
+
+    registerChangeReviewWriteDiffRenderer(openWriteDiffModal, languageClassForFilePath);
 
     function ensureWriteDiffPreviewControls(diff, payload, block, stats, languageClass, lineInfo) {
       const clipped = buildIncipitDiffRows(payload).length > WRITE_DIFF_FULL_BELOW_LINES;

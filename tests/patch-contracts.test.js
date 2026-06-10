@@ -995,6 +995,11 @@ function assertHostStateBridgePatchVariants() {
         'G4(()=>{if(!this.busy.value)this.summary.value=void 0})',
         settingsEffect('G4'),
       ].join(',')],
+    // 2.1.170: helper renamed again and a new effect appended after the
+    // settings-error effect — the anchor must not require constructor-close
+    // or isOffline adjacency.
+    ['trailing sibling effect (2.1.170 shape)', 'Ao',
+      `${settingsEffect('Ao')};let i;Ao(()=>{i=this.connection.value})`],
   ];
 
   for (const [label, effectName, effects] of variants) {
@@ -1003,13 +1008,16 @@ function assertHostStateBridgePatchVariants() {
     assert(line.includes('ok'), `${label}: bridge should patch cleanly`);
     assert.strictEqual(assessment.status, 'patched', `${label}: assessment should be patched`);
     assert(
-      patched.includes(`,${effectName}(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})}isOffline`),
-      `${label}: bridge must reuse the host's local signal effect helper`,
+      patched.includes(`${settingsEffect(effectName)},${effectName}(()=>{globalThis.__incipitPublishHostState&&globalThis.__incipitPublishHostState(this,"signal")})`),
+      `${label}: bridge must reuse the host's local signal effect helper right after the anchor effect`,
     );
     assert.doesNotThrow(
       () => new vm.Script(patched, { filename: `semantic-bridge-${label}.js` }),
       `${label}: patched bridge fixture must remain valid JavaScript`,
     );
+    const [repatched, repatchedLine] = __test.patchHostStateSemanticBridge(patched);
+    assert.strictEqual(repatched, patched, `${label}: second apply must be idempotent`);
+    assert(repatchedLine.includes('ok'), `${label}: second apply should report ok`);
   }
 
   const degradedSource = [
