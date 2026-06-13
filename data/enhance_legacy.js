@@ -925,6 +925,20 @@ import {
     return getActiveClaudeSessionId({ allowStaleState: true });
   }
 
+  function getActiveSessionCwd() {
+    try {
+      const state = kernelGetHostState();
+      if (state && typeof state.cwd === 'string' && state.cwd) return state.cwd;
+    } catch (_) {}
+    try {
+      const session = locateActiveSessionState();
+      const cwd = session && session.cwd;
+      if (cwd && typeof cwd === 'object' && typeof cwd.value === 'string') return cwd.value;
+      if (typeof cwd === 'string') return cwd;
+    } catch (_) {}
+    return '';
+  }
+
   // ============================================================
   // Sessions manager (`Un` in the bundle) — needed so we can
   // gracefully re-hydrate the current session after a JSONL
@@ -2219,125 +2233,26 @@ import {
     return null;
   }
 
-  let composerMirrorSyncObserver = null;
-  const composerMirrorContentObservers = new WeakMap();
-  let composerMirrorSyncScheduled = false;
-
-  function isComposerMessageInput(node) {
-    if (!node || node.nodeType !== 1) return false;
-    const classes = elementClassText(node);
-    return classes.includes('messageInput') &&
-      node.getAttribute('contenteditable') &&
-      node.closest('[class*="messageInputContainer"]');
-  }
-
-  function composerMessageInputFrom(node) {
-    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
-    if (!el) return null;
-    if (isComposerMessageInput(el)) return el;
-    const input = el.closest?.('[class*="messageInput"][contenteditable]');
-    return isComposerMessageInput(input) ? input : null;
-  }
-
-  function composerMirrorForInput(input) {
-    const parent = input && input.parentElement;
-    if (!parent || !elementClassText(parent).includes('messageInputContainer')) return null;
-    const mirror = parent.querySelector('[class*="mentionMirror"]');
-    return mirror && mirror.nodeType === 1 ? mirror : null;
-  }
-
-  function syncComposerMirrorGeometry(input) {
-    if (!isComposerMessageInput(input)) return;
-    const mirror = composerMirrorForInput(input);
-    if (!mirror) return;
-
-    ensureComposerMirrorContentObserver(input, mirror);
-
-    // Host CSS already gives both layers the same padding and
-    // `scrollbar-gutter: stable`. A previous incipit attempt added inline
-    // paddingRight to the mirror, which made the visible layer wrap one line
-    // earlier than the real editor right when the composer became scrollable.
-    // Clear our stale inline metric and let the host own layer geometry.
-    if (mirror.style && mirror.style.paddingRight) mirror.style.paddingRight = '';
-
-    mirror.scrollTop = input.scrollTop;
-    mirror.scrollLeft = input.scrollLeft;
-  }
-
-  function ensureComposerMirrorContentObserver(input, mirror) {
-    if (!mirror || composerMirrorContentObservers.has(mirror)) return;
-    const obs = new MutationObserver(() => scheduleComposerMirrorSync(input));
-    // Narrow observer only: the old body-level characterData observer broke
-    // Chromium contenteditable/IME painting. mentionMirror is not editable
-    // and is the visible copy whose React text updates can land after input.
-    obs.observe(mirror, { childList: true, subtree: true, characterData: true });
-    composerMirrorContentObservers.set(mirror, obs);
-  }
-
-  function syncAllComposerMirrors(root = document) {
-    const inputs = [];
-    const start = root && root.nodeType === 1 ? root : root && root.parentElement;
-    if (start && isComposerMessageInput(start)) inputs.push(start);
-    const scope = start && start.querySelectorAll ? start : document;
-    scope.querySelectorAll?.('[class*="messageInput"][contenteditable]').forEach(input => {
-      if (isComposerMessageInput(input) && !inputs.includes(input)) inputs.push(input);
-    });
-    inputs.forEach(syncComposerMirrorGeometry);
-  }
-
-  function scheduleComposerMirrorSync(root = document) {
-    syncAllComposerMirrors(root);
-    if (typeof queueMicrotask === 'function') {
-      queueMicrotask(() => syncAllComposerMirrors(root));
-    } else {
-      Promise.resolve().then(() => syncAllComposerMirrors(root)).catch(() => {});
-    }
-    if (composerMirrorSyncScheduled) return;
-    composerMirrorSyncScheduled = true;
-    requestAnimationFrame(() => {
-      syncAllComposerMirrors(root);
-      setTimeout(() => {
-        composerMirrorSyncScheduled = false;
-        syncAllComposerMirrors(root);
-      }, 0);
-    });
-  }
-
-  function setupComposerMirrorScrollSync() {
-    if (!document.body || composerMirrorSyncObserver) return;
-    const onComposerInputEvent = evt => {
-      const input = composerMessageInputFrom(evt && evt.target);
-      if (input) scheduleComposerMirrorSync(input);
-    };
-    ['input', 'keyup', 'mouseup', 'click', 'paste', 'cut', 'compositionend', 'scroll'].forEach(type => {
-      document.addEventListener(type, onComposerInputEvent, true);
-    });
-    document.addEventListener('selectionchange', () => {
-      const active = document.activeElement;
-      if (isComposerMessageInput(active)) scheduleComposerMirrorSync(active);
-    });
-    composerMirrorSyncObserver = new MutationObserver(muts => {
-      for (const m of muts) {
-        if (m.type === 'attributes') {
-          const input = composerMessageInputFrom(m.target);
-          if (input) {
-            scheduleComposerMirrorSync(input);
-            return;
-          }
-          continue;
-        }
-        for (const node of m.addedNodes) {
-          if (node.nodeType !== 1) continue;
-          if (isComposerMessageInput(node) || node.querySelector?.('[class*="messageInput"][contenteditable]')) {
-            scheduleComposerMirrorSync(node);
-            return;
-          }
-        }
-      }
-    });
-    composerMirrorSyncObserver.observe(document.body, { childList: true, subtree: true });
-    scheduleComposerMirrorSync(document.body);
-  }
+  // Composer mirror geometry is fully host-owned. incipit does NOT sync the
+  // mention-mirror visible layer's scroll/padding against the contenteditable.
+  //
+  // The host composer is two stacked layers: the message-input contenteditable
+  // (holds the caret + real text, visually transparent) and the mention-mirror
+  // visible text layer. The host keeps their scroll positions in lockstep on its
+  // own — in vanilla Claude Code the visible layer scrolls as you type past the
+  // fold, which is the host doing the sync. A previous incipit attempt
+  // (2026-06-13) copied the editable layer's scrollTop onto the mirror from a
+  // characterData/body observer + capture listeners. On paste / programmatic
+  // insert (e.g. the Notes insert-mention path) incipit read a stale scrollTop
+  // before the browser scrolled to the caret / before React grew the mirror's
+  // scrollHeight, wrote a clamped (≈0) value over the host's correct one, and
+  // the visible layer drifted from the editable layer until a normal keystroke
+  // re-synced it. Fighting the host over this geometry is a lost race; the only
+  // correct move is to not touch it (red line 2026-04-15 / 2026-06-06: incipit
+  // only feeds input foreground tokens, never owns the input text/scroll/caret
+  // layer). The genuinely-needed non-interference fixes stay: global scrollbar
+  // CSS excludes composer/contenteditable, the input container box model is
+  // untouched, and no padding is added to the visible layer.
 
   function fileDragHintText() {
     return FILE_DRAG_HINT_TEXT[CFG.language] || FILE_DRAG_HINT_TEXT.en;
@@ -3120,23 +3035,43 @@ import {
     return file.displayPath || file.filePath || '';
   }
 
-  // Capture rejected file paths BEFORE posting the reject — the response payload
-  // already has them removed, so the notes reject-reminder bubble could not read
-  // them after the fact.
-  function changeReviewTurnFilePaths(turnKey) {
-    const turn = changeReviewTurns().find(t => t && t.turnKey === turnKey);
-    if (!turn) return [];
-    return changeReviewTurnFiles(turn).map(changeReviewFilePath).filter(Boolean);
+  // Capture rejected file DETAILS BEFORE posting the reject — the response
+  // payload already has them removed, so the notes reject-reminder bubble could
+  // not read them after the fact. Each entry carries enough for a per-file,
+  // tool-aware reminder line. NB: no edit line ranges — after a revert the model
+  // sees the restored old file, so new-version line numbers would mislead it;
+  // only the tool, created/restored outcome, and +N/-M totals are reported (see
+  // footer_badge buildRejectReminder). isCreated/added/removed/hasLineStats come
+  // straight off the host payload; `tool` is the field host-badge now threads
+  // through from editActivityFromToolUse.
+  function changeReviewFileRejectInfo(file) {
+    if (!file) return null;
+    const path = changeReviewFilePath(file);
+    if (!path) return null;
+    return {
+      path,
+      tool: typeof file.tool === 'string' ? file.tool : '',
+      isCreated: file.isCreated === true,
+      added: Number.isFinite(file.added) ? file.added : 0,
+      removed: Number.isFinite(file.removed) ? file.removed : 0,
+      hasLineStats: file.hasLineStats === true,
+    };
   }
 
-  function changeReviewFilePathsByIds(fileIds) {
+  function changeReviewTurnRejectedFiles(turnKey) {
+    const turn = changeReviewTurns().find(t => t && t.turnKey === turnKey);
+    if (!turn) return [];
+    return changeReviewTurnFiles(turn).map(changeReviewFileRejectInfo).filter(Boolean);
+  }
+
+  function changeReviewRejectedFilesByIds(fileIds) {
     const want = new Set(fileIds);
     const out = [];
     for (const turn of changeReviewTurns()) {
       for (const file of changeReviewTurnFiles(turn)) {
         if (file && want.has(file.id)) {
-          const p = changeReviewFilePath(file);
-          if (p) out.push(p);
+          const info = changeReviewFileRejectInfo(file);
+          if (info) out.push(info);
         }
       }
     }
@@ -3145,11 +3080,12 @@ import {
 
   // Bridge change-review reject -> the footer notes icon (separate module) via a
   // window event, so the two stay decoupled. Only fired on a successful reject.
-  function dispatchChangeReviewRejected(paths) {
-    const clean = (Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' && p);
+  function dispatchChangeReviewRejected(files) {
+    const clean = (Array.isArray(files) ? files : [])
+      .filter(f => f && typeof f.path === 'string' && f.path);
     if (!clean.length) return;
     try {
-      window.dispatchEvent(new CustomEvent('incipit:change-review-rejected', { detail: { paths: clean } }));
+      window.dispatchEvent(new CustomEvent('incipit:change-review-rejected', { detail: { files: clean } }));
     } catch (_) {}
   }
 
@@ -3497,7 +3433,7 @@ import {
         __incipit: true,
         type,
         sessionId: getActiveSessionId(),
-        cwd: changeReviewPayload && changeReviewPayload.cwd || null,
+        cwd: getActiveSessionCwd() || (changeReviewPayload && changeReviewPayload.cwd) || null,
         turnKey,
       });
     } catch (_) {}
@@ -3736,7 +3672,7 @@ import {
       type,
       requestId,
       sessionId: getActiveSessionId(),
-      cwd: changeReviewPayload && changeReviewPayload.cwd || null,
+      cwd: getActiveSessionCwd() || (changeReviewPayload && changeReviewPayload.cwd) || null,
       busy: changeReviewBusySafe(),
       ...payload,
     };
@@ -3767,7 +3703,7 @@ import {
         __incipit: true,
         type: 'change_review_identity_update',
         sessionId: getActiveSessionId(),
-        cwd: null,
+        cwd: getActiveSessionCwd() || null,
       });
     } catch (_) {}
   }
@@ -3783,9 +3719,9 @@ import {
   function rejectChangeReviewTurn(turnKey, button) {
     if (!turnKey || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
-    const paths = changeReviewTurnFilePaths(turnKey);
+    const files = changeReviewTurnRejectedFiles(turnKey);
     postChangeReviewRequest('change_review_reject_request', { turnKey })
-      .then(() => { dispatchChangeReviewRejected(paths); })
+      .then(() => { dispatchChangeReviewRejected(files); })
       .catch(error => {
         warn('change review reject failed:', error && error.message ? error.message : error);
       })
@@ -3798,9 +3734,9 @@ import {
   function rejectChangeReviewFile(fileId, button) {
     if (!fileId || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
-    const paths = changeReviewFilePathsByIds([fileId]);
+    const files = changeReviewRejectedFilesByIds([fileId]);
     postChangeReviewRequest('change_review_reject_request', { fileId })
-      .then(() => { dispatchChangeReviewRejected(paths); })
+      .then(() => { dispatchChangeReviewRejected(files); })
       .catch(error => {
         warn('change review reject failed:', error && error.message ? error.message : error);
       })
@@ -11171,7 +11107,6 @@ import {
       setupToolFold,
       setupDiffSideBars,
       setupBusyStateObserver,
-      setupComposerMirrorScrollSync,
       setupFileDragReferenceHint,
       setupUserBubbleNativeActionSuppression,
       setupDeferredNextMessageQueue,
@@ -11190,7 +11125,6 @@ import {
     initLegacyUserBubble(legacyContext);
     initLegacyDeferredNext(legacyContext);
     setupChangeReviewFileReview();
-    setupComposerMirrorScrollSync();
     setupCommandMenuTransientSelectionCleanup();
     setupCustomModelPicker();
     initLegacyAskRefinement(legacyContext);

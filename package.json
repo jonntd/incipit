@@ -1,6 +1,6 @@
 {
   "name": "incipit",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "A frontend rework of the official Claude Code VS Code extension — surface redrawn, engine untouched.",
   "bin": {
     "incipit": "bin/cli.js"
@@ -19,10 +19,11 @@
     "start": "node bin/cli.js",
     "apply": "node bin/cli.js apply",
     "restore": "node bin/cli.js restore",
-    "test": "node tests/patch-contracts.test.js && node tests/markdown-preprocess.test.js && node tests/cache-history-buckets.test.js && node tests/rerun-handoff.test.js && node tests/file-reveal.test.js && node tests/change-review.test.js && node tests/editor-overlay-insiders.test.js && node tests/host-detect-manual-add.test.js && node tests/deep-scan.test.js && node tests/deep-scan-results-screen.test.js && node tests/deferred-next.test.js && node tests/cjk-literary-no-faux-bold.test.js && node tests/mermaid-render.test.js && node tests/notes.test.js",
+    "test": "node tests/patch-contracts.test.js && node tests/markdown-preprocess.test.js && node tests/cache-history-buckets.test.js && node tests/session-identity.test.js && node tests/rerun-handoff.test.js && node tests/file-reveal.test.js && node tests/change-review.test.js && node tests/editor-overlay-insiders.test.js && node tests/host-detect-manual-add.test.js && node tests/deep-scan.test.js && node tests/deep-scan-results-screen.test.js && node tests/deferred-next.test.js && node tests/cjk-literary-no-faux-bold.test.js && node tests/mermaid-render.test.js && node tests/notes.test.js",
     "test:contracts": "node tests/patch-contracts.test.js",
     "test:markdown-preprocess": "node tests/markdown-preprocess.test.js",
     "test:cache-history": "node tests/cache-history-buckets.test.js",
+    "test:session-identity": "node tests/session-identity.test.js",
     "test:rerun-handoff": "node tests/rerun-handoff.test.js",
     "test:file-reveal": "node tests/file-reveal.test.js",
     "test:change-review": "node tests/change-review.test.js",
@@ -32,7 +33,8 @@
     "test:deep-scan-screen": "node tests/deep-scan-results-screen.test.js",
     "test:mermaid": "node tests/mermaid-render.test.js",
     "test:deferred-next": "node tests/deferred-next.test.js",
-    "test:cjk-literary": "node tests/cjk-literary-no-faux-bold.test.js"
+    "test:cjk-literary": "node tests/cjk-literary-no-faux-bold.test.js",
+    "test:notes": "node tests/notes.test.js"
   },
   "engines": {
     "node": ">=16"

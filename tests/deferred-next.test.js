@@ -16,9 +16,10 @@
 //   · no floating toasts at all; errors surface inline in the card
 //   · editing a row survives queue mutations / reorder (textarea + CJK IME
 //     never torn down)
-//   · the official composer text layer stays host-owned: incipit may feed
-//     host input foreground tokens and sync mentionMirror scroll geometry,
-//     but not edit text/selection or style messageInput/mentionMirror
+//   · the official composer text layer is fully host-owned: incipit only feeds
+//     host input foreground tokens (+ retints reference chips); it never edits
+//     text/selection, styles the text layers, or syncs mirror scroll geometry
+//     (a manual sync races the host on paste/insert and desyncs the layers)
 
 const assert = require('assert');
 const fs = require('fs');
@@ -552,31 +553,27 @@ function cssRuleBody(selector) {
   const composerChipSelector = 'fieldset[class*="inputContainer_"] [class*="inputMentionChip"]';
   const inputRule = cssRuleBody('fieldset[class*="inputContainer_"]');
   const composerChip = cssRuleBody(composerChipSelector);
-  const mirrorSync = functionBody('syncComposerMirrorGeometry', 1200);
-  const mirrorObserver = functionBody('ensureComposerMirrorContentObserver', 900);
-  const mirrorSchedule = functionBody('scheduleComposerMirrorSync', 900);
-  const mirrorSetup = functionBody('setupComposerMirrorScrollSync', 1600);
   assert.ok(!legacy.includes('setupComposerInputState') &&
     !legacy.includes('composerEditorPlainText') &&
     !legacy.includes('data-incipit-composer-empty'),
     'legacy runtime must not rebuild or reclassify the official composer text layer');
-  assert.ok(mirrorSync.includes('mirror.scrollTop = input.scrollTop') &&
-    mirrorSync.includes('mirror.scrollLeft = input.scrollLeft') &&
-    mirrorSync.includes("mirror.style.paddingRight = ''") &&
+  // Composer mirror geometry is fully host-owned. The 2026-06-13 manual scroll
+  // sync (mirror.scrollTop = input.scrollTop driven by a characterData/body
+  // observer + capture listeners) raced the host on paste / programmatic insert
+  // and desynced the visible mirror from the editable layer; it is removed.
+  // incipit must not reintroduce any mirror geometry sync — no reading or
+  // writing mirror scroll/padding, no observing the mentionMirror/messageInput.
+  assert.ok(!legacy.includes('syncComposerMirrorGeometry') &&
+    !legacy.includes('ensureComposerMirrorContentObserver') &&
+    !legacy.includes('scheduleComposerMirrorSync') &&
+    !legacy.includes('setupComposerMirrorScrollSync') &&
+    !legacy.includes('composerMirrorForInput') &&
+    !legacy.includes('mentionMirror') &&
+    !legacy.includes('mirror.scrollTop') &&
+    !legacy.includes('mirror.scrollLeft') &&
     !legacy.includes('elementVerticalScrollbarGutter') &&
-    !legacy.includes('targetPaddingRight') &&
-    !mirrorSync.includes('textContent') &&
-    !mirrorSync.includes('innerHTML') &&
-    !mirrorSync.includes('getSelection'),
-    'composer mirror runtime may only clear stale incipit inline metrics and sync scroll; it must not rewrite text, selection, or add padding compensation');
-  assert.ok(mirrorObserver.includes('obs.observe(mirror, { childList: true, subtree: true, characterData: true });') &&
-    mirrorSetup.includes('composerMirrorSyncObserver.observe(document.body, { childList: true, subtree: true });') &&
-    !mirrorSetup.includes('attributes: true') &&
-    !mirrorSetup.includes('attributeFilter') &&
-    mirrorSchedule.includes('queueMicrotask') &&
-    mirrorSchedule.includes('requestAnimationFrame') &&
-    mirrorSchedule.includes('setTimeout'),
-    'composer mirror sync must observe characterData only on the non-editable mirror, while the body observer stays childList-only and post-React scroll sync runs in multiple phases');
+    !legacy.includes('targetPaddingRight'),
+    'legacy runtime must not touch composer mirror geometry; mentionMirror scroll/padding is host-owned (a manual sync races the host on paste/insert and desyncs the visible layer)');
   assert.ok(!hostProbe.includes('data-incipit-input-editor') &&
     !hostProbe.includes('inputEditor') &&
     !hostProbe.includes('messageInput') &&

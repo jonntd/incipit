@@ -60,12 +60,24 @@ var identityBridgeInstalled = false;
 var identityBridgeScheduled = false;
 var identityBridgeForce = false;
 
-function currentSessionId() {
+function currentSessionIdentity() {
+  var sessionId = null;
+  var cwd = null;
   try {
     var state = kernelGetHostState();
-    if (state && typeof state.sessionId === 'string' && state.sessionId) return state.sessionId;
+    if (state && typeof state.sessionId === 'string' && state.sessionId) sessionId = state.sessionId;
+    if (state && typeof state.cwd === 'string' && state.cwd) cwd = state.cwd;
   } catch (_) {}
-  return getActiveClaudeSessionId();
+  if (!sessionId) sessionId = getActiveClaudeSessionId();
+  return { sessionId: sessionId || null, cwd: cwd || null };
+}
+
+function currentSessionId() {
+  return currentSessionIdentity().sessionId;
+}
+
+function currentSessionCwd() {
+  return currentSessionIdentity().cwd || '';
 }
 
 function registerIdentityPublisher(publisher) {
@@ -321,8 +333,10 @@ function setupCacheBadge() {
     identityPublishScheduled = false;
     var api = getIncipitVsCodeApi();
     if (!api || typeof api.postMessage !== 'function') return;
-    var sessionId = currentSessionId();
-    var key = sessionId || '';
+    var identity = currentSessionIdentity();
+    var sessionId = identity.sessionId;
+    var cwd = identity.cwd;
+    var key = (sessionId || '') + '\n' + (cwd || '');
     if (!force && !includeHistory && key === lastIdentityKey) return;
     var identityChanged = key !== lastIdentityKey;
     lastIdentityKey = key;
@@ -339,6 +353,7 @@ function setupCacheBadge() {
         __incipit: true,
         type: 'badge_identity_update',
         sessionId: sessionId || null,
+        cwd: cwd || null,
         includeHistory: !!includeHistory,
       });
     } catch (_) {}
@@ -1407,8 +1422,10 @@ function setupEditActivityHeader() {
     identityPublishScheduled = false;
     var api = getIncipitVsCodeApi();
     if (!api || typeof api.postMessage !== 'function') return;
-    var sessionId = currentSessionId();
-    var key = sessionId || '';
+    var identity = currentSessionIdentity();
+    var sessionId = identity.sessionId;
+    var cwd = identity.cwd;
+    var key = (sessionId || '') + '\n' + (cwd || '');
     if (!force && !includeProject && key === lastIdentityKey) return;
     var identityChanged = key !== lastIdentityKey;
     lastIdentityKey = key;
@@ -1428,6 +1445,7 @@ function setupEditActivityHeader() {
         __incipit: true,
         type: 'edit_activity_identity_update',
         sessionId: sessionId || null,
+        cwd: cwd || null,
         includeProject: !!includeProject,
       });
     } catch (_) {}
@@ -1982,10 +2000,14 @@ function setupEditActivityHeader() {
 // panel. The same icon grows a reminder bubble after a change-review reject,
 // offering a plain-fact English prompt that also inserts (not sends).
 //
-// The single memo-legal way to put text in the composer is the official mention
-// pipeline (host-badge runs `incipit.claudeCode.insertAtMention`); incipit never
-// writes the contenteditable (memo 2026-04-15 / 2026-06-06). Every insertion here
-// is a `notes_insert_request` postMessage — there is no DOM write to messageInput.
+// Insertion calls the host composer's OWN `setInputText` imperative method,
+// reached via a one-shot React-fiber lookup from the contenteditable. The
+// composer is controlled (the visible mentionMirror renders from React state),
+// so the only reliable insert is the host's setter that updates DOM + state
+// together. We do NOT write the contenteditable ourselves or observe it (memo
+// 2026-04-15 / 2026-06-06), and we do NOT use execCommand (it collapses newlines
+// and never syncs state in this plaintext-only editor). Storage (load/save) still
+// round-trips to host-badge; only insertion is local. See insertText() for why.
 function setupNotes() {
   var NOTE_BTN_CLASS = 'cceNoteBtn';
   var CACHE_BADGE_CLASS = 'cceBadge'; // sibling we anchor immediately to the right of
@@ -2017,10 +2039,7 @@ function setupNotes() {
   }
 
   function currentCwd() {
-    try {
-      var s = kernelGetHostState();
-      return s && typeof s.cwd === 'string' ? s.cwd : '';
-    } catch (_) { return ''; }
+    return currentSessionCwd();
   }
 
   function nextRequestId() { return 'note-' + (++notesSeq).toString(36); }
@@ -2058,7 +2077,6 @@ function setupNotes() {
       delete savePending[d.requestId];
       cbS(d.payload || null);
     }
-    // notes_insert_response is fire-and-forget; nothing to reconcile.
   });
 
   function loadNotes(scope, cb) {
@@ -2084,16 +2102,87 @@ function setupNotes() {
       });
   }
 
-  // The ONE insertion point. Fire-and-forget to the host, which delegates to
-  // the official mention pipeline. No contenteditable write happens anywhere.
-  function insertText(text) {
-    var clean = String(text == null ? '' : text);
-    if (!clean.trim()) return;
-    var api = notesApi();
-    if (!api || typeof api.postMessage !== 'function') return;
+  // Locate the official composer contenteditable (host-owned text layer). We
+  // only LOCATE it to reach its React owner — we never style or observe it.
+  function findComposerInput() {
+    var nodes = document.querySelectorAll('[class*="messageInput"][contenteditable]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el && el.isConnected && el.closest('[class*="messageInputContainer"]')) return el;
+    }
+    return null;
+  }
+
+  // Reach the host composer's OWN `setInputText` imperative method by walking the
+  // React fiber up from the contenteditable to the composer component's ref.
+  //
+  // Why this and not a DOM write or execCommand:
+  // The composer is a CONTROLLED component. What the user sees is the
+  // `mentionMirror` layer, rendered purely from the composer's React state; the
+  // contenteditable text itself is just the caret surface. So the only thing that
+  // matters for alignment is that the React state equals the editor text.
+  // `setInputText` is the host's own primitive that sets BOTH in one shot
+  // (`el.textContent = q` AND the state setter) — it's what the host uses for
+  // initialPrompt / prompt suggestions, and it handles multi-line cleanly
+  // (plaintext-only preserves "\n"). We can't call the state setter ourselves
+  // (it's a closure), so we borrow the host's method.
+  // execCommand('insertText') is NOT viable here: in this plaintext-only editor
+  // it collapses newlines and, crucially, does not sync the React state — the
+  // host itself only uses it for single-line @mentions and then re-reads
+  // textContent after 100ms to resync state. Multi-line snippets through it
+  // misrender (verified 2026-06-13: jumbled via @mention, trailing empty blocks
+  // via bare execCommand). This is a single click-triggered call into the host's
+  // own setter — not an input observer, not state tracking, not a DOM write that
+  // bypasses the model (memo 2026-04-15 / 2026-06-06 forbid those, not this).
+  function hostComposerSetText(input, text) {
     try {
-      api.postMessage({ __incipit: true, type: 'notes_insert_request', requestId: nextRequestId(), text: clean });
+      var key = null, keys = Object.keys(input);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0 ||
+            keys[i].indexOf('__reactInternalInstance$') === 0) { key = keys[i]; break; }
+      }
+      if (!key) return false;
+      var fiber = input[key], hops = 0;
+      while (fiber && hops++ < 40) {
+        var ref = fiber.ref;
+        if (ref && typeof ref === 'object' && ref.current &&
+            typeof ref.current.setInputText === 'function') {
+          ref.current.setInputText(text);
+          if (typeof ref.current.focus === 'function') ref.current.focus();
+          return true;
+        }
+        fiber = fiber.return;
+      }
     } catch (_) {}
+    return false;
+  }
+
+  // The ONE insertion point. setInputText REPLACES the editor text, so to preserve
+  // anything already typed we pass existing + new (reading textContent is a read,
+  // not a write). Snippets/reminders are plain prose, never @references.
+  function insertText(text) {
+    var clean = String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+    if (!clean.trim()) return;
+    var input = findComposerInput();
+    if (!input) return;
+    var existing = (input.textContent || '').replace(/\s+$/, '');
+    var combined = existing ? existing + '\n' + clean : clean;
+    if (hostComposerSetText(input, combined)) return;
+    // Graceful degradation if the host ref/method can't be reached (host shape
+    // changed): native edit through the input pipeline. Single-line is fine;
+    // multi-line may misrender until the next host update — surfaced loudly so a
+    // drift is noticed rather than silently garbling.
+    input.focus();
+    try {
+      var sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || !input.contains(sel.anchorNode)) {
+        var range = document.createRange();
+        range.selectNodeContents(input);
+        range.collapse(false);
+        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      }
+    } catch (_) {}
+    try { document.execCommand('insertText', false, clean); } catch (_) {}
   }
 
   // ---- icon mount (rides the identity heartbeat; no new body observer) ----
@@ -2430,7 +2519,7 @@ function setupNotes() {
   // ---- reject reminder bubble ----
   var bubbleEl = null;
   var bubbleAnchor = null;
-  var rejectedPaths = [];           // accumulated within the open window
+  var rejectedFiles = [];           // accumulated within the open window
   var bubbleDismissTimer = 0;
   var BUBBLE_AUTO_DISMISS_MS = 14000;
 
@@ -2440,26 +2529,54 @@ function setupNotes() {
 
   // Plain factual reminder — the user explicitly chose "just state what was
   // rejected", no prescription, no negotiation. Inserted (not sent) so the user
-  // can append before sending.
-  function buildRejectReminder(paths) {
-    var list = paths.slice(0, 12);
-    if (!list.length) return '';
-    var quoted = list.map(function (p) { return '`' + p + '`'; });
-    var joined;
-    if (quoted.length === 1) joined = quoted[0];
-    else if (quoted.length === 2) joined = quoted[0] + ' and ' + quoted[1];
-    else joined = quoted.slice(0, -1).join(', ') + ', and ' + quoted[quoted.length - 1];
-    var noun = list.length === 1 ? 'change' : 'changes';
-    var tail = list.length === 1 ? 'it has' : 'they have';
-    return 'I rejected your ' + noun + ' to ' + joined + '; ' + tail + ' been reverted.';
+  // can append before sending. One line per file, described by editing tool:
+  //   Write `a.ts` — newly created; now deleted.
+  //   Edit `b.ts` — +12/−3 lines; restored to its previous contents.
+  // Deliberately NO edit line ranges: after a revert the model sees the restored
+  // old file, so new-version line numbers point at lines that no longer exist
+  // and only confuse it (user decision 2026-06-13). Created files report deletion
+  // (their line counts are moot once gone); existing files report the +N/−M they
+  // had and that the file is back to its previous contents.
+  function rejectReminderLine(f) {
+    var label = (f.tool ? f.tool + ' ' : '') + '`' + f.path + '`';
+    if (f.isCreated) return label + ' — newly created; now deleted.';
+    var stats = f.hasLineStats
+      ? '+' + (f.added || 0) + '/−' + (f.removed || 0) + ' lines; '
+      : '';
+    return label + ' — ' + stats + 'restored to its previous contents.';
   }
 
-  function addRejectedPaths(paths) {
-    if (!Array.isArray(paths)) return;
-    for (var i = 0; i < paths.length; i++) {
-      var p = paths[i];
-      if (typeof p !== 'string' || !p) continue;
-      if (rejectedPaths.indexOf(p) === -1) rejectedPaths.push(p);  // dedup, keep order
+  function buildRejectReminder(files) {
+    var list = files.slice(0, 12);
+    if (!list.length) return '';
+    var lines = list.map(rejectReminderLine);
+    var intro = list.length === 1
+      ? 'I rejected the following change; it has been reverted:'
+      : 'I rejected the following changes; they have been reverted:';
+    return intro + '\n' + lines.join('\n');
+  }
+
+  function addRejectedFiles(files) {
+    if (!Array.isArray(files)) return;
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!f || typeof f.path !== 'string' || !f.path) continue;
+      var entry = {
+        path: f.path,
+        tool: typeof f.tool === 'string' ? f.tool : '',
+        isCreated: f.isCreated === true,
+        added: typeof f.added === 'number' ? f.added : 0,
+        removed: typeof f.removed === 'number' ? f.removed : 0,
+        hasLineStats: f.hasLineStats === true,
+      };
+      var found = -1;
+      for (var j = 0; j < rejectedFiles.length; j++) {
+        if (rejectedFiles[j].path === entry.path) { found = j; break; }
+      }
+      // dedup by path: same file rejected again replaces the prior entry
+      // (last tool/line stats win), keeping original order.
+      if (found === -1) rejectedFiles.push(entry);
+      else rejectedFiles[found] = entry;
     }
   }
 
@@ -2487,7 +2604,7 @@ function setupNotes() {
     insert.addEventListener('click', function (ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      insertText(buildRejectReminder(rejectedPaths));
+      insertText(buildRejectReminder(rejectedFiles));
       hideBubble();
     });
     actions.appendChild(dismiss);
@@ -2518,14 +2635,14 @@ function setupNotes() {
   function showRejectBubble() {
     var anchor = firstNoteIcon();
     if (!anchor) return;
-    if (!rejectedPaths.length) return;
+    if (!rejectedFiles.length) return;
     bubbleAnchor = anchor;
     if (!bubbleEl) {
       bubbleEl = buildBubble();
       document.body.appendChild(bubbleEl);
     }
     var textEl = bubbleEl.querySelector('[data-incipit-notes-bubble-text]');
-    if (textEl) textEl.textContent = buildRejectReminder(rejectedPaths);
+    if (textEl) textEl.textContent = buildRejectReminder(rejectedFiles);
     bubbleEl.classList.add('cceNoteBubbleOpen');
     anchor.classList.add('cceNoteBtnNudge');
     positionBubble();
@@ -2535,22 +2652,23 @@ function setupNotes() {
 
   function hideBubble() {
     if (bubbleDismissTimer) { clearTimeout(bubbleDismissTimer); bubbleDismissTimer = 0; }
-    rejectedPaths = [];
+    rejectedFiles = [];
     if (!bubbleEl) return;
     bubbleEl.classList.remove('cceNoteBubbleOpen');
     if (bubbleAnchor) bubbleAnchor.classList.remove('cceNoteBtnNudge');
     bubbleAnchor = null;
   }
 
-  // enhance_legacy dispatches this after a SUCCESSFUL change-review reject,
-  // with the file paths captured before the host removed them. Cross-file via
-  // a window CustomEvent so the two modules stay decoupled.
+  // enhance_legacy dispatches this after a SUCCESSFUL change-review reject, with
+  // the per-file details (path, tool, isCreated, added, removed, hasLineStats)
+  // captured before the host removed them. Cross-file via a window CustomEvent so
+  // the two modules stay decoupled.
   window.addEventListener('incipit:change-review-rejected', function (ev) {
     var detail = ev && ev.detail;
-    var paths = detail && Array.isArray(detail.paths) ? detail.paths : null;
-    if (!paths || !paths.length) return;
+    var files = detail && Array.isArray(detail.files) ? detail.files : null;
+    if (!files || !files.length) return;
     ensureNoteIcon();
-    addRejectedPaths(paths);
+    addRejectedFiles(files);
     showRejectBubble();
   });
   document.addEventListener('click', function (ev) {

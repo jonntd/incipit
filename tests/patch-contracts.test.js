@@ -744,6 +744,14 @@ function assertRuntimeSourceContracts() {
     'host-state semantic bridge must report as runtime.hostState.semanticBridge and must not use the fiber connection fallback internally',
   );
   assert(
+    kernel.includes('cwd: null,') &&
+      kernel.includes("const cwd = typeof bridge.cwd === 'string' && bridge.cwd") &&
+      kernel.includes('hostState.cwd = next.cwd || null;') &&
+      kernel.includes('const prevCwd = hostState.cwd;') &&
+      kernel.includes('const sessionChanged = prevSessionId !== hostState.sessionId || prevCwd !== hostState.cwd;'),
+    'runtime host state must preserve cwd from the semantic bridge and treat cwd changes as active-session identity changes',
+  );
+  assert(
     kernel.includes('export function registerBusyProbe(name, probe)') &&
       kernel.includes('function compositeBusyState(state = hostState)') &&
       kernel.includes('const COMPOSITE_BUSY_RECHECK_MS = 160;') &&
@@ -847,6 +855,20 @@ function assertRuntimeSourceContracts() {
       footerBadge.includes('nodeInsideMessagesContainer(n)') &&
       footerBadge.includes('function mutationTouchesHeader(m)'),
     'footer badge/header/kbd body observers must skip focused editor and message-scroll mutations before any footer/header finder query',
+  );
+  assert(
+    footerBadge.includes('function currentSessionIdentity()') &&
+      footerBadge.includes("var key = (sessionId || '') + '\\n' + (cwd || '');") &&
+      footerBadge.includes("type: 'badge_identity_update'") &&
+      footerBadge.includes("type: 'edit_activity_identity_update'") &&
+      (footerBadge.match(/cwd: cwd \|\| null/g) || []).length >= 2 &&
+      legacy.includes('function getActiveSessionCwd()') &&
+      legacy.includes("type: 'change_review_identity_update'") &&
+      legacy.includes('cwd: getActiveSessionCwd() || null') &&
+      hostBadge.includes('const incomingCwd = typeof message.cwd ===') &&
+      hostBadge.includes('a miss fails closed') &&
+      hostBadge.includes('current webviews send cwd'),
+    'session usage, edit activity, and change review identity messages must carry cwd so same-session/different-entry webviews bind the real transcript instead of guessing across projects',
   );
   assert(
     legacy.includes('function mutationInsideFocusedEditor(mutation)') &&

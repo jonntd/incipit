@@ -5,13 +5,16 @@
 // Contract (the design agreed with the user, see
 // dev-notes/2026-06-13-notes-and-reject-reminder.md):
 //   · clicking a snippet (or the reject bubble's Insert) puts text in the
-//     composer WITHOUT sending and WITHOUT writing the contenteditable — the
-//     only insertion path is the official mention command, invoked host-side
-//     via a `notes_insert_request` message (memo 2026-04-15 / 2026-06-06)
+//     composer WITHOUT sending. Insertion simulates a real text edit via
+//     execCommand('insertText') (the host's own input pipeline, same as typing/
+//     paste); it is NOT the @mention command (mangles multi-line prose) and NOT
+//     a raw DOM write into the contenteditable (would bypass the host model and
+//     break IME — still forbidden, memo 2026-04-15 / 2026-06-06)
 //   · notes persist per scope: Global in one file, Project keyed by SHA256(cwd),
 //     written atomically (tmp + rename); the two scopes never bleed
-//   · the reject bubble accumulates rejected paths (deduped), only fires on a
-//     SUCCESSFUL reject, and renders a plain-fact English reminder
+//   · the reject bubble accumulates rejected files (deduped by path, last wins),
+//     only fires on a SUCCESSFUL reject, and renders a plain-fact English
+//     reminder with one tool-aware line per file (no edit line ranges)
 //   · panel interactions are delegated to the stable panel element, never bound
 //     per-row (memo 2026-06-13: per-node handlers die on rebuild)
 //   · the note icon mounts on the identity heartbeat, not a new body observer
@@ -113,30 +116,42 @@ function tmpNotesDir() {
 })();
 
 // ---------------------------------------------------------------------------
-// 2. Insertion only via the official mention command — never the composer DOM
+// 2. Insertion simulates a real text edit on the host composer — NOT the host
+//    @mention command (that mangles multi-line prose), and NOT a raw DOM write
+//    (that bypasses the host model + breaks IME).
 // ---------------------------------------------------------------------------
-(function insertionGoesThroughTheMentionCommand() {
-  assert.strictEqual(
-    hostBadge.__test.NOTES_INSERT_COMMAND, 'incipit.claudeCode.insertAtMention',
-    'insert reuses the official mention command bridge',
-  );
-  const insIdx = hostSrc.indexOf('function handleNotesInsertRequest');
-  assert.ok(insIdx >= 0, 'host has a notes insert handler');
-  const insBody = hostSrc.slice(insIdx, insIdx + 1200);
-  assert.ok(
-    insBody.includes('executeCommand(NOTES_INSERT_COMMAND') || insBody.includes("executeCommand('incipit.claudeCode.insertAtMention'"),
-    'host insert delegates to the mention command',
-  );
+(function insertionSimulatesDirectInput() {
+  // The host no longer round-trips insertion: the @mention bridge command stays
+  // for companion @path references only, not snippets.
+  assert.ok(hostBadge.__test.NOTES_INSERT_COMMAND === undefined,
+    'host no longer exposes a notes insert command (insertion moved to the webview)');
+  assert.ok(!hostSrc.includes('handleNotesInsertRequest') &&
+    !hostSrc.includes("type: 'notes_insert_request'"),
+    'host has no notes insert handler/dispatch anymore');
 
-  // Webview side: insertion is a postMessage, NOT a composer DOM write.
-  assert.ok(notes.includes("type: 'notes_insert_request'"), 'webview insertion is a notes_insert_request message');
-  assert.ok(!notes.includes('execCommand'), 'no document.execCommand insertion path');
-  assert.ok(!notes.includes('messageInput'), 'never touches the host messageInput layer');
-  // Guard the WRITE/QUERY vectors, not the word — the design comment legitimately
-  // names contenteditable. There must be no contenteditable property write or selector.
-  assert.ok(!notes.includes('.contentEditable'), 'no contentEditable property write');
-  assert.ok(!/\[contenteditable/i.test(notes), 'no contenteditable selector query into the host editor');
-  ok('insert: only via the mention command bridge, no composer DOM write');
+  // Webview side: insertion calls the host composer's own setInputText via a
+  // one-shot React-fiber lookup (controlled component; only the host setter syncs
+  // DOM + state for multi-line). execCommand is only a degraded fallback.
+  assert.ok(!notes.includes("type: 'notes_insert_request'"),
+    'webview no longer posts a notes_insert_request');
+  const fiberIdx = notes.indexOf('function hostComposerSetText');
+  assert.ok(fiberIdx >= 0, 'webview has the host-setter fiber bridge');
+  const fiberBody = notes.slice(fiberIdx, fiberIdx + 900);
+  assert.ok(fiberBody.includes('__reactFiber$') &&
+    fiberBody.includes('ref.current.setInputText') &&
+    fiberBody.includes('fiber.return'),
+    'host insert walks the React fiber to the composer ref and calls setInputText');
+  const insIdx = notes.indexOf('function insertText');
+  assert.ok(insIdx >= 0, 'webview has the insertText entry point');
+  const insBody = notes.slice(insIdx, insIdx + 1000);
+  assert.ok(insBody.includes('hostComposerSetText(input, combined)'),
+    'insertText routes through the host setInputText bridge first');
+  // insertText READS textContent (to append) but must NOT WRITE the editor DOM —
+  // those vectors bypass the host model and break IME.
+  assert.ok(!/\.(?:innerHTML|textContent|contentEditable)\s*=[^=]/.test(insBody) &&
+    !/\.(?:insertNode|appendChild|insertAdjacent)\(/.test(insBody),
+    'insertText does no raw DOM write into the host editor (reading textContent to append is fine)');
+  ok('insert: host setInputText via fiber (no @mention, no raw DOM write); execCommand only as fallback');
 })();
 
 // ---------------------------------------------------------------------------
@@ -147,32 +162,62 @@ function tmpNotesDir() {
     notes.includes("window.addEventListener('incipit:change-review-rejected'"),
     'bubble listens for the reject bridge event',
   );
-  assert.ok(notes.includes('function addRejectedPaths') && notes.includes('.indexOf(p) === -1'),
-    'rejected paths accumulate with dedup');
-  assert.ok(notes.includes('function buildRejectReminder'), 'has a reminder builder');
-  assert.ok(notes.includes("'I rejected your '") && notes.includes("' been reverted.'"),
-    'reminder is the plain-fact English the user chose');
+  // Per-file accumulation deduped BY PATH (last tool/line-stats win), not the old
+  // string-path set.
+  assert.ok(notes.includes('function addRejectedFiles') &&
+    notes.includes('rejectedFiles[found] = entry'),
+    'rejected files accumulate, deduped by path with last entry winning');
+  assert.ok(notes.includes('function buildRejectReminder') &&
+    notes.includes('function rejectReminderLine'),
+    'has a per-file reminder builder');
+  // Per-file, tool-aware copy: created -> deleted, existing -> restored, with
+  // +N/-M totals but NEVER edit line ranges (post-revert line numbers mislead).
+  assert.ok(notes.includes("(f.tool ? f.tool + ' ' : '')"),
+    'each reminder line is prefixed by the editing tool name when known');
+  assert.ok(notes.includes('newly created; now deleted.'),
+    'created files report deletion, not restore');
+  assert.ok(notes.includes('restored to its previous contents.'),
+    'existing files report restore to previous contents');
+  assert.ok(notes.includes("'+' + (f.added || 0) + '/−' + (f.removed || 0) + ' lines; '"),
+    'existing files may show +N/-M line totals');
+  // No edit line ranges anywhere in the reminder path (user decision 2026-06-13).
+  assert.ok(!/lineRange|startLine|endLine|':' \+ .*line/i.test(notes),
+    'reminder must not emit edit line ranges, only +N/-M totals');
 
-  // enhance_legacy: dispatch ONLY on success, with paths captured BEFORE the post.
+  // enhance_legacy: dispatch ONLY on success, with file details captured BEFORE the post.
   const turnIdx = legacy.indexOf('function rejectChangeReviewTurn');
   const turnBody = legacy.slice(turnIdx, turnIdx + 700);
-  assert.ok(turnBody.indexOf('changeReviewTurnFilePaths(turnKey)') < turnBody.indexOf('postChangeReviewRequest'),
-    'turn reject captures paths before posting');
+  assert.ok(turnBody.indexOf('changeReviewTurnRejectedFiles(turnKey)') < turnBody.indexOf('postChangeReviewRequest'),
+    'turn reject captures file details before posting');
   assert.ok(turnBody.indexOf('.then(() => { dispatchChangeReviewRejected') < turnBody.indexOf('.catch('),
     'turn reject dispatches in the success branch, not on failure');
 
   const fileIdx = legacy.indexOf('function rejectChangeReviewFile');
   const fileBody = legacy.slice(fileIdx, fileIdx + 700);
-  assert.ok(fileBody.indexOf('changeReviewFilePathsByIds([fileId])') < fileBody.indexOf('postChangeReviewRequest'),
-    'file reject captures path before posting');
+  assert.ok(fileBody.indexOf('changeReviewRejectedFilesByIds([fileId])') < fileBody.indexOf('postChangeReviewRequest'),
+    'file reject captures file detail before posting');
   assert.ok(fileBody.includes('.then(() => { dispatchChangeReviewRejected'),
     'file reject dispatches in the success branch');
 
+  // Capture pulls tool/created/line-stats off the host payload, and the bridge
+  // carries the file objects (not bare paths).
+  assert.ok(legacy.includes('function changeReviewFileRejectInfo') &&
+    legacy.includes('tool: typeof file.tool') &&
+    legacy.includes('isCreated: file.isCreated === true'),
+    'reject capture reads tool + created + line stats off the host file payload');
   assert.ok(
-    legacy.includes("new CustomEvent('incipit:change-review-rejected'"),
-    'bridge uses the agreed window CustomEvent',
+    legacy.includes("new CustomEvent('incipit:change-review-rejected', { detail: { files: clean } })"),
+    'bridge carries per-file detail objects over the agreed window CustomEvent',
   );
-  ok('reject bubble: success-only dispatch, pre-capture, dedup, factual template');
+
+  // host-badge: the tool name (Write/Edit/MultiEdit) is threaded onto the file
+  // and exposed in the webview payload.
+  assert.ok(hostSrc.includes('tool: typeof item.name === \'string\' ? item.name : \'\'') &&
+    hostSrc.includes("if (typeof patch.tool === 'string' && patch.tool) file.tool = patch.tool;"),
+    'countChangeReviewTool records the editing tool name on the file');
+  assert.ok(hostSrc.includes("tool: typeof file.tool === 'string' ? file.tool : ''"),
+    'changeReviewFilePayload exposes the tool name to the webview');
+  ok('reject bubble: per-file tool-aware copy, no line ranges, dedup-by-path, success-only dispatch');
 })();
 
 // ---------------------------------------------------------------------------

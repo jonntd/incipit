@@ -28,11 +28,6 @@ const CHANGE_REVIEW_SCHEMA_VERSION = 1;
 const CHANGE_REVIEW_INDEX_DIR = path.join(os.homedir(), '.incipit', 'change-review-v1');
 const NOTES_SCHEMA_VERSION = 1;
 const NOTES_INDEX_DIR = path.join(os.homedir(), '.incipit', 'notes-v1');
-// Insert (not send) a snippet into the host composer. The ONLY memo-legal way
-// to put text in the contenteditable is the official mention pipeline; incipit
-// never writes the composer DOM (memo 2026-04-15 / 2026-06-06). host-badge runs
-// in the extension host and can invoke the command install.js registers.
-const NOTES_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention';
 const NOTES_MAX_COUNT = 200;
 const NOTES_MAX_TEXT_BYTES = 8000;
 const CHANGE_REVIEW_DIFF_MAX_BYTES = 768 * 1024;
@@ -192,11 +187,11 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'notes_save_request') {
     handleNotesSaveRequest(comm, state, message);
-    return;
   }
-  if (message.type === 'notes_insert_request') {
-    handleNotesInsertRequest(comm, state, message);
-  }
+  // Note insertion is no longer a host round-trip: the webview inserts snippets
+  // directly via a native composer text edit (execCommand insertText), since the
+  // host @mention command mangled multi-line prose. host-badge only owns notes
+  // storage (load/save) now.
 }
 
 function isChangeReviewRuntimeMessage(type) {
@@ -215,8 +210,9 @@ function handleBadgeIdentityUpdate(comm, state, message) {
     sendPayload(comm, emptyBadgePayload(null, null));
     return;
   }
-  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
   const previous = state.commIdentities.get(comm);
+  const incomingCwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+  const cwd = incomingCwd || (previous && previous.sessionId === sessionId ? previous.cwd : null);
   if (previous && previous.sessionId === sessionId && previous.cwd === cwd && previous.target) {
     sendCurrentBadgePayload(state, comm, previous.target, sessionId, includeHistory);
     return;
@@ -249,8 +245,9 @@ function handleEditActivityIdentityUpdate(comm, state, message) {
     sendEditActivityPayload(comm, emptyEditActivityPayload(null, null));
     return;
   }
-  const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
   const previous = state.commIdentities.get(comm);
+  const incomingCwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+  const cwd = incomingCwd || (previous && previous.sessionId === sessionId ? previous.cwd : null);
   if (previous && previous.sessionId === sessionId && previous.cwd === cwd && previous.target) {
     sendCurrentEditActivityPayload(state, comm, previous.target, sessionId, includeProject);
     return;
@@ -1853,32 +1850,28 @@ function resolveTargetFiles(state) {
 
 // Direct (sessionId, cwd) → JSONL path. Mirrors Claude Code's own encoding
 // (`cwd.replace(/[^a-zA-Z0-9]/g, '-')`) and fixes target by `<sessionId>.jsonl`.
-// Returns null on any miss so the caller can fall through to the legacy
-// heuristic. The session-line cross-check inside `resolveConversationMutation`
-// will catch a stale or wrong file before we touch it.
+// When a cwd hint exists, it is part of the identity: a miss fails closed
+// instead of searching another project and silently binding the badge to
+// a different visible conversation.
 function resolveTargetFromIdentity(sessionId, cwd) {
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9-]+$/.test(sessionId)) return null;
-  let dir = null;
   if (typeof cwd === 'string' && cwd) {
     const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-    dir = path.join(projectsRoot(), encoded);
-    if (!fs.existsSync(dir)) dir = null;
+    const candidate = path.join(projectsRoot(), encoded, sessionId + JSONL_SUFFIX);
+    return fs.existsSync(candidate) ? candidate : null;
   }
-  if (!dir) {
-    // No cwd hint — search every project dir for a matching `<sessionId>.jsonl`.
-    // Cheap because we only stat one filename per dir.
-    const root = projectsRoot();
-    let entries = [];
-    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return null; }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const candidate = path.join(root, entry.name, sessionId + JSONL_SUFFIX);
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    return null;
+  // No cwd hint — search every project dir for a matching `<sessionId>.jsonl`.
+  // Cheap because we only stat one filename per dir. Kept as a compatibility
+  // path for older webviews and degraded bridges; current webviews send cwd.
+  const root = projectsRoot();
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return null; }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(root, entry.name, sessionId + JSONL_SUFFIX);
+    if (fs.existsSync(candidate)) return candidate;
   }
-  const candidate = path.join(dir, sessionId + JSONL_SUFFIX);
-  return fs.existsSync(candidate) ? candidate : null;
+  return null;
 }
 
 function isCacheHit(state, filePath, stat) {
@@ -2280,6 +2273,7 @@ function compactChangeReviewFile(file) {
     added: safeTokenNumber(file.added),
     removed: safeTokenNumber(file.removed),
     hasLineStats: file.hasLineStats === true,
+    tool: typeof file.tool === 'string' ? file.tool : '',
     toolIds: Array.from(file.toolIds instanceof Set ? file.toolIds : []).filter(id => typeof id === 'string' && id),
     firstSeenAt: Number.isFinite(file.firstSeenAt) ? file.firstSeenAt : 0,
     lastSeenAt: Number.isFinite(file.lastSeenAt) ? file.lastSeenAt : 0,
@@ -2645,6 +2639,7 @@ function hydrateUsageCacheParser(parser, index) {
         added: safeTokenNumber(rawFile.added),
         removed: safeTokenNumber(rawFile.removed),
         hasLineStats: rawFile.hasLineStats === true,
+        tool: typeof rawFile.tool === 'string' ? rawFile.tool : '',
         toolIds: new Set(Array.isArray(rawFile.toolIds) ? rawFile.toolIds.filter(id => typeof id === 'string' && id) : []),
         firstSeenAt: Number.isFinite(rawFile.firstSeenAt) ? rawFile.firstSeenAt : 0,
         lastSeenAt: Number.isFinite(rawFile.lastSeenAt) ? rawFile.lastSeenAt : 0,
@@ -3221,6 +3216,7 @@ function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
       added: 0,
       removed: 0,
       hasLineStats: false,
+      tool: '',
       toolIds: new Set(),
       firstSeenAt: Date.now(),
       lastSeenAt: Date.now(),
@@ -3239,6 +3235,7 @@ function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
     file.added = 0;
     file.removed = 0;
     file.hasLineStats = false;
+    file.tool = '';
     file.toolIds = new Set();
     file.firstSeenAt = Date.now();
   }
@@ -3254,6 +3251,10 @@ function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
   if (!file.backupTime && typeof patch.backupTime === 'string' && patch.backupTime) file.backupTime = patch.backupTime;
   if (Number.isFinite(patch.added)) file.added += Math.max(0, patch.added);
   if (Number.isFinite(patch.removed)) file.removed += Math.max(0, patch.removed);
+  // Record the editing tool name (Write/Edit/MultiEdit) so the reject reminder
+  // can describe each file by tool. A file touched by several tools in one turn
+  // keeps the last one — the reminder only needs a representative verb.
+  if (typeof patch.tool === 'string' && patch.tool) file.tool = patch.tool;
   if (patch.toolId) {
     file.toolIds.add(patch.toolId);
     file.hasLineStats = true;
@@ -3273,6 +3274,7 @@ function countChangeReviewTool(parser, item) {
   const file = upsertChangeReviewFile(parser, turn, item.filePath, {
     added: item.added || 0,
     removed: item.removed || 0,
+    tool: typeof item.name === 'string' ? item.name : '',
     toolId: item.id,
   });
   if (file) {
@@ -3773,6 +3775,7 @@ function changeReviewFilePayload(file, reviewState) {
     added: file.added || 0,
     removed: file.removed || 0,
     hasLineStats: file.hasLineStats === true,
+    tool: typeof file.tool === 'string' ? file.tool : '',
     status,
   };
   if (file.backupFileName !== undefined) out.backupFileName = file.backupFileName;
@@ -4830,31 +4833,6 @@ function handleNotesSaveRequest(comm, state, message) {
   }
 }
 
-async function handleNotesInsertRequest(comm, state, message) {
-  const requestId = message.requestId;
-  const reply = payload => {
-    try {
-      comm.webview.postMessage({ __incipit: true, type: 'notes_insert_response', requestId, payload });
-    } catch (_) {}
-  };
-  try {
-    const text = sanitizeNoteText(message.text);
-    if (!text.trim()) { reply({ ok: false, error: 'Nothing to insert.' }); return; }
-    // The whole point of this feature: insert into the composer WITHOUT sending,
-    // and WITHOUT touching the contenteditable. Delegate to the official mention
-    // pipeline (install.js registers NOTES_INSERT_COMMAND). It is the one runtime
-    // unknown — historically only single-line `@path` flowed through it; multi-line
-    // prose is verified on a real host. Keep this the single insertion point so the
-    // strategy can change here alone if the host needs it.
-    const vscode = getVSCodeApi();
-    const ok = await vscode.commands.executeCommand(NOTES_INSERT_COMMAND, text);
-    reply({ ok: ok !== false });
-  } catch (error) {
-    state.log(`notes insert error: ${error && error.message ? error.message : error}`);
-    reply({ ok: false, error: String(error && error.message ? error.message : error) });
-  }
-}
-
 function upsertProjectIndexSession(index, payload, filePath, stat, editVersion) {
   if (!index || !payload || !payload.sessionId) return false;
   const sessionId = payload.sessionId;
@@ -5384,6 +5362,9 @@ module.exports = { attachComm };
 module.exports.__test = {
   createParser,
   processUsageEntry,
+  resolveTargetFromIdentity,
+  handleBadgeIdentityUpdate,
+  handleEditActivityIdentityUpdate,
   payloadHistoryEntry,
   payloadHistoryBuckets,
   totalContextTokens,
@@ -5433,7 +5414,6 @@ module.exports.__test = {
   sanitizeNoteText,
   loadNotes,
   saveNotes,
-  NOTES_INSERT_COMMAND,
   NOTES_MAX_COUNT,
   NOTES_MAX_TEXT_BYTES,
 };

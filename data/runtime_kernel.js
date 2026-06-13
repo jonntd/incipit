@@ -59,6 +59,7 @@ const hostState = {
   pendingInput: false,
   partialTail: false,
   sessionId: null,
+  cwd: null,
   messagesVersion: 0,
   source: 'init',
   updatedAt: 0,
@@ -414,11 +415,15 @@ function computeHostState() {
     const messagesVersion = Number.isFinite(bridge.messagesVersion)
       ? bridge.messagesVersion
       : hostState.messagesVersion;
+    const cwd = typeof bridge.cwd === 'string' && bridge.cwd
+      ? bridge.cwd
+      : null;
     return {
       busy: bridge.busy === true,
       pendingInput: bridge.pendingInput === true,
       partialTail: bridge.partialTail === true,
       sessionId,
+      cwd,
       messagesVersion,
       source: 'bridge',
       bridgeUpdatedAt: Number(bridge.updatedAt) || 0,
@@ -429,6 +434,7 @@ function computeHostState() {
     pendingInput: false,
     partialTail: false,
     sessionId: getActiveClaudeSessionId({ allowStaleState: true, skipFiber: true }),
+    cwd: null,
     messagesVersion: hostState.messagesVersion,
     source: 'no-bridge',
     bridgeUpdatedAt: 0,
@@ -440,19 +446,21 @@ export function refreshHostState(reason = 'refresh') {
   const prevPendingInput = hostState.pendingInput;
   const prevPartialTail = hostState.partialTail;
   const prevSessionId = hostState.sessionId;
+  const prevCwd = hostState.cwd;
   const prevMessagesVersion = hostState.messagesVersion;
   const next = computeHostState();
   hostState.busy = next.busy === true;
   hostState.pendingInput = next.pendingInput === true;
   hostState.partialTail = next.partialTail === true;
   hostState.sessionId = next.sessionId || null;
+  hostState.cwd = next.cwd || null;
   hostState.messagesVersion = Number.isFinite(next.messagesVersion) ? next.messagesVersion : 0;
   hostState.source = next.source || 'unknown';
   hostState.bridgeUpdatedAt = Number(next.bridgeUpdatedAt) || 0;
   hostState.updatedAt = nowMs();
   lastHostStateAt = hostState.updatedAt;
 
-  const sessionChanged = prevSessionId !== hostState.sessionId;
+  const sessionChanged = prevSessionId !== hostState.sessionId || prevCwd !== hostState.cwd;
   const rawBusyChanged =
     prevBusy !== hostState.busy ||
     prevPendingInput !== hostState.pendingInput ||
