@@ -159,7 +159,7 @@ function makeEntry(obj) { return JSON.stringify(obj); }
     'function buildRerunPayloadFromEditorDraft',
     'async function rerunFromUser(record, button, overridePayload = null)',
     'overridePayload || buildRerunPayloadFromRecord(record)',
-    'Save and rerun this turn',
+    'Save and rerun (Ctrl+Enter)',
   ];
   for (const needle of required) {
     assert.ok(src.includes(needle),
@@ -207,6 +207,44 @@ function makeEntry(obj) { return JSON.stringify(obj); }
       host.includes("block.type === 'thinking' || block.type === 'redacted_thinking'"),
     'host local-save path must reject upstream edits before signed thinking blocks');
   ok('source: two-phase hand-off present; partial-tail wait + busy early-return removed');
+
+  // The webview must pre-empt that host rejection in the UI: when a user
+  // record has downstream signed thinking, the inline editor offers only
+  // Cancel + Rerun (no Save), and Ctrl+Enter routes to Save-and-Rerun.
+  // The detector must read messages.value, not DOM (virtualization drops
+  // downstream rows). Regressing any of these re-exposes the dead-end ✓.
+  assert.ok(
+    src.includes('function userRecordHasDownstreamSignedThinking') &&
+      src.includes('function recordHasSignedThinking') &&
+      src.includes('const hasDownstreamThinking =') &&
+      src.includes('editActions.append(cancelBtn, saveRerunBtn)'),
+    'webview must hide Save (offer only Cancel+Rerun) when downstream signed thinking exists');
+  // The detector is record-based, not a DOM sibling sweep.
+  assert.ok(
+    /function userRecordHasDownstreamSignedThinking[\s\S]{0,400}messages\.value/.test(src),
+    'downstream-thinking detector must read messages.value, not DOM');
+  ok('source: inline editor hides Save when downstream signed thinking present');
+
+  // Slash-command / local-command user records must not be editable:
+  // their content is the host's internal `<command-*>` protocol, not
+  // prose. Editing leaks the XML into the textarea; rerun pushes it
+  // through session.send where the slash parser rejects it.
+  assert.strictEqual(
+    T.canEditUserEntry({ type: 'user', message: { content:
+      '<command-name>/model</command-name>\n<command-args>default</command-args>' } }),
+    false, 'host must refuse to edit a slash-command record');
+  assert.strictEqual(
+    T.canEditUserEntry({ type: 'user', message: { content:
+      '<local-command-stdout>Set model to claude-opus-4-8</local-command-stdout>' } }),
+    false, 'host must refuse to edit a local-command stdout record');
+  assert.strictEqual(
+    T.canEditUserEntry({ type: 'user', message: { content: 'just normal prose' } }),
+    true, 'host must still allow editing ordinary user prose');
+  assert.ok(
+    src.includes('function isSlashCommandRecord') &&
+      src.includes('!isSlashCommandRecord(record)'),
+    'webview must exclude slash-command records from the editable real-user set');
+  ok('guard: slash-command / local-command records are non-editable (host + webview)');
 })();
 
 console.log('\nrerun-handoff: ' + passed + ' checks PASSED');

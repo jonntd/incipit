@@ -26,6 +26,15 @@ const EDIT_ACTIVITY_SCHEMA_VERSION = 1;
 const EDIT_ACTIVITY_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-edit-activity-v1');
 const CHANGE_REVIEW_SCHEMA_VERSION = 1;
 const CHANGE_REVIEW_INDEX_DIR = path.join(os.homedir(), '.incipit', 'change-review-v1');
+const NOTES_SCHEMA_VERSION = 1;
+const NOTES_INDEX_DIR = path.join(os.homedir(), '.incipit', 'notes-v1');
+// Insert (not send) a snippet into the host composer. The ONLY memo-legal way
+// to put text in the contenteditable is the official mention pipeline; incipit
+// never writes the composer DOM (memo 2026-04-15 / 2026-06-06). host-badge runs
+// in the extension host and can invoke the command install.js registers.
+const NOTES_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention';
+const NOTES_MAX_COUNT = 200;
+const NOTES_MAX_TEXT_BYTES = 8000;
 const CHANGE_REVIEW_DIFF_MAX_BYTES = 768 * 1024;
 const CHANGE_REVIEW_DIFF_CONTEXT_LINES = 3;
 const CHANGE_REVIEW_DIFF_MAX_RENDER_ROWS = 360;
@@ -175,6 +184,18 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'file_path_copy_request') {
     handleFilePathCopyRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'notes_load_request') {
+    handleNotesLoadRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'notes_save_request') {
+    handleNotesSaveRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'notes_insert_request') {
+    handleNotesInsertRequest(comm, state, message);
   }
 }
 
@@ -1524,7 +1545,22 @@ function canEditUserEntry(entry) {
   // the user-edit path leaves the model with a bogus turn the CLI's
   // own compact accounting can't reconcile.
   if (entry.isCompactSummary === true || entry.isVisibleInTranscriptOnly === true) return false;
+  // Slash-command / local-command records: the CLI persists `/<cmd> …`
+  // invocations and their local stdout/stderr as a user text block of
+  // its internal `<command-*>` / `<local-command-*>` protocol, not as
+  // editable prose. Editing/rerunning them would push that XML back
+  // through the model as plain text and the headless slash parser then
+  // rejects it. Authoritative gate so even a malformed webview request
+  // can't mutate one (matches the webview's isSlashCommandRecord).
+  if (entryLooksLikeCommandRecord(entry)) return false;
   return true;
+}
+
+const COMMAND_RECORD_PREFIX_RE = /^\s*<\/?(?:local-)?command-[a-z]+\b/i;
+
+function entryLooksLikeCommandRecord(entry) {
+  const firstText = editableTextFromEntry(entry);
+  return typeof firstText === 'string' && COMMAND_RECORD_PREFIX_RE.test(firstText);
 }
 
 function canEditAssistantTextEntry(entry) {
@@ -4669,6 +4705,156 @@ function saveProjectEditActivityIndex(index) {
   } catch (_) {}
 }
 
+// ============================================================
+//  Notes (snippets) + reject reminder storage.
+//
+//  Global notes live in `<NOTES_INDEX_DIR>/global.json`; per-project notes in
+//  `<NOTES_INDEX_DIR>/<projectKey>.json` keyed by the same SHA256(cwd) as the
+//  edit-activity index. The webview owns CRUD and ships the whole array; the
+//  host only sanitizes + atomically writes (tmp+rename), so a crash mid-write
+//  never corrupts the live file. `baseDir` is injectable for offline tests.
+// ============================================================
+function notesFilePath(scope, cwd, baseDir) {
+  const dir = baseDir || NOTES_INDEX_DIR;
+  if (scope === 'project') {
+    if (typeof cwd !== 'string' || !cwd) return null;
+    return path.join(dir, projectKeyForDir(cwd) + '.json');
+  }
+  return path.join(dir, 'global.json');
+}
+
+function normalizeNotesScope(scope) {
+  return scope === 'project' ? 'project' : 'global';
+}
+
+function sanitizeNoteText(value) {
+  // Normalize CRLF so a note stored on Windows inserts identically to one
+  // stored elsewhere, then cap bytes so a single huge paste can't bloat the file.
+  let text = typeof value === 'string' ? value : '';
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (Buffer.byteLength(text, 'utf8') > NOTES_MAX_TEXT_BYTES) {
+    text = Buffer.from(text, 'utf8').slice(0, NOTES_MAX_TEXT_BYTES).toString('utf8');
+  }
+  return text;
+}
+
+function sanitizeNoteId(value, fallbackIndex) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(raw)) return raw;
+  return 'note-' + Date.now().toString(36) + '-' + fallbackIndex.toString(36);
+}
+
+function sanitizeNotesList(rawNotes) {
+  const list = Array.isArray(rawNotes) ? rawNotes : [];
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < list.length && out.length < NOTES_MAX_COUNT; i++) {
+    const entry = list[i];
+    if (!entry || typeof entry !== 'object') continue;
+    const text = sanitizeNoteText(entry.text);
+    if (!text.trim()) continue;
+    let id = sanitizeNoteId(entry.id, i);
+    while (seen.has(id)) id = id + '-' + i.toString(36);
+    seen.add(id);
+    const createdAt = Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now();
+    out.push({ id, text, createdAt, updatedAt: Date.now() });
+  }
+  return out;
+}
+
+function loadNotes(scope, cwd, baseDir) {
+  const filePath = notesFilePath(scope, cwd, baseDir);
+  if (!filePath) return [];
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (parsed && parsed.schemaVersion === NOTES_SCHEMA_VERSION && Array.isArray(parsed.notes)) {
+      return sanitizeNotesList(parsed.notes);
+    }
+  } catch (_) {}
+  return [];
+}
+
+function saveNotes(scope, cwd, rawNotes, baseDir) {
+  const filePath = notesFilePath(scope, cwd, baseDir);
+  if (!filePath) return { ok: false, error: 'Project notes need a workspace path.' };
+  const notes = sanitizeNotesList(rawNotes);
+  const record = { schemaVersion: NOTES_SCHEMA_VERSION, scope, notes, updatedAt: Date.now() };
+  if (scope === 'project') {
+    record.projectKey = projectKeyForDir(cwd);
+    record.projectDir = cwd;
+  }
+  try {
+    fs.mkdirSync(baseDir || NOTES_INDEX_DIR, { recursive: true });
+    const tmpPath = filePath + '.tmp-' + process.pid + '-' + Date.now();
+    fs.writeFileSync(tmpPath, JSON.stringify(record));
+    fs.renameSync(tmpPath, filePath);
+  } catch (error) {
+    return { ok: false, error: String(error && error.message ? error.message : error) };
+  }
+  return { ok: true, notes };
+}
+
+function handleNotesLoadRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const scope = normalizeNotesScope(message.scope);
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({ __incipit: true, type: 'notes_load_response', requestId, payload });
+    } catch (_) {}
+  };
+  try {
+    const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+    if (scope === 'project' && !cwd) { reply({ ok: true, scope, notes: [] }); return; }
+    reply({ ok: true, scope, notes: loadNotes(scope, cwd) });
+  } catch (error) {
+    state.log(`notes load error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, scope, error: String(error && error.message ? error.message : error) });
+  }
+}
+
+function handleNotesSaveRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const scope = normalizeNotesScope(message.scope);
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({ __incipit: true, type: 'notes_save_response', requestId, payload });
+    } catch (_) {}
+  };
+  try {
+    const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
+    reply({ scope, ...saveNotes(scope, cwd, message.notes) });
+  } catch (error) {
+    state.log(`notes save error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, scope, error: String(error && error.message ? error.message : error) });
+  }
+}
+
+async function handleNotesInsertRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({ __incipit: true, type: 'notes_insert_response', requestId, payload });
+    } catch (_) {}
+  };
+  try {
+    const text = sanitizeNoteText(message.text);
+    if (!text.trim()) { reply({ ok: false, error: 'Nothing to insert.' }); return; }
+    // The whole point of this feature: insert into the composer WITHOUT sending,
+    // and WITHOUT touching the contenteditable. Delegate to the official mention
+    // pipeline (install.js registers NOTES_INSERT_COMMAND). It is the one runtime
+    // unknown — historically only single-line `@path` flowed through it; multi-line
+    // prose is verified on a real host. Keep this the single insertion point so the
+    // strategy can change here alone if the host needs it.
+    const vscode = getVSCodeApi();
+    const ok = await vscode.commands.executeCommand(NOTES_INSERT_COMMAND, text);
+    reply({ ok: ok !== false });
+  } catch (error) {
+    state.log(`notes insert error: ${error && error.message ? error.message : error}`);
+    reply({ ok: false, error: String(error && error.message ? error.message : error) });
+  }
+}
+
 function upsertProjectIndexSession(index, payload, filePath, stat, editVersion) {
   if (!index || !payload || !payload.sessionId) return false;
   const sessionId = payload.sessionId;
@@ -5212,6 +5398,7 @@ module.exports.__test = {
   applyUserBlockEdit,
   applyTruncateFromUser,
   userEditHasDownstreamSignedThinking,
+  canEditUserEntry,
   processChangeReviewEntry,
   processEditActivityEntry,
   handleChangeReviewIdentityUpdate,
@@ -5241,4 +5428,12 @@ module.exports.__test = {
   assertFileRevealWorkspace,
   registerTruncateRollback,
   peekTruncateState,
+  notesFilePath,
+  sanitizeNotesList,
+  sanitizeNoteText,
+  loadNotes,
+  saveNotes,
+  NOTES_INSERT_COMMAND,
+  NOTES_MAX_COUNT,
+  NOTES_MAX_TEXT_BYTES,
 };

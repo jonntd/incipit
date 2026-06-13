@@ -585,9 +585,11 @@ function assertRuntimeSourceContracts() {
   assert(legacyInit, 'legacy root init() body must be findable for dormant feature audits');
   assert(
     customModel.includes("const CUSTOM_MODEL_ACTION_ID = 'incipit-custom-model-id';") &&
+      customModel.includes("const CUSTOM_MODEL_ACTION_LABEL = 'Use custom model ID...';") &&
       customModel.includes("label: 'Use custom model ID...'") &&
       customModel.includes("description: 'Set a model by full ID'") &&
       customModel.includes("}, 'Model', () => openCustomModelDialog())") &&
+      customModel.includes('setupCustomModelActionDecoration();') &&
       legacyInit[1].includes('setupCustomModelPicker,') &&
       /^\s*setupCustomModelPicker\(\);/m.test(legacyInit[1]),
     'custom model picker must register one pure-text command action in the official Model section',
@@ -610,6 +612,10 @@ function assertRuntimeSourceContracts() {
   );
   assert(
     theme.includes('[data-incipit-custom-model-modal]') &&
+      theme.includes('[data-incipit-custom-model-action]::after') &&
+      theme.includes('content: "incipit" !important') &&
+      theme.includes('font-family: var(--incipit-emphasis-font) !important') &&
+      theme.includes('font-style: italic !important') &&
       theme.includes('[data-incipit-custom-model-dialog]') &&
       theme.includes('[data-incipit-custom-model-input]') &&
       theme.includes('[data-incipit-custom-model-submit]') &&
@@ -619,6 +625,7 @@ function assertRuntimeSourceContracts() {
       theme.includes('box-shadow: none !important') &&
       theme.includes('background: #a8896e !important') &&
       warmWhite.includes('[data-incipit-custom-model-modal]') &&
+      warmWhite.includes('[data-incipit-custom-model-action]::after') &&
       warmWhite.includes('[data-incipit-custom-model-dialog]') &&
       warmWhite.includes('background: #ffffff !important') &&
       warmWhite.includes('caret-color: #a8896e !important') &&
@@ -776,19 +783,19 @@ function assertRuntimeSourceContracts() {
   assert(
     hostProbe.includes('const CSS_CAPABILITIES = Object.freeze([') &&
       hostProbe.includes("name: 'runtime.cssClass.userBubble'") &&
-      hostProbe.includes('function isInputContainerCandidate(node)') &&
-      hostProbe.includes("classes.includes('inputContainer_')") &&
-      hostProbe.includes("classes.includes('inputContainerBackground')") &&
-      hostProbe.includes("tag === 'fieldset' || hasDirectInputContainerBackground(node)") &&
-      hostProbe.includes('tagStaticSelectors(root);\n  syncInputContainers(root);') &&
+      !hostProbe.includes('function isInputContainerCandidate(node)') &&
+      !hostProbe.includes("classes.includes('inputContainer_')") &&
+      !hostProbe.includes("classes.includes('inputContainerBackground')") &&
+      !hostProbe.includes('syncInputContainers') &&
+      !hostProbe.includes('ATTR.inputContainer') &&
       !hostProbe.includes("['[class*=\"inputContainer_\"]', ATTR.inputContainer]") &&
-      hostProbe.includes("selectors: ['fieldset[class*=\"inputContainer_\"]', '[class*=\"inputContainer_\"]:has(> [class*=\"inputContainerBackground\"])']") &&
+      !hostProbe.includes("selectors: ['fieldset[class*=\"inputContainer_\"]', '[class*=\"inputContainer_\"]:has(> [class*=\"inputContainerBackground\"])']") &&
       hostProbe.includes("presence: 'whileVisible'") &&
       hostProbe.includes('CSS_ALWAYS_WARMUP_MS = 5000') &&
       hostProbe.includes('function runAlwaysCssCapabilityCheck') &&
       hostProbe.includes('function scheduleVisibleCssCapabilityCheck') &&
       hostProbe.includes("health.set('capability.' + def.name"),
-    'host_probe must expose runtime.cssClass capabilities and tag only the real composer input container, not the outer positioning wrapper',
+    'host_probe must expose runtime.cssClass capabilities without tagging or capability-probing the composer input container subtree',
   );
   assert.strictEqual(
     (hostProbe.match(/new MutationObserver/g) || []).length,
@@ -998,6 +1005,30 @@ function assertRuntimeSourceContracts() {
   assert(
     !/::[-\w]*scrollbar/.test(cssWithoutComments),
     'theme.css must not contain live ::-webkit-scrollbar rules; those put the main chat scroller back on the non-composited autoscroll-jitter path',
+  );
+  assert(
+    theme.includes('--vscode-list-activeSelectionBackground: #121212 !important;') &&
+      theme.includes('--vscode-list-focusBackground: #121212 !important;') &&
+      theme.includes('--vscode-list-hoverBackground: #1a1a19 !important;') &&
+      warmWhite.includes('--vscode-list-activeSelectionBackground: #E6E4DE !important;') &&
+      warmWhite.includes('--vscode-list-focusBackground: #E6E4DE !important;') &&
+      warmWhite.includes('--vscode-list-hoverBackground: #F4F2EC !important;') &&
+      !theme.includes('--vscode-list-focusBackground: rgba(248, 248, 246, 0.055) !important;') &&
+      !warmWhite.includes('--vscode-list-focusBackground: #F4F2EC !important;'),
+    'menu selection palette must stay on the original active/focus colors; stale slash-command state is fixed in runtime cleanup, not by recoloring selection',
+  );
+  assert(
+    legacy.includes('function setupCommandMenuTransientSelectionCleanup()') &&
+      legacy.includes('function clearCommandMenuTransientSelection(root = document.body)') &&
+      legacy.includes('commandMenuListsFrom(root)') &&
+      legacy.includes("item.removeAttribute('aria-selected')") &&
+      legacy.includes('item.removeAttribute(ATTR.commandItemActive)') &&
+      legacy.includes("cls === 'active' || cls.indexOf('activeCommandItem') !== -1") &&
+      legacy.includes('list.removeAttribute(\'aria-activedescendant\')') &&
+      legacy.includes('commandMenuSelectionCleanupObserver.observe(document.body, { childList: true, subtree: true })') &&
+      legacyInit[1].includes('setupCommandMenuTransientSelectionCleanup,') &&
+      /^\s*setupCommandMenuTransientSelectionCleanup\(\);/m.test(legacyInit[1]),
+    'slash command menu rows must clear stale active/aria-selected DOM state on mount; permission/dropdown menus keep their real selection state',
   );
   assert(
     theme.includes('[data-incipit-path-context-menu]') &&

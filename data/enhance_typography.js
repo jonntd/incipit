@@ -487,6 +487,13 @@ const DIFF_MATH_BLOCK_SELECTOR = [
 ].join(', ');
 const HOST_DIFF_MODAL_SELECTOR = '[class*="modalContent_"]';
 const HOST_DIFF_MODAL_CONTENT_SELECTOR = '[class*="diffEditorContainer"], .monaco-diff-editor';
+// Incipit-owned transcript widgets are not assistant prose. Their internal
+// rebuilds must not wake the legacy transcript action settle scanner, or a
+// review render can feed back into action-row placement and back into review
+// render again.
+const TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR = [
+  '[data-incipit-change-review-turn]',
+].join(', ');
 
 function isDiffSurfaceNode(node) {
   let el = node;
@@ -495,6 +502,29 @@ function isDiffSurfaceNode(node) {
   if (el.closest(DIFF_MATH_BLOCK_SELECTOR)) return true;
   const modal = el.closest(HOST_DIFF_MODAL_SELECTOR);
   return !!(modal && modal.querySelector && modal.querySelector(HOST_DIFF_MODAL_CONTENT_SELECTOR));
+}
+
+function isTranscriptActionIgnoredMutationNode(node) {
+  let el = node;
+  if (el && el.nodeType !== 1) el = el.parentElement;
+  if (!el || !el.matches || !el.closest) return false;
+  return !!(
+    el.matches(TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR) ||
+    el.closest(TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR)
+  );
+}
+
+function mutationTouchesIgnoredTranscriptActionSurface(mutation) {
+  if (isTranscriptActionIgnoredMutationNode(mutation.target)) return true;
+  const lists = [mutation.addedNodes, mutation.removedNodes];
+  let sawNode = false;
+  for (const list of lists) {
+    for (const node of list) {
+      sawNode = true;
+      if (!isTranscriptActionIgnoredMutationNode(node)) return false;
+    }
+  }
+  return sawNode;
 }
 
 // ========== 4b. Table `<br>` visual breaks ==========
@@ -1170,6 +1200,7 @@ function handleMutations(mutations) {
   let busy = false;
   try { busy = conversationIsBusy(); } catch (_) { busy = false; }
   for (const m of mutations) {
+    if (mutationTouchesIgnoredTranscriptActionSurface(m)) continue;
     if (m.type === 'characterData') {
       const hasMath = nodeContainsMathPlaceholder(m.target);
       if (busy && !hasMath) {

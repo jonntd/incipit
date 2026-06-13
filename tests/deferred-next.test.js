@@ -16,9 +16,9 @@
 //   · no floating toasts at all; errors surface inline in the card
 //   · editing a row survives queue mutations / reorder (textarea + CJK IME
 //     never torn down)
-//   · the official composer text layer remains entirely host-owned: incipit
-//     may feed host input foreground tokens, but not style messageInput/
-//     mentionMirror text directly
+//   · the official composer text layer stays host-owned: incipit may feed
+//     host input foreground tokens and sync mentionMirror scroll geometry,
+//     but not edit text/selection or style messageInput/mentionMirror
 
 const assert = require('assert');
 const fs = require('fs');
@@ -220,7 +220,8 @@ function cssRuleBody(selector) {
   const rail = functionBody('ensureComposerRail', 1300);
   const mountPoint = functionBody('composerRailMountPoint', 500);
   const deferredMount = functionBody('deferredCardMountPoint', 500);
-  const inputRule = cssRuleBody('[data-incipit-input-container]');
+  const inputRule = cssRuleBody('fieldset[class*="inputContainer_"]');
+  const inputBgRule = cssRuleBody('\n[class*="inputContainerBackground"]');
   const railRule = cssRuleBody('[data-incipit-composer-rail]');
   assert.ok(legacy.includes('let composerRailEl = null') &&
     rail.includes("composerRailEl.setAttribute('data-incipit-composer-rail', '')"),
@@ -228,7 +229,7 @@ function cssRuleBody(selector) {
   assert.ok(legacy.includes("const COMPOSER_INPUT_CONTAINER_SELECTOR =\n    'fieldset[class*=\"inputContainer_\"], [class*=\"inputContainer_\"]:has(> [class*=\"inputContainerBackground\"])';") &&
     legacy.includes('function nodeInsideFocusedEditor(node)') &&
     legacy.includes('function nodeInsideMessagesContainer(node)') &&
-    composerRoot.includes('document.querySelectorAll(SEL.inputContainer)') &&
+    !composerRoot.includes('document.querySelectorAll(SEL.inputContainer)') &&
     composerRoot.includes("document.querySelectorAll('[class*=\"inputContainer_\"]')") &&
     composerRootCheck.includes("classes.includes('inputContainer_')") &&
     composerRootCheck.includes("classes.includes('inputContainerBackground')") &&
@@ -249,26 +250,28 @@ function cssRuleBody(selector) {
   assert.ok(theme.includes('[data-incipit-composer-rail]') &&
     theme.includes('flex-direction: column') &&
     theme.includes('[data-incipit-composer-rail-hidden]') &&
-    inputRule.includes('box-sizing: border-box !important;') &&
-    inputRule.includes('width: 100% !important;') &&
-    inputRule.includes('max-width: 100% !important;') &&
-    inputRule.includes('min-inline-size: 0 !important;') &&
+    inputRule.includes('--focus-ring-color: transparent !important;') &&
+    !/box-sizing|width\s*:|max-width|min-width|min-inline-size|background\s*:|background-color|border\s*:|box-shadow|transition/.test(inputRule) &&
+    inputBgRule.includes('background: #2c2c2a !important;') &&
+    inputBgRule.includes('box-shadow: 0 2px 10px rgba(0,0,0,0.20)') &&
     railRule.includes('max-width: 100% !important;') &&
     railRule.includes('min-width: 0 !important;') &&
     theme.includes('[data-incipit-deferred-next] {\n  box-sizing: border-box !important;\n  width: 100% !important;\n  margin: 0 !important;'),
-    'rail/input sizing stays inside the official composer width; deferred-next keeps its full card instead of being compressed');
+    'rail sizing stays inside the official composer width; input container keeps host-owned scroll geometry while only its background layer is retinted');
   ok('shared composer rail: Ask hides all, deferred queue remains closest to input');
 })();
 
 (function changeReviewComposerMiniBarIsRemoved() {
   const state = functionBody('setupChangeReviewFileReview', 1800);
   const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
-  const updateBlock = functionBody('updateChangeReviewTurnBlock', 2600);
+  const updateBlock = functionBody('updateChangeReviewTurnBlock', 3500);
   const format = functionBody('formatChangeReviewSummary', 700);
   const stats = functionBody('appendChangeReviewLineStats', 700);
   const row = functionBody('renderChangeReviewFileRow', 1800);
   const summaryRow = functionBody('renderChangeReviewSummaryRow', 1400);
   const moreRow = functionBody('renderChangeReviewMoreRow', 1200);
+  const delegateFn = functionBody('bindChangeReviewBlockDelegation', 2800);
+  const buttonFn = functionBody('changeReviewButton', 600);
   assert.ok(!legacy.includes('function renderChangeReviewCard()') &&
     !legacy.includes('function ensureChangeReviewCard()') &&
     !legacy.includes('function changeReviewActiveTurn()') &&
@@ -303,11 +306,38 @@ function cssRuleBody(selector) {
     updateBlock.includes('files.slice(0, CHANGE_REVIEW_VISIBLE_FILE_LIMIT)') &&
     updateBlock.includes('renderChangeReviewMoreRow(block, turn, hiddenCount, expanded)') &&
     moreRow.includes("row.setAttribute('data-incipit-change-review-more', '')") &&
-    moreRow.includes("block.dataset.incipitChangeReviewExpanded = '1'") &&
-    moreRow.includes("delete block.dataset.incipitChangeReviewExpanded") &&
+    // ALL block interactions must be DELEGATED to the stable turn block,
+    // never bound on per-render buttons: a payload-changing rebuild can
+    // destroy a per-button handler mid-click — the "expand / reject /
+    // open-diff sometimes does nothing" race. Guard
+    // both sides: the render fns must not bind, the delegate must route.
+    !moreRow.includes('addEventListener') &&
+    !row.includes('addEventListener') &&
+    !row.includes('openChangeReviewDiff') &&
+    !buttonFn.includes('addEventListener') &&
+    delegateFn.includes("closest('[data-incipit-change-review-more]')") &&
+    delegateFn.includes("closest('[data-incipit-change-review-reject-turn]')") &&
+    delegateFn.includes("closest('[data-incipit-change-review-reject-file]')") &&
+    delegateFn.includes('openChangeReviewDiff(file)') &&
+    delegateFn.includes("block.dataset.incipitChangeReviewExpanded = '1'") &&
+    delegateFn.includes('delete block.dataset.incipitChangeReviewExpanded') &&
+    blocks.includes('bindChangeReviewBlockDelegation(block)') &&
     theme.includes('[data-incipit-change-review-more]') &&
     warm.includes('[data-incipit-change-review-more]'),
-    'finalized review blocks must initially show at most three concrete files, then reveal the remaining count on demand');
+    'finalized review shows ≤3 files then reveals on demand; ALL interactions (show-more, reject turn/file, open diff) are delegated to the stable block — surviving the host-poll rebuild — not bound on per-render buttons');
+  // The block rebuild must be IDEMPOTENT: build off-DOM, then swap only on
+  // an actual diff. The block lives in the messages container watched by the
+  // typography MutationObserver; an unconditional textContent='' rebuild
+  // emits a childList mutation → noteTranscriptActionMutation → settle scan →
+  // reconcile → placeAssistantActionRow → scheduleChangeReviewTurnBlocksRender
+  // → back here, a ~360ms self-feeding loop that tore the hovered child down
+  // every cycle (the review-block hover flicker). The HTML compare short-
+  // circuits the no-op render, breaking the loop and preserving the hovered
+  // node. Regressing to an unconditional rebuild reopens the loop.
+  assert.ok(updateBlock.includes('if (next.innerHTML === block.innerHTML) return;') &&
+    updateBlock.includes('next.appendChild(header)') &&
+    !updateBlock.includes('block.appendChild(header)'),
+    'change-review block rebuild must be idempotent (build off-DOM + HTML-diff swap) so the no-op re-render emits no mutation — otherwise it self-feeds the action-row settle scan into a ~360ms hover-flicker loop');
   assert.ok(theme.includes('[data-incipit-change-review-subagent-badge]') &&
     theme.includes('[data-incipit-change-review-source="subagent"]') &&
     theme.includes('margin: 8px 0 16px') &&
@@ -402,9 +432,18 @@ function cssRuleBody(selector) {
     !placement.includes('host.appendChild(block)'),
     'transcript review blocks must wait for the incipit action row and sit after it');
   assert.ok(actionPlacement.includes('host.insertBefore(row, anchor.nextSibling)') &&
-    actionPlacement.includes('changeReviewTurns().length && !changeReviewBusySafe()') &&
+    actionPlacement.includes('let moved = false') &&
+    actionPlacement.includes('moved = true') &&
+    actionPlacement.includes('if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();') &&
     !actionPlacement.includes("hasAttribute('data-incipit-change-review-turn')"),
-    'assistant action row must stay directly after output, then trigger review block rendering after itself only when idle');
+    'assistant action row must stay directly after output, then trigger review block rendering only after a real row move while idle');
+  assert.ok(typography.includes("const TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR = [") &&
+    typography.includes("'[data-incipit-change-review-turn]'") &&
+    typography.includes('function mutationTouchesIgnoredTranscriptActionSurface(mutation)') &&
+    typography.includes('if (!isTranscriptActionIgnoredMutationNode(node)) return false;') &&
+    typography.includes('mutationTouchesIgnoredTranscriptActionSurface(m)') &&
+    typography.includes('if (mutationTouchesIgnoredTranscriptActionSurface(m)) continue;'),
+    'typography observer must ignore incipit-owned change-review mutations so review renders cannot feed the transcript action settle loop');
   assert.ok(sweep.includes('removeCurrentBusyAssistantTerminalDecorations();') &&
     reconcile.includes('recordBelongsToCurrentBusyTurn(existingRecord)') &&
     reconcile.includes('existingRow.remove();') &&
@@ -509,14 +548,35 @@ function cssRuleBody(selector) {
 })();
 
 (function officialComposerTextLayerIsHostOwned() {
-  const composerTextSelector = /\[data-incipit-input-container\][^{]*\[class\*="(?:messageInput|mentionMirror|voiceInterim)"\]/;
-  const composerChipSelector = '[data-incipit-input-container] [class*="inputMentionChip"]';
+  const composerTextSelector = /\[class\*="(?:messageInput|mentionMirror|voiceInterim)"\]/;
+  const composerChipSelector = 'fieldset[class*="inputContainer_"] [class*="inputMentionChip"]';
+  const inputRule = cssRuleBody('fieldset[class*="inputContainer_"]');
   const composerChip = cssRuleBody(composerChipSelector);
+  const mirrorSync = functionBody('syncComposerMirrorGeometry', 1200);
+  const mirrorObserver = functionBody('ensureComposerMirrorContentObserver', 900);
+  const mirrorSchedule = functionBody('scheduleComposerMirrorSync', 900);
+  const mirrorSetup = functionBody('setupComposerMirrorScrollSync', 1600);
   assert.ok(!legacy.includes('setupComposerInputState') &&
     !legacy.includes('composerEditorPlainText') &&
-    !legacy.includes('data-incipit-composer-empty') &&
-    !legacy.includes('[class*="mentionMirror"]'),
-    'legacy runtime must not track or mutate the official composer text/mirror layer');
+    !legacy.includes('data-incipit-composer-empty'),
+    'legacy runtime must not rebuild or reclassify the official composer text layer');
+  assert.ok(mirrorSync.includes('mirror.scrollTop = input.scrollTop') &&
+    mirrorSync.includes('mirror.scrollLeft = input.scrollLeft') &&
+    mirrorSync.includes("mirror.style.paddingRight = ''") &&
+    !legacy.includes('elementVerticalScrollbarGutter') &&
+    !legacy.includes('targetPaddingRight') &&
+    !mirrorSync.includes('textContent') &&
+    !mirrorSync.includes('innerHTML') &&
+    !mirrorSync.includes('getSelection'),
+    'composer mirror runtime may only clear stale incipit inline metrics and sync scroll; it must not rewrite text, selection, or add padding compensation');
+  assert.ok(mirrorObserver.includes('obs.observe(mirror, { childList: true, subtree: true, characterData: true });') &&
+    mirrorSetup.includes('composerMirrorSyncObserver.observe(document.body, { childList: true, subtree: true });') &&
+    !mirrorSetup.includes('attributes: true') &&
+    !mirrorSetup.includes('attributeFilter') &&
+    mirrorSchedule.includes('queueMicrotask') &&
+    mirrorSchedule.includes('requestAnimationFrame') &&
+    mirrorSchedule.includes('setTimeout'),
+    'composer mirror sync must observe characterData only on the non-editable mirror, while the body observer stays childList-only and post-React scroll sync runs in multiple phases');
   assert.ok(!hostProbe.includes('data-incipit-input-editor') &&
     !hostProbe.includes('inputEditor') &&
     !hostProbe.includes('messageInput') &&
@@ -529,6 +589,16 @@ function cssRuleBody(selector) {
     !theme.includes('--app-mention-chip-foreground') &&
     !composerTextSelector.test(theme),
     'theme.css must not style messageInput, mentionMirror, or voiceInterim');
+  assert.ok(!theme.includes('* {\n  scrollbar-width: auto !important;') &&
+    theme.includes('*:not([class*="inputContainer_"]):not([class*="inputContainer_"] *):not([contenteditable]):not([contenteditable] *)') &&
+    theme.includes('scrollbar-width: auto !important;'),
+    'global scrollbar styling must exclude the official composer/contenteditable subtree; when the composer becomes scrollable, forcing its scrollbar metrics desynchronizes text, mirror, and caret geometry');
+  assert.ok(!/border\s*:|box-sizing\s*:|width\s*:|max-width\s*:|min-width\s*:|min-inline-size\s*:|transition\s*:|box-shadow\s*:|background(?:-color)?\s*:/.test(inputRule),
+    'input container itself must not carry metric/layout/transition styling; long scrollable composer text uses that host box for caret and mirror geometry');
+  assert.ok(!theme.includes('fieldset[class*="inputContainer_"] {\n  position: relative !important;') &&
+    theme.includes('fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"],') &&
+    theme.includes('position: relative !important;'),
+    'plain typing state must not position the host input container; only the temporary drag hint needs a containing block');
   assert.ok(!warm.includes('data-incipit-composer-empty') &&
     !warm.includes('[class*="mentionMirror"]') &&
     !warm.includes('--app-mention-chip-background') &&
@@ -560,8 +630,8 @@ function cssRuleBody(selector) {
     composerChip.includes('box-shadow:') &&
     !/display\s*:|position\s*:|overflow\s*:|line-height\s*:|font-|caret-|visibility\s*:|opacity\s*:/m.test(composerChip),
     'composer mention chip rule may retint only, without taking over text or layout');
-  assert.ok(theme.includes('[data-incipit-input-container] [class*="inputMentionChip"]:hover') &&
-    theme.includes('[data-incipit-input-container] [class*="inputMentionChip"] *') &&
+  assert.ok(theme.includes('fieldset[class*="inputContainer_"] [class*="inputMentionChip"]:hover') &&
+    theme.includes('fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *') &&
     !shared.includes('--incipit-composer-mention-chip'),
     'composer mention chip color is static CSS only, not runtime app-var mutation');
   assert.ok(theme.includes('--incipit-message-mention-chip-background') &&

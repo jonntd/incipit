@@ -740,6 +740,36 @@ import {
     });
   }
 
+  function recordHasSignedThinking(record) {
+    if (!record || record.type !== 'assistant') return false;
+    const content = transcriptContent(record);
+    return Array.isArray(content) && content.some(block => {
+      block = unwrapTranscriptContentBlock(block);
+      return block && (block.type === 'thinking' || block.type === 'redacted_thinking');
+    });
+  }
+
+  // Mirror of host-badge.cjs `userEditHasDownstreamSignedThinking`, but
+  // read from the authoritative `messages.value` (not DOM — long
+  // conversations virtualize downstream rows out of the DOM, so a DOM
+  // sweep would falsely report "no thinking" and offer a Save that the
+  // API would then reject). Anthropic verifies prior signed thinking
+  // against its original turn; editing an upstream user in place while
+  // those blocks survive poisons the next resume, so local Save is not
+  // an option for such a user message — only Save and Rerun.
+  function userRecordHasDownstreamSignedThinking(record) {
+    if (!record || record.type !== 'user') return false;
+    const session = locateActiveSessionState();
+    const messages = session && session.messages && session.messages.value;
+    if (!Array.isArray(messages)) return false;
+    const idx = transcriptRecordIndex(messages, record);
+    if (idx < 0) return false;
+    for (let i = idx + 1; i < messages.length; i++) {
+      if (recordHasSignedThinking(messages[i])) return true;
+    }
+    return false;
+  }
+
   // Detect a compact-summary user record. The Claude Code CLI persists
   // these to JSONL with `isCompactSummary:true` + `isVisibleInTranscriptOnly:
   // true` flags, but the host's `UT()` wrapper drops everything except
@@ -759,23 +789,48 @@ import {
   const COMPACT_SUMMARY_PREFIX_RE =
     /^This session is being continued from a previous conversation that ran out of context\./;
 
-  function isCompactSummaryRecord(record) {
-    if (!record || record.type !== 'user') return false;
+  function firstTextOfRecord(record) {
     const content = transcriptContent(record);
-    let firstText = null;
-    if (typeof content === 'string') {
-      firstText = content;
-    } else if (Array.isArray(content)) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
       for (const item of content) {
         const block = unwrapTranscriptContentBlock(item);
         if (block && block.type === 'text' && typeof block.text === 'string') {
-          firstText = block.text;
-          break;
+          return block.text;
         }
       }
     }
+    return null;
+  }
+
+  function isCompactSummaryRecord(record) {
+    if (!record || record.type !== 'user') return false;
+    const firstText = firstTextOfRecord(record);
     if (typeof firstText !== 'string') return false;
     return COMPACT_SUMMARY_PREFIX_RE.test(firstText);
+  }
+
+  // Detect a slash-command / local-command user record. The CLI persists
+  // a `/<cmd> <args>`-style invocation (and its local stdout/stderr) as a
+  // user text block of the host's internal command protocol —
+  //   <command-name>/<cmd></command-name>
+  //   <command-message>cmd</command-message>
+  //   <command-args>args</command-args>
+  // — NOT as the plain text the user typed. These must never reach the
+  // inline editor: classifyUserRecordBlocks would surface the raw
+  // `<command-*>` XML as editable prose (the "internal-format leak" the
+  // user reported), and rerun would push that XML through session.send
+  // as ordinary prose — the host's headless slash parser then rejects it
+  // (see 2026-06-07 memo: dialog-entered slash commands are unavailable).
+  // incipit has no slash-command send path, so the only honest treatment
+  // is to drop edit/rerun and keep copy, exactly like compact summaries.
+  const COMMAND_RECORD_PREFIX_RE = /^\s*<\/?(?:local-)?command-[a-z]+\b/i;
+
+  function isSlashCommandRecord(record) {
+    if (!record || record.type !== 'user') return false;
+    const firstText = firstTextOfRecord(record);
+    if (typeof firstText !== 'string') return false;
+    return COMMAND_RECORD_PREFIX_RE.test(firstText);
   }
 
   function isTranscriptRecord(value) {
@@ -1196,10 +1251,15 @@ import {
   // rewrites, and no private recent-model storage in the command menu.
   // ============================================================
   const CUSTOM_MODEL_ACTION_ID = 'incipit-custom-model-id';
+  const CUSTOM_MODEL_ACTION_LABEL = 'Use custom model ID...';
   const CUSTOM_MODEL_REGISTER_TIMEOUT_MS = 10000;
   const customModelRegisteredRegistries = new WeakSet();
   let customModelRegisterStarted = false;
   let customModelRegisterTimer = 0;
+  let commandMenuSelectionCleanupObserver = null;
+  let commandMenuSelectionCleanupScheduled = false;
+  let customModelActionDecorationObserver = null;
+  let customModelActionDecorationScheduled = false;
   let customModelDialog = null;
 
   function commandRegistryFromAppContext(ctx) {
@@ -1381,6 +1441,132 @@ import {
     setTimeout(() => { try { input.focus(); } catch (_) {} }, 0);
   }
 
+  function customModelMenuText(node) {
+    return String(node && node.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function commandMenuListsFrom(root) {
+    const start = root && root.nodeType === 1 ? root : root && root.parentElement;
+    if (!start) return [];
+    const lists = [];
+    if (start.matches?.(SEL.commandList)) lists.push(start);
+    const closest = start.closest?.(SEL.commandList);
+    if (closest && !lists.includes(closest)) lists.push(closest);
+    start.querySelectorAll?.(SEL.commandList).forEach(list => {
+      if (!lists.includes(list)) lists.push(list);
+    });
+    return lists;
+  }
+
+  function clearCommandMenuItemSelection(item) {
+    if (!item || item.nodeType !== 1) return;
+    if (item.getAttribute('aria-selected') === 'true') item.removeAttribute('aria-selected');
+    item.removeAttribute(ATTR.commandItemActive);
+    if (!item.classList) return;
+    for (const cls of Array.from(item.classList)) {
+      if (cls === 'active' || cls.indexOf('activeCommandItem') !== -1) {
+        item.classList.remove(cls);
+      }
+    }
+  }
+
+  // Slash-command menu rows are transient actions/submenus, not durable
+  // settings. If the host remounts them with a clicked row still marked
+  // active/selected, clear only that command-list state; permission/dropdown
+  // menus keep their real selection state outside SEL.commandList.
+  function clearCommandMenuTransientSelection(root = document.body) {
+    for (const list of commandMenuListsFrom(root)) {
+      list.removeAttribute('aria-activedescendant');
+      list.querySelectorAll(SEL.commandItem + ', [class*="commandItem"], [aria-selected="true"], [' + ATTR.commandItemActive + ']').forEach(node => {
+        const item = node.closest?.(SEL.commandItem) || node.closest?.('[class*="commandItem"]') || node;
+        if (item && list.contains(item)) clearCommandMenuItemSelection(item);
+      });
+    }
+  }
+
+  function scheduleCommandMenuTransientSelectionCleanup(root = document.body) {
+    if (commandMenuSelectionCleanupScheduled) return;
+    commandMenuSelectionCleanupScheduled = true;
+    requestAnimationFrame(() => {
+      commandMenuSelectionCleanupScheduled = false;
+      clearCommandMenuTransientSelection(document.body || root);
+    });
+  }
+
+  function setupCommandMenuTransientSelectionCleanup() {
+    if (!document.body || commandMenuSelectionCleanupObserver) return;
+    scheduleCommandMenuTransientSelectionCleanup(document.body);
+    commandMenuSelectionCleanupObserver = new MutationObserver(muts => {
+      for (const m of muts) {
+        if (m.type !== 'childList' || !m.addedNodes.length) continue;
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (node.matches?.(SEL.commandList) || node.matches?.(SEL.commandItem) ||
+              node.querySelector?.(SEL.commandList) || node.querySelector?.(SEL.commandItem)) {
+            scheduleCommandMenuTransientSelectionCleanup(node);
+            return;
+          }
+        }
+      }
+    });
+    commandMenuSelectionCleanupObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function customModelActionElementFrom(node) {
+    let el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || !el.querySelectorAll) return null;
+    if (customModelMenuText(el) !== CUSTOM_MODEL_ACTION_LABEL) return null;
+    for (const child of el.children || []) {
+      if (customModelMenuText(child) === CUSTOM_MODEL_ACTION_LABEL) return null;
+    }
+    const interactive = el.closest('button, [role="menuitem"], [tabindex]');
+    const row = interactive || el.closest('[class*="item"], [class*="action"], [class*="row"]') || el;
+    if (!row || row === document.body || row === document.documentElement) return null;
+    return row;
+  }
+
+  function markCustomModelActionDecorations(root = document.body) {
+    if (!root || !document.body) return;
+    const start = root.nodeType === 1 ? root : root.parentElement;
+    if (!start) return;
+    if (customModelMenuText(start).indexOf(CUSTOM_MODEL_ACTION_LABEL) === -1) return;
+    const candidates = [start];
+    if (start.querySelectorAll) {
+      start.querySelectorAll('button, [role="menuitem"], [tabindex], [class*="item"], [class*="action"], [class*="row"], span, div')
+        .forEach(el => candidates.push(el));
+    }
+    for (const candidate of candidates) {
+      const action = customModelActionElementFrom(candidate);
+      if (action) action.setAttribute('data-incipit-custom-model-action', '');
+    }
+  }
+
+  function scheduleCustomModelActionDecoration(root = document.body) {
+    if (customModelActionDecorationScheduled) return;
+    customModelActionDecorationScheduled = true;
+    requestAnimationFrame(() => {
+      customModelActionDecorationScheduled = false;
+      markCustomModelActionDecorations(root);
+    });
+  }
+
+  function setupCustomModelActionDecoration() {
+    if (!document.body || customModelActionDecorationObserver) return;
+    scheduleCustomModelActionDecoration(document.body);
+    customModelActionDecorationObserver = new MutationObserver(muts => {
+      for (const m of muts) {
+        if (m.type !== 'childList' || !m.addedNodes.length) continue;
+        for (const node of m.addedNodes) {
+          if (String(node && node.textContent || '').indexOf(CUSTOM_MODEL_ACTION_LABEL) !== -1) {
+            scheduleCustomModelActionDecoration(node);
+            return;
+          }
+        }
+      }
+    });
+    customModelActionDecorationObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
   function tryRegisterCustomModelAction() {
     const registry = locateCommandRegistry();
     if (!registry) return false;
@@ -1392,6 +1578,7 @@ import {
         description: 'Set a model by full ID',
       }, 'Model', () => openCustomModelDialog());
       customModelRegisteredRegistries.add(registry);
+      setupCustomModelActionDecoration();
       reportHealth('legacy.custom_model', 'ok');
       return true;
     } catch (error) {
@@ -1966,7 +2153,7 @@ import {
     'fieldset[class*="inputContainer_"], [class*="inputContainer_"]:has(> [class*="inputContainerBackground"])';
 
   function composerRootSelector() {
-    return SEL.inputContainer + ', ' + COMPOSER_INPUT_CONTAINER_SELECTOR;
+    return COMPOSER_INPUT_CONTAINER_SELECTOR;
   }
 
   function elementClassText(node) {
@@ -2025,15 +2212,131 @@ import {
   }
 
   function currentComposerElement() {
-    const marked = document.querySelectorAll(SEL.inputContainer);
-    for (const candidate of marked) {
-      if (isComposerRootElement(candidate)) return candidate;
-    }
     const candidates = document.querySelectorAll('[class*="inputContainer_"]');
     for (const candidate of candidates) {
       if (isComposerRootElement(candidate)) return candidate;
     }
     return null;
+  }
+
+  let composerMirrorSyncObserver = null;
+  const composerMirrorContentObservers = new WeakMap();
+  let composerMirrorSyncScheduled = false;
+
+  function isComposerMessageInput(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const classes = elementClassText(node);
+    return classes.includes('messageInput') &&
+      node.getAttribute('contenteditable') &&
+      node.closest('[class*="messageInputContainer"]');
+  }
+
+  function composerMessageInputFrom(node) {
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el) return null;
+    if (isComposerMessageInput(el)) return el;
+    const input = el.closest?.('[class*="messageInput"][contenteditable]');
+    return isComposerMessageInput(input) ? input : null;
+  }
+
+  function composerMirrorForInput(input) {
+    const parent = input && input.parentElement;
+    if (!parent || !elementClassText(parent).includes('messageInputContainer')) return null;
+    const mirror = parent.querySelector('[class*="mentionMirror"]');
+    return mirror && mirror.nodeType === 1 ? mirror : null;
+  }
+
+  function syncComposerMirrorGeometry(input) {
+    if (!isComposerMessageInput(input)) return;
+    const mirror = composerMirrorForInput(input);
+    if (!mirror) return;
+
+    ensureComposerMirrorContentObserver(input, mirror);
+
+    // Host CSS already gives both layers the same padding and
+    // `scrollbar-gutter: stable`. A previous incipit attempt added inline
+    // paddingRight to the mirror, which made the visible layer wrap one line
+    // earlier than the real editor right when the composer became scrollable.
+    // Clear our stale inline metric and let the host own layer geometry.
+    if (mirror.style && mirror.style.paddingRight) mirror.style.paddingRight = '';
+
+    mirror.scrollTop = input.scrollTop;
+    mirror.scrollLeft = input.scrollLeft;
+  }
+
+  function ensureComposerMirrorContentObserver(input, mirror) {
+    if (!mirror || composerMirrorContentObservers.has(mirror)) return;
+    const obs = new MutationObserver(() => scheduleComposerMirrorSync(input));
+    // Narrow observer only: the old body-level characterData observer broke
+    // Chromium contenteditable/IME painting. mentionMirror is not editable
+    // and is the visible copy whose React text updates can land after input.
+    obs.observe(mirror, { childList: true, subtree: true, characterData: true });
+    composerMirrorContentObservers.set(mirror, obs);
+  }
+
+  function syncAllComposerMirrors(root = document) {
+    const inputs = [];
+    const start = root && root.nodeType === 1 ? root : root && root.parentElement;
+    if (start && isComposerMessageInput(start)) inputs.push(start);
+    const scope = start && start.querySelectorAll ? start : document;
+    scope.querySelectorAll?.('[class*="messageInput"][contenteditable]').forEach(input => {
+      if (isComposerMessageInput(input) && !inputs.includes(input)) inputs.push(input);
+    });
+    inputs.forEach(syncComposerMirrorGeometry);
+  }
+
+  function scheduleComposerMirrorSync(root = document) {
+    syncAllComposerMirrors(root);
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(() => syncAllComposerMirrors(root));
+    } else {
+      Promise.resolve().then(() => syncAllComposerMirrors(root)).catch(() => {});
+    }
+    if (composerMirrorSyncScheduled) return;
+    composerMirrorSyncScheduled = true;
+    requestAnimationFrame(() => {
+      syncAllComposerMirrors(root);
+      setTimeout(() => {
+        composerMirrorSyncScheduled = false;
+        syncAllComposerMirrors(root);
+      }, 0);
+    });
+  }
+
+  function setupComposerMirrorScrollSync() {
+    if (!document.body || composerMirrorSyncObserver) return;
+    const onComposerInputEvent = evt => {
+      const input = composerMessageInputFrom(evt && evt.target);
+      if (input) scheduleComposerMirrorSync(input);
+    };
+    ['input', 'keyup', 'mouseup', 'click', 'paste', 'cut', 'compositionend', 'scroll'].forEach(type => {
+      document.addEventListener(type, onComposerInputEvent, true);
+    });
+    document.addEventListener('selectionchange', () => {
+      const active = document.activeElement;
+      if (isComposerMessageInput(active)) scheduleComposerMirrorSync(active);
+    });
+    composerMirrorSyncObserver = new MutationObserver(muts => {
+      for (const m of muts) {
+        if (m.type === 'attributes') {
+          const input = composerMessageInputFrom(m.target);
+          if (input) {
+            scheduleComposerMirrorSync(input);
+            return;
+          }
+          continue;
+        }
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (isComposerMessageInput(node) || node.querySelector?.('[class*="messageInput"][contenteditable]')) {
+            scheduleComposerMirrorSync(node);
+            return;
+          }
+        }
+      }
+    });
+    composerMirrorSyncObserver.observe(document.body, { childList: true, subtree: true });
+    scheduleComposerMirrorSync(document.body);
   }
 
   function fileDragHintText() {
@@ -2163,6 +2466,7 @@ import {
     filesChanged: '{n} files changed',
     oneFileChanged: '1 file changed',
     showMoreFiles: 'Show {n} more files',
+    showMoreFile: 'Show 1 more file',
     showFewerFiles: 'Show fewer files',
     noFiles: 'No file changes',
     stale: 'Stale',
@@ -2811,6 +3115,44 @@ import {
       .filter(file => file);
   }
 
+  function changeReviewFilePath(file) {
+    if (!file) return '';
+    return file.displayPath || file.filePath || '';
+  }
+
+  // Capture rejected file paths BEFORE posting the reject — the response payload
+  // already has them removed, so the notes reject-reminder bubble could not read
+  // them after the fact.
+  function changeReviewTurnFilePaths(turnKey) {
+    const turn = changeReviewTurns().find(t => t && t.turnKey === turnKey);
+    if (!turn) return [];
+    return changeReviewTurnFiles(turn).map(changeReviewFilePath).filter(Boolean);
+  }
+
+  function changeReviewFilePathsByIds(fileIds) {
+    const want = new Set(fileIds);
+    const out = [];
+    for (const turn of changeReviewTurns()) {
+      for (const file of changeReviewTurnFiles(turn)) {
+        if (file && want.has(file.id)) {
+          const p = changeReviewFilePath(file);
+          if (p) out.push(p);
+        }
+      }
+    }
+    return out;
+  }
+
+  // Bridge change-review reject -> the footer notes icon (separate module) via a
+  // window event, so the two stay decoupled. Only fired on a successful reject.
+  function dispatchChangeReviewRejected(paths) {
+    const clean = (Array.isArray(paths) ? paths : []).filter(p => typeof p === 'string' && p);
+    if (!clean.length) return;
+    try {
+      window.dispatchEvent(new CustomEvent('incipit:change-review-rejected', { detail: { paths: clean } }));
+    } catch (_) {}
+  }
+
   function changeReviewTurnSummary(turn) {
     const summary = turn && turn.summary && typeof turn.summary === 'object'
       ? turn.summary
@@ -2887,17 +3229,15 @@ import {
     parent.appendChild(del);
   }
 
-  function changeReviewButton(label, attr, onClick) {
+  function changeReviewButton(label, attr) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.setAttribute(attr, '');
     btn.textContent = label;
-    btn.addEventListener('click', evt => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      if (btn.disabled || btn.dataset.incipitDisabled === '1') return;
-      onClick(btn, evt);
-    });
+    // No click handler here: reject actions are delegated to the stable
+    // turn block (bindChangeReviewBlockDelegation). A handler bound on this
+    // per-render button can be destroyed by a legitimate payload-changing
+    // rebuild between mousedown and mouseup, dropping clicks.
     return btn;
   }
 
@@ -2920,17 +3260,9 @@ import {
     name.type = 'button';
     name.setAttribute('data-incipit-change-review-file-name', '');
     name.textContent = file.displayPath || file.filePath || 'file';
-    const open = evt => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      openChangeReviewDiff(file);
-    };
-    name.addEventListener('click', open);
-    row.addEventListener('click', evt => {
-      if (evt.target && evt.target.closest &&
-          evt.target.closest('[data-incipit-change-review-reject-file]')) return;
-      open(evt);
-    });
+    // Open-diff click is delegated to the stable turn block
+    // (bindChangeReviewBlockDelegation), keyed by the row's fileId dataset,
+    // so it survives the host-poll rebuild that destroys this row.
     row.appendChild(name);
 
     const counts = document.createElement('span');
@@ -2947,9 +3279,7 @@ import {
       row.appendChild(status);
     }
 
-    const reject = changeReviewButton(changeReviewText('rejectFile'), 'data-incipit-change-review-reject-file', btn => {
-      rejectChangeReviewFile(file.id, btn);
-    });
+    const reject = changeReviewButton(changeReviewText('rejectFile'), 'data-incipit-change-review-reject-file');
     reject.disabled = !!options.busy || file.status === 'rejected' || file.status === 'stale' || file.status === 'unavailable';
     if (reject.disabled) reject.dataset.incipitDisabled = '1';
     row.appendChild(reject);
@@ -2995,16 +3325,87 @@ import {
     row.setAttribute('data-incipit-change-review-more', '');
     row.textContent = expanded
       ? changeReviewText('showFewerFiles')
-      : changeReviewText('showMoreFiles', { n: hiddenCount });
-    row.addEventListener('click', evt => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      if (!block) return;
-      if (expanded) delete block.dataset.incipitChangeReviewExpanded;
-      else block.dataset.incipitChangeReviewExpanded = '1';
-      updateChangeReviewTurnBlock(block, turn);
-    });
+      : changeReviewText(hiddenCount === 1 ? 'showMoreFile' : 'showMoreFiles', { n: hiddenCount });
+    // No per-row click handler: the toggle is delegated to the stable
+    // turn block (bindChangeReviewBlockDelegation). Per-render handlers
+    // are lost if a payload-changing rebuild lands mid-interaction.
     return row;
+  }
+
+  // ALL change-review block interactions are delegated to the stable turn
+  // block, bound ONCE on creation. The block element is reused across
+  // renders by turnKey, so this listener survives every child rebuild — and
+  // because the browser dispatches click to the common ancestor of
+  // mousedown/mouseup, even an inner button legitimately rebuilt between
+  // press and release still resolves here. Binding handlers on the
+  // per-render buttons instead dropped clicks that landed during a
+  // payload-changing host update ("expand/reject/open-diff sometimes does
+  // nothing"). All four affordances (show-more, reject turn, reject file,
+  // open diff) route through here; the dataset/attr on the clicked node is
+  // the key.
+  function bindChangeReviewBlockDelegation(block) {
+    const liveTurn = () => {
+      const turnKey = block.getAttribute('data-incipit-change-review-turn') || '';
+      return changeReviewTurns().find(t => t && t.turnKey === turnKey) || null;
+    };
+    block.addEventListener('click', evt => {
+      const t = evt.target;
+      if (!t || !t.closest) return;
+      const within = el => !!el && block.contains(el);
+
+      // Show-more / show-less toggle.
+      const more = t.closest('[data-incipit-change-review-more]');
+      if (within(more)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const turn = liveTurn();
+        if (!turn) return;
+        if (block.dataset.incipitChangeReviewExpanded === '1') {
+          delete block.dataset.incipitChangeReviewExpanded;
+        } else {
+          block.dataset.incipitChangeReviewExpanded = '1';
+        }
+        updateChangeReviewTurnBlock(block, turn);
+        return;
+      }
+
+      // Reject the whole turn.
+      const rejectTurn = t.closest('[data-incipit-change-review-reject-turn]');
+      if (within(rejectTurn)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (rejectTurn.disabled || rejectTurn.dataset.incipitDisabled === '1') return;
+        const turn = liveTurn();
+        if (turn) rejectChangeReviewTurn(turn.turnKey, rejectTurn);
+        return;
+      }
+
+      // Reject a single file.
+      const rejectFile = t.closest('[data-incipit-change-review-reject-file]');
+      if (within(rejectFile)) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (rejectFile.disabled || rejectFile.dataset.incipitDisabled === '1') return;
+        const fileRow = rejectFile.closest('[data-incipit-change-review-file]');
+        const fileId = fileRow && fileRow.dataset.incipitChangeReviewFileId;
+        if (fileId) rejectChangeReviewFile(fileId, rejectFile);
+        return;
+      }
+
+      // Open the diff for a concrete file row. Summary rows carry the same
+      // attr but no fileId, so they fall through (no fake diff).
+      const fileRow = t.closest('[data-incipit-change-review-file]');
+      if (within(fileRow)) {
+        const fileId = fileRow.dataset.incipitChangeReviewFileId;
+        if (!fileId) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        const turn = liveTurn();
+        const files = turn && Array.isArray(turn.files) ? turn.files : [];
+        const file = files.find(f => f && f.id === fileId);
+        if (file) openChangeReviewDiff(file);
+      }
+    });
   }
 
   function changeReviewStatusLabel(status) {
@@ -3215,6 +3616,7 @@ import {
       if (!block) {
         block = document.createElement('div');
         block.setAttribute('data-incipit-change-review-turn', turn.turnKey);
+        bindChangeReviewBlockDelegation(block);
       }
       if (!placeChangeReviewTurnBlock(host, block)) continue;
       updateChangeReviewTurnBlock(block, turn);
@@ -3224,7 +3626,21 @@ import {
   function updateChangeReviewTurnBlock(block, turn) {
     const busy = changeReviewBusySafe();
     const expanded = block.dataset.incipitChangeReviewExpanded === '1';
-    block.textContent = '';
+    // Build the new subtree OFF-DOM, then swap it into the live block only
+    // when it actually differs from what's already rendered. The block
+    // lives inside the messages container watched by the typography
+    // MutationObserver; an unconditional `block.textContent=''` rebuild
+    // emits a childList mutation that wakes noteTranscriptActionMutation →
+    // settle scan → reconcileAssistantTranscriptActions → placeAssistant-
+    // ActionRow → scheduleChangeReviewTurnBlocksRender → back here, a
+    // self-sustaining ~360 ms loop (TRANSCRIPT_ACTION_QUIET_MS) that tore
+    // the hovered child down and rebuilt it every cycle — the frantic
+    // hover/non-hover flicker the user saw on the review block. Comparing
+    // the freshly built HTML to the live one short-circuits the no-op
+    // re-render, which breaks that loop and preserves the hovered/focused
+    // node. The rendered HTML is its own signature, so it can never drift
+    // out of sync with the render logic the way a hand-kept field list would.
+    const next = document.createElement('div');
     const header = document.createElement('div');
     header.setAttribute('data-incipit-change-review-turn-header', '');
     const title = document.createElement('div');
@@ -3238,13 +3654,11 @@ import {
       appendChangeReviewLineStats(title, totals.added, totals.removed);
     }
     header.appendChild(title);
-    const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn', btn => {
-      rejectChangeReviewTurn(turn.turnKey, btn);
-    });
+    const reject = changeReviewButton(changeReviewText('rejectTurn'), 'data-incipit-change-review-reject-turn');
     reject.disabled = busy || changeReviewRejectableFiles(turn).length <= 0;
     if (reject.disabled) reject.dataset.incipitDisabled = '1';
     header.appendChild(reject);
-    block.appendChild(header);
+    next.appendChild(header);
 
     const files = changeReviewTurnFiles(turn);
     const summary = changeReviewTurnSummary(turn);
@@ -3260,8 +3674,14 @@ import {
         list.appendChild(renderChangeReviewMoreRow(block, turn, hiddenCount, expanded));
       }
       if (summary) list.appendChild(renderChangeReviewSummaryRow(summary));
-      block.appendChild(list);
+      next.appendChild(list);
     }
+
+    // Idempotent swap: identical render ⇒ leave the live DOM untouched (no
+    // mutation, no observer wake, hovered node survives). See block comment.
+    if (next.innerHTML === block.innerHTML) return;
+    block.textContent = '';
+    while (next.firstChild) block.appendChild(next.firstChild);
   }
 
   function setupChangeReviewChannel() {
@@ -3363,7 +3783,9 @@ import {
   function rejectChangeReviewTurn(turnKey, button) {
     if (!turnKey || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
+    const paths = changeReviewTurnFilePaths(turnKey);
     postChangeReviewRequest('change_review_reject_request', { turnKey })
+      .then(() => { dispatchChangeReviewRejected(paths); })
       .catch(error => {
         warn('change review reject failed:', error && error.message ? error.message : error);
       })
@@ -3376,7 +3798,9 @@ import {
   function rejectChangeReviewFile(fileId, button) {
     if (!fileId || changeReviewBusySafe()) return;
     if (button) button.dataset.incipitInflight = '1';
+    const paths = changeReviewFilePathsByIds([fileId]);
     postChangeReviewRequest('change_review_reject_request', { fileId })
+      .then(() => { dispatchChangeReviewRejected(paths); })
       .catch(error => {
         warn('change review reject failed:', error && error.message ? error.message : error);
       })
@@ -5525,14 +5949,26 @@ import {
     const saveRerunBtn = kind === 'user'
       ? makeTranscriptActionButton(
         'rerun',
-        'Save and rerun this turn',
+        'Save and rerun (Ctrl+Enter)',
         RERUN_ICON_SVG,
         () => saveAndRerunInlineEditor(record.uuid, saveRerunBtn),
       )
       : null;
 
-    editActions.append(cancelBtn, saveBtn);
-    if (saveRerunBtn) editActions.appendChild(saveRerunBtn);
+    // When downstream assistant messages contain signed thinking blocks,
+    // local-only Save is impossible (API rejects a modified upstream that
+    // still carries stale thinking signatures — host-badge rejects it
+    // too). Hide Save, keep only Cancel + Rerun so the user can't hit
+    // that dead end. Read from messages.value, not DOM (virtualization).
+    const hasDownstreamThinking =
+      kind === 'user' && userRecordHasDownstreamSignedThinking(record);
+
+    if (hasDownstreamThinking) {
+      editActions.append(cancelBtn, saveRerunBtn);
+    } else {
+      editActions.append(cancelBtn, saveBtn);
+      if (saveRerunBtn) editActions.appendChild(saveRerunBtn);
+    }
 
     // DOM injection.
     // Shell — always adjacent to the content node it replaces.
@@ -5596,7 +6032,11 @@ import {
       } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
-        saveInlineEditor(record.uuid);
+        if (hasDownstreamThinking) {
+          saveAndRerunInlineEditor(record.uuid, saveRerunBtn);
+        } else {
+          saveInlineEditor(record.uuid);
+        }
       }
     });
     inlineEditByUuid.set(record.uuid, {
@@ -5802,7 +6242,8 @@ import {
       record.type === 'user' &&
       !record.isSynthetic &&
       !transcriptHasToolResult(record) &&
-      !isCompactSummaryRecord(record)
+      !isCompactSummaryRecord(record) &&
+      !isSlashCommandRecord(record)
     );
     const identity = isRealUser ? transcriptRecordIdentity(record) : null;
     // Closures below capture `record` once at decoration time; saving
@@ -6161,17 +6602,24 @@ import {
 
   function placeAssistantActionRow(host, markdownRoot, row) {
     if (!host || !markdownRoot || !row) return;
+    let moved = false;
     let anchor = markdownRoot;
     while (anchor.parentElement && anchor.parentElement !== host) {
       anchor = anchor.parentElement;
     }
     if (anchor.parentElement === host) {
-      if (anchor.nextSibling !== row) host.insertBefore(row, anchor.nextSibling);
-      if (changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+      if (anchor.nextSibling !== row) {
+        host.insertBefore(row, anchor.nextSibling);
+        moved = true;
+      }
+      if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
       return;
     }
-    host.appendChild(row);
-    if (changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+    if (row.parentElement !== host || row.nextSibling) {
+      host.appendChild(row);
+      moved = true;
+    }
+    if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
   }
 
   // Returns true when the record is the trailing assistant of the
@@ -10723,11 +11171,13 @@ import {
       setupToolFold,
       setupDiffSideBars,
       setupBusyStateObserver,
+      setupComposerMirrorScrollSync,
       setupFileDragReferenceHint,
       setupUserBubbleNativeActionSuppression,
       setupDeferredNextMessageQueue,
       setupChangeReviewFileReview,
       setupAskRequestRefinement,
+      setupCommandMenuTransientSelectionCleanup,
       setupCustomModelPicker,
       setupTranscriptActionDebugTools,
       assertForkRewindReady,
@@ -10740,6 +11190,8 @@ import {
     initLegacyUserBubble(legacyContext);
     initLegacyDeferredNext(legacyContext);
     setupChangeReviewFileReview();
+    setupComposerMirrorScrollSync();
+    setupCommandMenuTransientSelectionCleanup();
     setupCustomModelPicker();
     initLegacyAskRefinement(legacyContext);
     initLegacyTranscriptActionDebug(legacyContext);

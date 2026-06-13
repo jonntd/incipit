@@ -12,8 +12,6 @@ export const ATTR = Object.freeze({
   effortLabel: 'data-incipit-effort-label',
   effortLevelInline: 'data-incipit-effort-level-inline',
   footerButtonLabel: 'data-incipit-footer-button-label',
-  inputContainer: 'data-incipit-input-container',
-  inputContainerBg: 'data-incipit-input-container-bg',
   inputFooter: 'data-incipit-input-footer',
   inputFooterHost: 'data-incipit-input-footer-host',
   interruptedMessage: 'data-incipit-interrupted-message',
@@ -71,7 +69,6 @@ const STATIC_PROBES = Object.freeze([
   ['[class*="dropdown_"]', ATTR.dropdown],
   ['[class*="filePath"]', ATTR.toolPath],
   ['[class*="footerButton"] span', ATTR.footerButtonLabel],
-  ['[class*="inputContainerBackground"]', ATTR.inputContainerBg],
   ['[class*="inputFooter"]', ATTR.inputFooter],
   ['[class*="menuItem_"]', ATTR.menuItem],
   ['[class*="menuItemLabel"]', ATTR.menuItemLabel],
@@ -105,7 +102,6 @@ const CSS_ALWAYS_WARMUP_MS = 5000;
 const CSS_CAPABILITIES = Object.freeze([
   { attr: ATTR.markdownRoot, name: 'runtime.cssClass.markdownRoot', presence: 'always', selectors: ['[class*="root_"]'], featureOwner: 'markdown' },
   { attr: ATTR.messagesContainer, name: 'runtime.cssClass.messagesContainer', presence: 'always', selectors: ['[class*="messagesContainer_"]'], featureOwner: 'messages' },
-  { attr: ATTR.inputContainer, name: 'runtime.cssClass.inputContainer', presence: 'always', selectors: ['fieldset[class*="inputContainer_"]', '[class*="inputContainer_"]:has(> [class*="inputContainerBackground"])'], featureOwner: 'composer' },
   { attr: ATTR.inputFooter, name: 'runtime.cssClass.inputFooter', presence: 'always', selectors: ['[class*="inputFooter"]'], featureOwner: 'composer' },
   { attr: ATTR.sendButton, name: 'runtime.cssClass.sendButton', presence: 'always', selectors: ['[class*="sendButton"]'], featureOwner: 'composer' },
 
@@ -403,7 +399,6 @@ export function tagHostTree(root) {
   // period typed after CJK text gets stranded in an unselectable region).
   if (root.nodeType === 1 && root.isContentEditable) return;
   tagStaticSelectors(root);
-  syncInputContainers(root);
   syncFooterHosts(root);
   syncUserMessageNodes(root);
   syncSendButtons(root);
@@ -489,30 +484,6 @@ function elementClassText(node) {
   return typeof node.className === 'string'
     ? node.className
     : String(node.getAttribute?.('class') || '');
-}
-
-function hasDirectInputContainerBackground(node) {
-  if (!node || node.nodeType !== 1 || !node.children) return false;
-  for (const child of node.children) {
-    if (elementClassText(child).includes('inputContainerBackground')) return true;
-  }
-  return false;
-}
-
-function isInputContainerCandidate(node) {
-  if (!node || node.nodeType !== 1 || node.isContentEditable) return false;
-  const classes = elementClassText(node);
-  if (!classes.includes('inputContainer_')) return false;
-  if (classes.includes('inputContainerBackground')) return false;
-  const tag = String(node.tagName || '').toLowerCase();
-  return tag === 'fieldset' || hasDirectInputContainerBackground(node);
-}
-
-function syncInputContainers(root) {
-  forEachHost(root, `[${ATTR.inputContainer}], [class*="inputContainer_"]`, element => {
-    if (isInputContainerCandidate(element)) ensureAttr(element, ATTR.inputContainer);
-    else if (element.hasAttribute(ATTR.inputContainer)) element.removeAttribute(ATTR.inputContainer);
-  });
 }
 
 function syncFooterHosts(root) {

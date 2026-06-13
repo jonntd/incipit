@@ -508,55 +508,51 @@
 }
 
 /* ---------- Input container (pure white card on cream paper) ---------- */
-[data-incipit-input-container],
-[data-incipit-input-container]:focus-within,
-[data-incipit-input-container][data-permission-mode="acceptEdits"],
-[data-incipit-input-container][data-permission-mode="acceptEdits"]:focus-within,
-[data-incipit-input-container][data-permission-mode="plan"],
-[data-incipit-input-container][data-permission-mode="plan"]:focus-within,
-[data-incipit-input-container][data-permission-mode="bypassPermissions"],
-[data-incipit-input-container][data-permission-mode="bypassPermissions"]:focus-within,
-[data-incipit-input-container][data-permission-mode="auto"],
-[data-incipit-input-container][data-permission-mode="auto"]:focus-within {
-  background: #ffffff !important;
-  background-color: #ffffff !important;
-  /* Hairline edge on the white card so the silhouette doesn't dissolve
-     into the cream bg. Single value across all permission modes; no
-     focus-state lift — the cursor and mode buttons already carry the
-     focus affordance. */
-  border: 1px solid rgba(60,55,40,0.13) !important;
-  /* Extremely faint two-layer ambient shadow so the white card lifts
-     off the cream paper. Light-palette only; the dark theme's input
-     sits inside its own deeper-toned chrome and doesn't need it. */
-  box-shadow: 0 2px 10px rgba(60,55,40,0.05),
-              0 1px 3px rgba(60,55,40,0.04) !important;
+fieldset[class*="inputContainer_"],
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]),
+fieldset[class*="inputContainer_"]:focus-within,
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within {
+  --focus-ring-color: transparent !important;
 }
-[data-incipit-input-container-bg] {
+[class*="inputContainerBackground"] {
   background: #ffffff !important;
   background-color: #ffffff !important;
+  border-radius: 10px !important;
+  /* Non-metric edge: an inset line on the host background layer keeps the
+     white card readable without changing the composer editor's client box. */
+  box-shadow: 0 2px 10px rgba(60,55,40,0.05),
+              0 1px 3px rgba(60,55,40,0.04),
+              inset 0 0 0 1px rgba(60,55,40,0.13) !important;
 }
 
-[data-incipit-input-container][data-incipit-file-drag-hint="over"],
-[data-incipit-input-container][data-incipit-file-drag-hint="over"]:focus-within {
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"],
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]),
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:focus-within,
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]):focus-within {
+  --focus-ring-color: transparent !important;
+}
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"] [class*="inputContainerBackground"],
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]) [class*="inputContainerBackground"] {
   background: #fffdf8 !important;
   background-color: #fffdf8 !important;
-  border-color: rgba(191,93,58,0.42) !important;
   box-shadow: 0 6px 22px rgba(60,55,40,0.08),
               0 1px 4px rgba(60,55,40,0.06),
               inset 0 0 0 1px rgba(191,93,58,0.42) !important;
 }
-[data-incipit-input-container][data-incipit-file-drag-hint="over"] [data-incipit-input-container-bg] {
-  background: #fffdf8 !important;
-  background-color: #fffdf8 !important;
-}
-[data-incipit-input-container][data-incipit-file-drag-hint="over"]::after {
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"])::after {
   background: #ffffff;
   color: #797569;
   border-color: rgba(191,93,58,0.42);
   box-shadow: 0 4px 14px rgba(60,55,40,0.12);
 }
 
-[data-incipit-change-review-turn],
+[data-incipit-change-review-turn] {
+  background: rgba(13,13,13,0.018) !important;
+  border-color: rgba(13,13,13,0.10) !important;
+  color: rgba(13,13,13,0.84) !important;
+  box-shadow: none !important;
+}
 [data-incipit-deferred-next] {
   background: #efeee9 !important;
   color: rgba(13,13,13,0.84) !important;
@@ -574,13 +570,14 @@
 [data-incipit-change-review-reject-file] {
   color: rgba(13,13,13,0.58) !important;
 }
-[data-incipit-change-review-reject-turn]:hover,
-[data-incipit-change-review-reject-file]:hover,
 [data-incipit-change-review-file-name]:hover,
 [data-incipit-change-review-file][data-incipit-change-review-clickable="1"]:hover
   [data-incipit-change-review-file-name] {
-  background: rgba(13,13,13,0.06) !important;
   color: rgba(13,13,13,0.88) !important;
+}
+[data-incipit-change-review-reject-turn]:hover,
+[data-incipit-change-review-reject-file]:hover {
+  color: #b4543a !important;
 }
 [data-incipit-change-review-reject-turn],
 [data-incipit-change-review-reject-file] {
@@ -594,12 +591,11 @@
   border-top: 1px solid rgba(13,13,13,0.07) !important;
 }
 [data-incipit-change-review-more] {
-  border-color: rgba(13,13,13,0.08) !important;
-  background: rgba(13,13,13,0.025) !important;
-  color: rgba(13,13,13,0.58) !important;
+  background: transparent !important;
+  color: rgba(13,13,13,0.5) !important;
 }
 [data-incipit-change-review-more]:hover {
-  background: rgba(13,13,13,0.055) !important;
+  background: transparent !important;
   color: rgba(13,13,13,0.86) !important;
 }
 [data-incipit-change-review-counts],
@@ -621,6 +617,13 @@
 }
 [data-incipit-change-review-modal-message] {
   color: rgba(13,13,13,0.74) !important;
+}
+[data-incipit-custom-model-action]::after {
+  color: rgba(180,84,58,0.56) !important;
+}
+[data-incipit-custom-model-action]:hover::after,
+[data-incipit-custom-model-action]:focus-visible::after {
+  color: rgba(180,84,58,0.80) !important;
 }
 [data-incipit-custom-model-modal] {
   background: rgba(60,55,40,0.32) !important;
@@ -677,6 +680,50 @@
   background-color: #a8896e !important;
   color: #1f1f1e !important;
 }
+
+/* Notes icon + panel + reject bubble (warm-white). Flat menu language: no
+   frames, selection = #E6E4DE fill on hover, fields = #faf9f5, action = #a8896e. */
+.cceNoteBtn { color: #0d0d0d !important; }
+.cceNoteBtn:hover,
+.cceNoteBtn:focus-visible { background: #E6E4DE !important; color: #0d0d0d !important; }
+.cceNoteBtn.cceNoteBtnActive { background: #E6E4DE !important; }
+.cceNoteBtn.cceNoteBtnNudge { color: #b05545 !important; }
+[data-incipit-notes-panel],
+[data-incipit-notes-bubble] {
+  background: #ffffff !important;
+  box-shadow: 0 12px 36px rgba(60,55,40,0.22), 0 2px 8px rgba(60,55,40,0.14) !important;
+  color: #0d0d0d !important;
+}
+[data-incipit-notes-tab] { color: rgba(13,13,13,0.46) !important; }
+[data-incipit-notes-tab]:hover { color: rgba(13,13,13,0.78) !important; }
+[data-incipit-notes-tab][data-active="1"] { color: #0d0d0d !important; }
+[data-incipit-notes-tab][data-active="1"]::after { background: #a8896e !important; }
+[data-incipit-notes-empty] { color: rgba(13,13,13,0.42) !important; }
+[data-incipit-notes-row]:hover { background: #E6E4DE !important; }
+[data-incipit-notes-insert] { color: #0d0d0d !important; }
+[data-incipit-notes-edit],
+[data-incipit-notes-delete] { color: rgba(13,13,13,0.50) !important; }
+[data-incipit-notes-edit]:hover,
+[data-incipit-notes-delete]:hover { background: rgba(13,13,13,0.10) !important; color: #0d0d0d !important; }
+[data-incipit-notes-add] { color: rgba(13,13,13,0.55) !important; }
+[data-incipit-notes-add]:hover { background: #E6E4DE !important; color: #0d0d0d !important; }
+[data-incipit-notes-textarea] {
+  background: #faf9f5 !important;
+  color: #0d0d0d !important;
+  caret-color: #a8896e !important;
+}
+[data-incipit-notes-textarea]::placeholder { color: rgba(61,57,41,0.42) !important; }
+[data-incipit-notes-editor-cancel] { color: rgba(13,13,13,0.62) !important; }
+[data-incipit-notes-editor-cancel]:hover { background: #E6E4DE !important; color: #0d0d0d !important; }
+[data-incipit-notes-editor-save],
+[data-incipit-notes-bubble-insert] {
+  background: #a8896e !important;
+  color: #1f1f1e !important;
+}
+[data-incipit-notes-bubble-text] { color: rgba(13,13,13,0.82) !important; }
+[data-incipit-notes-bubble-dismiss] { color: rgba(13,13,13,0.62) !important; }
+[data-incipit-notes-bubble-dismiss]:hover { background: #E6E4DE !important; color: #0d0d0d !important; }
+
 [data-incipit-deferred-next-grip] {
   color: rgba(13,13,13,0.26) !important;
 }

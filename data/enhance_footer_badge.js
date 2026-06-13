@@ -286,6 +286,14 @@ function setupCacheBadge() {
     '<line x1="4" y1="10" x2="13" y2="10"/>' +
     '<line x1="4" y1="14" x2="9" y2="14"/>' +
     '</svg>';
+  // The "Ctx" word is dropped entirely — the badge's own leading three-bar icon
+  // (ICON_SVG) already reads as the context indicator right before the value.
+  // Only "Cache" gets an inline stand-in glyph: a database cylinder.
+  var CACHE_GLYPH_SVG = '<svg class="cceBadgeGlyph" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/>' +
+    '<path d="M3.4 4 V12 C3.4 13.05 5.45 13.9 8 13.9 C10.55 13.9 12.6 13.05 12.6 12 V4"/>' +
+    '<path d="M3.4 8 C3.4 9.05 5.45 9.9 8 9.9 C10.55 9.9 12.6 9.05 12.6 8"/>' +
+    '</svg>';
   var latest = null;       // Latest payload: ctx/hit plus recent and totals.
   var popupEl = null;
   var popupAnchor = null;  // Badge button currently anchoring the popup.
@@ -494,10 +502,9 @@ function setupCacheBadge() {
     }
     if (!textEl.__cceBuilt) {
       textEl.innerHTML =
-        '<span class="cceBadgeLabel">Ctx</span> ' +
-        '<span class="cceBadgeVal" data-cce-val="ctx"></span>' +
+        '<span class="cceBadgeVal" data-cce-val="ctx" title="Context window"></span>' +
         '    ' +
-        '<span class="cceBadgeLabel">Cache</span> ' +
+        '<span class="cceBadgeLabel" title="Cache hit rate">' + CACHE_GLYPH_SVG + '</span> ' +
         '<span class="cceBadgeVal" data-cce-val="hit"></span>';
       textEl.__cceBuilt = true;
     }
@@ -1966,9 +1973,601 @@ function setupEditActivityHeader() {
 }
 
 
+// ============================================================
+// Notes (snippets) + reject reminder bubble.
+// ============================================================
+// A sticky-note icon mounts just LEFT of the cache badge in the footer host.
+// Left-click opens a panel of user snippets (Project / Global tabs); clicking
+// a snippet inserts its text into the composer WITHOUT sending and closes the
+// panel. The same icon grows a reminder bubble after a change-review reject,
+// offering a plain-fact English prompt that also inserts (not sends).
+//
+// The single memo-legal way to put text in the composer is the official mention
+// pipeline (host-badge runs `incipit.claudeCode.insertAtMention`); incipit never
+// writes the contenteditable (memo 2026-04-15 / 2026-06-06). Every insertion here
+// is a `notes_insert_request` postMessage — there is no DOM write to messageInput.
+function setupNotes() {
+  var NOTE_BTN_CLASS = 'cceNoteBtn';
+  var CACHE_BADGE_CLASS = 'cceBadge'; // sibling we anchor immediately to the right of
+  // Document-with-text-lines glyph: a "notes" metaphor distinct from the cache
+  // badge's borderless descending bars.
+  var NOTE_ICON_SVG = '<svg class="cceNoteIcon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="3.3" y="2.8" width="13.4" height="14.4" rx="2.2"/>' +
+    '<line x1="6.4" y1="7" x2="13.6" y2="7"/>' +
+    '<line x1="6.4" y1="10" x2="13.6" y2="10"/>' +
+    '<line x1="6.4" y1="13" x2="11" y2="13"/>' +
+    '</svg>';
+
+  var panelEl = null;
+  var panelAnchor = null;
+  var activeScope = 'global';                 // 'global' | 'project'
+  var notesByScope = { global: [], project: [] };
+  var notesLoaded = { global: false, project: false };
+  var editingId = null;                       // note id, '__new__', or null
+  var notesSeq = 0;
+  var loadPending = {};
+  var savePending = {};
+
+  function notesApi() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') return globalThis.__incipitGetVsCodeApi();
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function currentCwd() {
+    try {
+      var s = kernelGetHostState();
+      return s && typeof s.cwd === 'string' ? s.cwd : '';
+    } catch (_) { return ''; }
+  }
+
+  function nextRequestId() { return 'note-' + (++notesSeq).toString(36); }
+
+  function postNotesRequest(type, payload, pendingMap, cb, timeoutMs) {
+    var api = notesApi();
+    if (!api || typeof api.postMessage !== 'function') { if (cb) cb(null); return; }
+    var requestId = nextRequestId();
+    if (pendingMap && cb) {
+      pendingMap[requestId] = cb;
+      setTimeout(function () {
+        if (!pendingMap[requestId]) return;
+        delete pendingMap[requestId];
+        cb(null);
+      }, timeoutMs || 6000);
+    }
+    var msg = { __incipit: true, type: type, requestId: requestId };
+    for (var k in payload) { if (Object.prototype.hasOwnProperty.call(payload, k)) msg[k] = payload[k]; }
+    try { api.postMessage(msg); }
+    catch (_) { if (pendingMap && pendingMap[requestId]) { delete pendingMap[requestId]; if (cb) cb(null); } }
+    return requestId;
+  }
+
+  window.addEventListener('message', function (ev) {
+    var d = ev && ev.data;
+    if (!d || d.__incipit !== true) return;
+    if (d.type === 'notes_load_response') {
+      var cbL = loadPending[d.requestId];
+      if (!cbL) return;
+      delete loadPending[d.requestId];
+      cbL(d.payload || null);
+    } else if (d.type === 'notes_save_response') {
+      var cbS = savePending[d.requestId];
+      if (!cbS) return;
+      delete savePending[d.requestId];
+      cbS(d.payload || null);
+    }
+    // notes_insert_response is fire-and-forget; nothing to reconcile.
+  });
+
+  function loadNotes(scope, cb) {
+    postNotesRequest('notes_load_request',
+      { scope: scope, cwd: scope === 'project' ? currentCwd() : null },
+      loadPending,
+      function (payload) {
+        if (payload && payload.ok && Array.isArray(payload.notes)) {
+          notesByScope[scope] = payload.notes;
+          notesLoaded[scope] = true;
+        }
+        if (cb) cb();
+      });
+  }
+
+  function saveNotes(scope, cb) {
+    postNotesRequest('notes_save_request',
+      { scope: scope, cwd: scope === 'project' ? currentCwd() : null, notes: notesByScope[scope] },
+      savePending,
+      function (payload) {
+        if (payload && payload.ok && Array.isArray(payload.notes)) notesByScope[scope] = payload.notes;
+        if (cb) cb();
+      });
+  }
+
+  // The ONE insertion point. Fire-and-forget to the host, which delegates to
+  // the official mention pipeline. No contenteditable write happens anywhere.
+  function insertText(text) {
+    var clean = String(text == null ? '' : text);
+    if (!clean.trim()) return;
+    var api = notesApi();
+    if (!api || typeof api.postMessage !== 'function') return;
+    try {
+      api.postMessage({ __incipit: true, type: 'notes_insert_request', requestId: nextRequestId(), text: clean });
+    } catch (_) {}
+  }
+
+  // ---- icon mount (rides the identity heartbeat; no new body observer) ----
+  function ensureNoteIcon() {
+    var hosts = document.querySelectorAll(SEL.inputFooterHost);
+    for (var i = 0; i < hosts.length; i++) {
+      var host = hosts[i];
+      if (!host) continue;
+      var btn = host.querySelector(':scope > .' + NOTE_BTN_CLASS);
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = NOTE_BTN_CLASS;
+        btn.setAttribute('aria-label', 'Notes');
+        btn.title = 'Notes';
+        btn.innerHTML = NOTE_ICON_SVG;
+        btn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var anchor = ev.currentTarget;
+          if (isPanelOpen() && panelAnchor === anchor) closePanel();
+          else openPanel(anchor);
+        });
+        host.insertBefore(btn, host.firstChild);
+      }
+      // Self-heal order: keep the note icon immediately LEFT of the cache badge
+      // no matter which mounted first (both insert at firstChild on their own
+      // cadence, so a fixed insert order would race).
+      var badge = host.querySelector(':scope > .' + CACHE_BADGE_CLASS);
+      if (badge && btn.nextElementSibling !== badge) host.insertBefore(btn, badge);
+    }
+  }
+
+  // ---- panel ----
+  function isPanelOpen() { return !!(panelEl && panelEl.classList.contains('cceNotesOpen')); }
+
+  function buildPanel() {
+    var el = document.createElement('div');
+    el.setAttribute('data-incipit-notes-panel', '');
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Notes');
+    el.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    bindPanelDelegation(el);
+    return el;
+  }
+
+  // Delegate every panel interaction to the stable panel element (memo
+  // 2026-06-13: per-row handlers die on the mousedown->mouseup rebuild and the
+  // click never fires). The list rebuilds on every action; the panel never does.
+  function bindPanelDelegation(el) {
+    el.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var tab = t.closest('[data-incipit-notes-tab]');
+      if (tab && el.contains(tab)) {
+        var scope = tab.getAttribute('data-incipit-notes-tab');
+        if (scope && scope !== activeScope) {
+          activeScope = scope;
+          editingId = null;
+          if (!notesLoaded[scope]) loadNotes(scope, renderPanel);
+          else renderPanel();
+        }
+        return;
+      }
+      if (t.closest('[data-incipit-notes-add]')) {
+        editingId = '__new__';
+        renderPanel();
+        focusEditor();
+        return;
+      }
+      var editBtn = t.closest('[data-incipit-notes-edit]');
+      if (editBtn) {
+        var rowE = editBtn.closest('[data-incipit-notes-row]');
+        editingId = rowE ? rowE.getAttribute('data-note-id') : null;
+        renderPanel();
+        focusEditor();
+        return;
+      }
+      var delBtn = t.closest('[data-incipit-notes-delete]');
+      if (delBtn) {
+        var rowD = delBtn.closest('[data-incipit-notes-row]');
+        var idD = rowD ? rowD.getAttribute('data-note-id') : null;
+        if (idD) {
+          notesByScope[activeScope] = (notesByScope[activeScope] || []).filter(function (n) { return n && n.id !== idD; });
+          saveNotes(activeScope);
+          renderPanel();
+        }
+        return;
+      }
+      if (t.closest('[data-incipit-notes-editor-cancel]')) {
+        editingId = null;
+        renderPanel();
+        return;
+      }
+      if (t.closest('[data-incipit-notes-editor-save]')) {
+        commitEditor();
+        return;
+      }
+      // Inserting a snippet: the main row button. Insert text, close panel.
+      var insertBtn = t.closest('[data-incipit-notes-insert]');
+      if (insertBtn) {
+        var rowI = insertBtn.closest('[data-incipit-notes-row]');
+        var idI = rowI ? rowI.getAttribute('data-note-id') : null;
+        var note = (notesByScope[activeScope] || []).find(function (n) { return n && n.id === idI; });
+        if (note) { insertText(note.text); closePanel(); }
+      }
+    });
+  }
+
+  function focusEditor() {
+    if (!panelEl) return;
+    var ta = panelEl.querySelector('[data-incipit-notes-textarea]');
+    if (ta) { try { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; } catch (_) {} }
+  }
+
+  function commitEditor() {
+    if (!panelEl) return;
+    var ta = panelEl.querySelector('[data-incipit-notes-textarea]');
+    var text = ta ? String(ta.value || '') : '';
+    if (!text.trim()) { editingId = null; renderPanel(); return; }
+    var list = notesByScope[activeScope] || (notesByScope[activeScope] = []);
+    if (editingId === '__new__') {
+      list.unshift({ id: 'note-' + Date.now().toString(36) + '-' + (notesSeq++).toString(36), text: text, createdAt: Date.now() });
+    } else {
+      var hit = list.find(function (n) { return n && n.id === editingId; });
+      if (hit) hit.text = text;
+    }
+    editingId = null;
+    saveNotes(activeScope);
+    renderPanel();
+  }
+
+  function notePreview(text) {
+    var oneLine = String(text || '').replace(/\s+/g, ' ').trim();
+    return oneLine.length > 140 ? oneLine.slice(0, 139) + '…' : oneLine;
+  }
+
+  function renderPanel() {
+    if (!panelEl) return;
+    panelEl.textContent = '';
+
+    var tabs = document.createElement('div');
+    tabs.setAttribute('data-incipit-notes-tabs', '');
+    [['project', 'Project'], ['global', 'Global']].forEach(function (pair) {
+      var tab = document.createElement('button');
+      tab.type = 'button';
+      tab.setAttribute('data-incipit-notes-tab', pair[0]);
+      if (activeScope === pair[0]) tab.setAttribute('data-active', '1');
+      tab.textContent = pair[1];
+      tabs.appendChild(tab);
+    });
+    panelEl.appendChild(tabs);
+
+    var body = document.createElement('div');
+    body.setAttribute('data-incipit-notes-list', '');
+
+    if (editingId !== null) {
+      body.appendChild(buildEditor());
+    } else {
+      var notes = notesByScope[activeScope] || [];
+      if (!notes.length) {
+        var empty = document.createElement('div');
+        empty.setAttribute('data-incipit-notes-empty', '');
+        empty.textContent = activeScope === 'project'
+          ? (currentCwd() ? 'No project notes yet.' : 'Open a workspace to use project notes.')
+          : 'No notes yet.';
+        body.appendChild(empty);
+      } else {
+        notes.forEach(function (note) {
+          if (!note || !note.id) return;
+          body.appendChild(buildNoteRow(note));
+        });
+      }
+    }
+    panelEl.appendChild(body);
+
+    if (editingId === null) {
+      var footer = document.createElement('div');
+      footer.setAttribute('data-incipit-notes-footer', '');
+      var add = document.createElement('button');
+      add.type = 'button';
+      add.setAttribute('data-incipit-notes-add', '');
+      add.textContent = '+ New note';
+      footer.appendChild(add);
+      panelEl.appendChild(footer);
+    }
+  }
+
+  function buildNoteRow(note) {
+    var row = document.createElement('div');
+    row.setAttribute('data-incipit-notes-row', '');
+    row.setAttribute('data-note-id', note.id);
+
+    var insert = document.createElement('button');
+    insert.type = 'button';
+    insert.setAttribute('data-incipit-notes-insert', '');
+    insert.title = 'Insert into composer';
+    insert.textContent = notePreview(note.text);
+    row.appendChild(insert);
+
+    var edit = document.createElement('button');
+    edit.type = 'button';
+    edit.setAttribute('data-incipit-notes-edit', '');
+    edit.setAttribute('aria-label', 'Edit note');
+    edit.title = 'Edit';
+    edit.textContent = '✎';
+    row.appendChild(edit);
+
+    var del = document.createElement('button');
+    del.type = 'button';
+    del.setAttribute('data-incipit-notes-delete', '');
+    del.setAttribute('aria-label', 'Delete note');
+    del.title = 'Delete';
+    del.textContent = '×';
+    row.appendChild(del);
+
+    return row;
+  }
+
+  function buildEditor() {
+    var wrap = document.createElement('div');
+    wrap.setAttribute('data-incipit-notes-editor', '');
+
+    var ta = document.createElement('textarea');
+    ta.setAttribute('data-incipit-notes-textarea', '');
+    ta.rows = 5;
+    ta.spellcheck = false;
+    ta.placeholder = 'Snippet text to insert into the composer…';
+    if (editingId !== '__new__') {
+      var hit = (notesByScope[activeScope] || []).find(function (n) { return n && n.id === editingId; });
+      ta.value = hit ? hit.text : '';
+    }
+    // Ctrl/Cmd+Enter saves; plain Enter keeps making newlines (notes are
+    // multi-line). Never re-render while typing — protects IME composition
+    // and the textarea node itself (memo 2026-04-15 / 2026-06-13).
+    ta.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        commitEditor();
+      }
+    });
+    wrap.appendChild(ta);
+
+    var actions = document.createElement('div');
+    actions.setAttribute('data-incipit-notes-editor-actions', '');
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.setAttribute('data-incipit-notes-editor-cancel', '');
+    cancel.textContent = 'Cancel';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.setAttribute('data-incipit-notes-editor-save', '');
+    save.textContent = 'Save';
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    wrap.appendChild(actions);
+
+    return wrap;
+  }
+
+  function positionPanel() {
+    if (!panelEl || !panelAnchor) return;
+    var r = panelAnchor.getBoundingClientRect();
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var margin = 8;
+    var safeWidth = Math.min(340, Math.max(220, vw - margin * 2));
+    panelEl.style.width = safeWidth + 'px';
+    panelEl.style.maxWidth = safeWidth + 'px';
+    var w = panelEl.offsetWidth;
+    var h = panelEl.offsetHeight;
+    var left = Math.round(r.left);
+    if (left + w > vw - margin) left = vw - margin - w;
+    if (left < margin) left = margin;
+    var bottom = Math.round(vh - r.top + 6);
+    var maxBottom = Math.max(margin, vh - h - margin);
+    if (bottom > maxBottom) bottom = maxBottom;
+    if (bottom < margin) bottom = margin;
+    panelEl.style.left = left + 'px';
+    panelEl.style.bottom = bottom + 'px';
+  }
+
+  function openPanel(anchor) {
+    panelAnchor = anchor;
+    editingId = null;
+    if (!panelEl) {
+      panelEl = buildPanel();
+      document.body.appendChild(panelEl);
+    }
+    // Project scope needs a workspace; if none, start on global so the panel
+    // is never empty-by-default.
+    if (activeScope === 'project' && !currentCwd()) activeScope = 'global';
+    panelEl.classList.add('cceNotesOpen');
+    anchor.classList.add('cceNoteBtnActive');
+    if (!notesLoaded[activeScope]) loadNotes(activeScope, function () { renderPanel(); positionPanel(); });
+    renderPanel();
+    positionPanel();
+  }
+
+  function closePanel() {
+    if (!panelEl) return;
+    panelEl.classList.remove('cceNotesOpen');
+    if (panelAnchor) panelAnchor.classList.remove('cceNoteBtnActive');
+    panelAnchor = null;
+    editingId = null;
+  }
+
+  document.addEventListener('click', function (ev) {
+    if (!isPanelOpen()) return;
+    var t = ev.target;
+    if (panelEl && panelEl.contains(t)) return;
+    if (panelAnchor && panelAnchor.contains(t)) return;
+    closePanel();
+  }, true);
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Escape') return;
+    if (isBubbleOpen()) { hideBubble(); return; }
+    if (isPanelOpen()) closePanel();
+  }, true);
+
+  var panelRepositionScheduled = false;
+  function schedulePanelReposition() {
+    if (!isPanelOpen() && !isBubbleOpen()) return;
+    if (panelRepositionScheduled) return;
+    panelRepositionScheduled = true;
+    requestAnimationFrame(function () {
+      panelRepositionScheduled = false;
+      if (isPanelOpen()) positionPanel();
+      if (isBubbleOpen()) positionBubble();
+    });
+  }
+  window.addEventListener('scroll', schedulePanelReposition, true);
+  window.addEventListener('resize', schedulePanelReposition, true);
+
+  // ---- reject reminder bubble ----
+  var bubbleEl = null;
+  var bubbleAnchor = null;
+  var rejectedPaths = [];           // accumulated within the open window
+  var bubbleDismissTimer = 0;
+  var BUBBLE_AUTO_DISMISS_MS = 14000;
+
+  function isBubbleOpen() { return !!(bubbleEl && bubbleEl.classList.contains('cceNoteBubbleOpen')); }
+
+  function firstNoteIcon() { return document.querySelector('.' + NOTE_BTN_CLASS); }
+
+  // Plain factual reminder — the user explicitly chose "just state what was
+  // rejected", no prescription, no negotiation. Inserted (not sent) so the user
+  // can append before sending.
+  function buildRejectReminder(paths) {
+    var list = paths.slice(0, 12);
+    if (!list.length) return '';
+    var quoted = list.map(function (p) { return '`' + p + '`'; });
+    var joined;
+    if (quoted.length === 1) joined = quoted[0];
+    else if (quoted.length === 2) joined = quoted[0] + ' and ' + quoted[1];
+    else joined = quoted.slice(0, -1).join(', ') + ', and ' + quoted[quoted.length - 1];
+    var noun = list.length === 1 ? 'change' : 'changes';
+    var tail = list.length === 1 ? 'it has' : 'they have';
+    return 'I rejected your ' + noun + ' to ' + joined + '; ' + tail + ' been reverted.';
+  }
+
+  function addRejectedPaths(paths) {
+    if (!Array.isArray(paths)) return;
+    for (var i = 0; i < paths.length; i++) {
+      var p = paths[i];
+      if (typeof p !== 'string' || !p) continue;
+      if (rejectedPaths.indexOf(p) === -1) rejectedPaths.push(p);  // dedup, keep order
+    }
+  }
+
+  function buildBubble() {
+    var el = document.createElement('div');
+    el.setAttribute('data-incipit-notes-bubble', '');
+    el.setAttribute('role', 'status');
+    el.addEventListener('click', function (ev) { ev.stopPropagation(); });
+
+    var text = document.createElement('div');
+    text.setAttribute('data-incipit-notes-bubble-text', '');
+    el.appendChild(text);
+
+    var actions = document.createElement('div');
+    actions.setAttribute('data-incipit-notes-bubble-actions', '');
+    var dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.setAttribute('data-incipit-notes-bubble-dismiss', '');
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', function (ev) { ev.preventDefault(); ev.stopPropagation(); hideBubble(); });
+    var insert = document.createElement('button');
+    insert.type = 'button';
+    insert.setAttribute('data-incipit-notes-bubble-insert', '');
+    insert.textContent = 'Insert';
+    insert.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      insertText(buildRejectReminder(rejectedPaths));
+      hideBubble();
+    });
+    actions.appendChild(dismiss);
+    actions.appendChild(insert);
+    el.appendChild(actions);
+    return el;
+  }
+
+  function positionBubble() {
+    if (!bubbleEl || !bubbleAnchor) return;
+    var r = bubbleAnchor.getBoundingClientRect();
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var margin = 8;
+    var w = bubbleEl.offsetWidth;
+    var h = bubbleEl.offsetHeight;
+    var left = Math.round(r.left);
+    if (left + w > vw - margin) left = vw - margin - w;
+    if (left < margin) left = margin;
+    var bottom = Math.round(vh - r.top + 8);
+    var maxBottom = Math.max(margin, vh - h - margin);
+    if (bottom > maxBottom) bottom = maxBottom;
+    if (bottom < margin) bottom = margin;
+    bubbleEl.style.left = left + 'px';
+    bubbleEl.style.bottom = bottom + 'px';
+  }
+
+  function showRejectBubble() {
+    var anchor = firstNoteIcon();
+    if (!anchor) return;
+    if (!rejectedPaths.length) return;
+    bubbleAnchor = anchor;
+    if (!bubbleEl) {
+      bubbleEl = buildBubble();
+      document.body.appendChild(bubbleEl);
+    }
+    var textEl = bubbleEl.querySelector('[data-incipit-notes-bubble-text]');
+    if (textEl) textEl.textContent = buildRejectReminder(rejectedPaths);
+    bubbleEl.classList.add('cceNoteBubbleOpen');
+    anchor.classList.add('cceNoteBtnNudge');
+    positionBubble();
+    if (bubbleDismissTimer) clearTimeout(bubbleDismissTimer);
+    bubbleDismissTimer = setTimeout(hideBubble, BUBBLE_AUTO_DISMISS_MS);
+  }
+
+  function hideBubble() {
+    if (bubbleDismissTimer) { clearTimeout(bubbleDismissTimer); bubbleDismissTimer = 0; }
+    rejectedPaths = [];
+    if (!bubbleEl) return;
+    bubbleEl.classList.remove('cceNoteBubbleOpen');
+    if (bubbleAnchor) bubbleAnchor.classList.remove('cceNoteBtnNudge');
+    bubbleAnchor = null;
+  }
+
+  // enhance_legacy dispatches this after a SUCCESSFUL change-review reject,
+  // with the file paths captured before the host removed them. Cross-file via
+  // a window CustomEvent so the two modules stay decoupled.
+  window.addEventListener('incipit:change-review-rejected', function (ev) {
+    var detail = ev && ev.detail;
+    var paths = detail && Array.isArray(detail.paths) ? detail.paths : null;
+    if (!paths || !paths.length) return;
+    ensureNoteIcon();
+    addRejectedPaths(paths);
+    showRejectBubble();
+  });
+  document.addEventListener('click', function (ev) {
+    if (!isBubbleOpen()) return;
+    var t = ev.target;
+    if (bubbleEl && bubbleEl.contains(t)) return;
+    hideBubble();
+  }, true);
+
+  registerIdentityPublisher(function () { ensureNoteIcon(); });
+  ensureNoteIcon();
+}
+
 export function initFooterBadge() {
   setupEditActivityHeader();
   setupCacheBadge();
   setupFooterAbbreviation();
   setupKbdSymbols();
+  setupNotes();
 }

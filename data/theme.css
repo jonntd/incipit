@@ -2991,41 +2991,28 @@ pre code {
   mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect x='5' y='5' width='10' height='10' rx='1.5' ry='1.5' fill='%23000'/%3E%3C/svg%3E") !important;
 }
 
-/* Flatten the real input fieldset and its background layer.
-   Do not target the outer wrapper or the fill will expand across the
-   remaining chat viewport. */
-[data-incipit-input-container],
-[data-incipit-input-container]:focus-within,
-[data-incipit-input-container][data-permission-mode="acceptEdits"],
-[data-incipit-input-container][data-permission-mode="acceptEdits"]:focus-within,
-[data-incipit-input-container][data-permission-mode="plan"],
-[data-incipit-input-container][data-permission-mode="plan"]:focus-within,
-[data-incipit-input-container][data-permission-mode="bypassPermissions"],
-[data-incipit-input-container][data-permission-mode="bypassPermissions"]:focus-within,
-[data-incipit-input-container][data-permission-mode="auto"],
-[data-incipit-input-container][data-permission-mode="auto"]:focus-within {
-  box-sizing: border-box !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  min-width: 0 !important;
-  min-inline-size: 0 !important;
+/* Composer shell.
+
+   IMPORTANT: do not take over the host input container's box model. The
+   contenteditable editor, its mirror, and the caret layer derive scroll
+   geometry from this subtree; changing border/width/box sizing or animating
+   the container is harmless for short input but desynchronizes long,
+   scrollable composer text after edits. Keep the real fieldset layout-owned by
+   the host; put only non-metric colour on the background layer below. */
+fieldset[class*="inputContainer_"],
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]),
+fieldset[class*="inputContainer_"]:focus-within,
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within {
+  --focus-ring-color: transparent !important;
+}
+[class*="inputContainerBackground"] {
   background: #2c2c2a !important;
   background-color: #2c2c2a !important;
-  border: none !important;
-  outline: none !important;
-  /* Two-layer faint ambient shadow lifts the slightly-lighter input
-     surface (#2c2c2a) off the body bg (#1f1f1e). Same geometry as the
-     warm-white pair; alpha is bumped because dark surfaces need more
-     luminosity differential to register a halo. */
+  border-radius: 10px !important;
+  /* Non-metric edge/halo: this layer is already the host's visual
+     background, so shadow here does not change the editor scroll box. */
   box-shadow: 0 2px 10px rgba(0,0,0,0.20),
               0 1px 3px rgba(0,0,0,0.15) !important;
-  --focus-ring-color: transparent !important;
-  border-radius: 10px !important;
-}
-[data-incipit-input-container-bg] {
-  background: #2c2c2a !important;
-  background-color: #2c2c2a !important;
-  border-radius: 10px !important;
 }
 
 /* File drag reference hint.
@@ -3033,27 +3020,23 @@ pre code {
    incipit does not own the drop. It only adds a small composer-local hint
    during file drag events that naturally reach the webview, pointing users to
    the host's safe Shift-drag reference path. */
-[data-incipit-input-container] {
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"],
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]),
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:focus-within,
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]):focus-within {
   position: relative !important;
-  transition:
-    background-color 140ms ease,
-    box-shadow 140ms ease,
-    border-color 140ms ease !important;
+  --focus-ring-color: transparent !important;
 }
-[data-incipit-input-container][data-incipit-file-drag-hint="over"],
-[data-incipit-input-container][data-incipit-file-drag-hint="over"]:focus-within {
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"] [class*="inputContainerBackground"],
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]) [class*="inputContainerBackground"] {
   background: #302d2a !important;
   background-color: #302d2a !important;
-  border-color: rgba(217,119,87,0.42) !important;
   box-shadow: 0 6px 22px rgba(0,0,0,0.28),
               0 1px 4px rgba(0,0,0,0.20),
               inset 0 0 0 1px rgba(217,119,87,0.46) !important;
 }
-[data-incipit-input-container][data-incipit-file-drag-hint="over"] [data-incipit-input-container-bg] {
-  background: #302d2a !important;
-  background-color: #302d2a !important;
-}
-[data-incipit-input-container][data-incipit-file-drag-hint="over"]::after {
+fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
+[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"])::after {
   content: attr(data-incipit-file-drag-hint-text);
   position: absolute;
   pointer-events: none;
@@ -3077,7 +3060,8 @@ pre code {
 /* Host-owned file reference chip inside the composer.
    Keep the official inline geometry and text/mirror layers intact: this rule
    only retints the existing chip box so @file references remain readable. */
-[data-incipit-input-container] [class*="inputMentionChip"] {
+fieldset[class*="inputContainer_"] [class*="inputMentionChip"],
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]) [class*="inputMentionChip"] {
   background: var(--incipit-composer-mention-chip-background) !important;
   background-color: var(--incipit-composer-mention-chip-background) !important;
   box-shadow:
@@ -3085,7 +3069,8 @@ pre code {
      4px 0 0 var(--incipit-composer-mention-chip-background) !important;
   color: var(--incipit-composer-mention-chip-foreground) !important;
 }
-[data-incipit-input-container] [class*="inputMentionChip"]:hover {
+fieldset[class*="inputContainer_"] [class*="inputMentionChip"]:hover,
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]) [class*="inputMentionChip"]:hover {
   background: var(--incipit-composer-mention-chip-background-hover) !important;
   background-color: var(--incipit-composer-mention-chip-background-hover) !important;
   box-shadow:
@@ -3093,7 +3078,8 @@ pre code {
      4px 0 0 var(--incipit-composer-mention-chip-background-hover) !important;
   color: var(--incipit-composer-mention-chip-foreground) !important;
 }
-[data-incipit-input-container] [class*="inputMentionChip"] * {
+fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]) [class*="inputMentionChip"] * {
   background: transparent !important;
   color: inherit !important;
 }
@@ -3118,14 +3104,17 @@ pre code {
 }
 
 /* Change review transcript block. */
+/* The review block sits in the reading flow as a quiet inset panel, not a
+   floating card — no drop shadow (the SaaS-card tell), just a faint wash
+   and a hairline border. Literary-first, per the project's restraint on
+   block colour and shadow. */
 [data-incipit-change-review-turn] {
   box-sizing: border-box !important;
   width: 100% !important;
-  border-radius: 10px !important;
-  background: #2f2f2c !important;
+  border-radius: 6px !important;
+  background: rgba(248, 248, 246, 0.022) !important;
+  border: 1px solid rgba(248, 248, 246, 0.08) !important;
   color: rgba(248, 248, 246, 0.82) !important;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.18),
-              0 1px 3px rgba(0,0,0,0.14) !important;
   font-family: var(--incipit-body-font) !important;
   font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
   line-height: 1.35 !important;
@@ -3151,39 +3140,39 @@ pre code {
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   white-space: nowrap !important;
-  padding: 2px 3px !important;
-  border-radius: 6px !important;
+  padding: 2px 0 !important;
   cursor: pointer !important;
+  transition: color 0.15s !important;
 }
 [data-incipit-change-review-file][data-incipit-change-review-clickable="1"] {
   cursor: pointer !important;
 }
+/* Reject is a quiet terracotta text link, not a pill — no border,
+   background fill, or hover block; the colour just warms on hover. Matches
+   the show-more link and the "terracotta only as a small affordance" rule. */
 [data-incipit-change-review-reject-turn],
 [data-incipit-change-review-reject-file] {
   flex: 0 0 auto !important;
   border: none !important;
   outline: none !important;
-  border-radius: 7px !important;
   background: transparent !important;
-  color: rgba(248, 248, 246, 0.62) !important;
+  color: #d97757 !important;
   font-family: var(--incipit-body-font) !important;
   font-size: 12px !important;
-  line-height: 1 !important;
-  min-height: 24px !important;
-  padding: 0 7px !important;
-  transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease !important;
+  line-height: 1.4 !important;
+  padding: 2px 0 !important;
+  cursor: pointer !important;
+  transition: color 120ms ease, opacity 120ms ease !important;
 }
-[data-incipit-change-review-reject-turn]:hover,
-[data-incipit-change-review-reject-file]:hover,
+/* Hover: colour only, never a background block (no pill on file or reject). */
 [data-incipit-change-review-file-name]:hover,
 [data-incipit-change-review-file][data-incipit-change-review-clickable="1"]:hover
   [data-incipit-change-review-file-name] {
-  background: rgba(248, 248, 246, 0.08) !important;
   color: rgba(248, 248, 246, 0.94) !important;
 }
-[data-incipit-change-review-reject-turn],
-[data-incipit-change-review-reject-file] {
-  color: #d97757 !important;
+[data-incipit-change-review-reject-turn]:hover,
+[data-incipit-change-review-reject-file]:hover {
+  color: #e8917a !important;
 }
 [data-incipit-change-review-reject-turn][data-incipit-disabled="1"],
 [data-incipit-change-review-reject-file][data-incipit-disabled="1"],
@@ -3211,21 +3200,26 @@ pre code {
   border-top: 1px solid rgba(248, 248, 246, 0.06) !important;
   padding-top: 4px !important;
 }
+/* Show-more/less is a quiet text link (like the user-bubble show-more),
+   left-aligned to read as a continuation of the file list — not a block
+   button. No border/background/full-width; colour fades up on hover. */
 [data-incipit-change-review-more] {
-  width: 100% !important;
-  min-height: 24px !important;
-  border: 1px solid rgba(248, 248, 246, 0.08) !important;
-  border-radius: 7px !important;
-  background: rgba(248, 248, 246, 0.035) !important;
-  color: rgba(248, 248, 246, 0.62) !important;
+  display: block !important;
+  width: auto !important;
+  border: none !important;
+  background: transparent !important;
+  color: rgba(248, 248, 246, 0.5) !important;
   font-family: var(--incipit-body-font) !important;
   font-size: 12px !important;
-  line-height: 1.2 !important;
-  text-align: center !important;
-  padding: 3px 8px !important;
+  line-height: 1.4 !important;
+  text-align: left !important;
+  padding: 2px 0 !important;
+  margin-top: 1px !important;
+  cursor: pointer !important;
+  transition: color 0.15s !important;
 }
 [data-incipit-change-review-more]:hover {
-  background: rgba(248, 248, 246, 0.08) !important;
+  background: transparent !important;
   color: rgba(248, 248, 246, 0.9) !important;
 }
 [data-incipit-change-review-counts] {
@@ -3322,6 +3316,31 @@ pre code {
    Body-portaled from the command menu action. It mirrors the existing
    incipit popup language: flat card, no blue system ring, one calm input
    field, and no recent-model list inside the command menu. */
+[data-incipit-custom-model-action] {
+  box-sizing: border-box !important;
+  position: relative !important;
+  max-width: 100% !important;
+  padding-right: 58px !important;
+}
+[data-incipit-custom-model-action]::after {
+  content: "incipit" !important;
+  position: absolute !important;
+  right: 8px !important;
+  bottom: 2px !important;
+  pointer-events: none !important;
+  font-family: var(--incipit-emphasis-font) !important;
+  font-size: 10px !important;
+  font-style: italic !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+  color: rgba(217, 119, 87, 0.52) !important;
+}
+[data-incipit-custom-model-action]:hover::after,
+[data-incipit-custom-model-action]:focus-visible::after {
+  color: rgba(217, 119, 87, 0.78) !important;
+}
 [data-incipit-custom-model-modal] {
   position: fixed !important;
   inset: 0 !important;
@@ -5104,7 +5123,7 @@ pre code {
 .cceBadgeIcon {
   flex: 0 0 auto;
   display: block;
-  width: 18px;
+  width: 18px;                        /* Match the notes icon; serves as Ctx. */
   height: 18px;
   color: #f8f8f6;                     /* SVG follows `currentColor`. */
 }
@@ -5113,6 +5132,18 @@ pre code {
 }
 .cceBadgeLabel {
   color: #f8f8f6;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+/* Cache cylinder glyph standing in for the "Cache" word. Sized to match the
+   notes icon (20px); follows the label colour via currentColor so warm-white
+   needs no extra override. */
+.cceBadgeGlyph {
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: inherit;
 }
 .cceBadgeVal {
   color: #989898;
@@ -5125,6 +5156,7 @@ pre code {
 .cceBadgeVal {
   display: inline-block;
   white-space: pre;
+  vertical-align: middle;
 }
 
 /* ============================================================
@@ -5575,6 +5607,287 @@ pre code {
 }
 
 /* ============================================================
+   Notes (snippets) icon + panel + reject reminder bubble.
+
+   Shares the custom-model-dialog / permission-card design language:
+   #2c2c2a surface, hairline rgba(255,255,255,0.08), #1f1f1e fields,
+   #a8896e primary action. The icon button mirrors `.cceBadge`.
+   ============================================================ */
+.cceNoteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #f8f8f6;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.cceNoteBtn:hover,
+.cceNoteBtn:focus-visible {
+  background: #3a3b3a;
+  color: #f8f8f6;
+  outline: none;
+}
+.cceNoteBtn.cceNoteBtnActive { background: #3a3b3a; }
+.cceNoteIcon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: inherit;
+}
+@keyframes cceNoteNudge {
+  0%, 100% { transform: translateY(0); }
+  30%      { transform: translateY(-2px); }
+  60%      { transform: translateY(0); }
+}
+.cceNoteBtn.cceNoteBtnNudge { animation: cceNoteNudge 0.45s ease; color: #c9a657; }
+
+/* Flat menu surface — same language as the right-click path menu (~1422) and
+   the slash/permission `[data-incipit-menu-popup]` (~4140): NO frame, NO
+   per-item outlines. Separation is the lifted surface + soft shadow; selection
+   is a `#121212` fill on hover. Solid fills appear ONLY on real actions (#a8896e)
+   and the text field (#1f1f1e). */
+[data-incipit-notes-panel] {
+  position: fixed;
+  z-index: 99999;
+  display: none;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  padding: 4px;
+  background: #2c2c2a;
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.35);
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  line-height: 1.45;
+  color: #f8f8f6;
+}
+[data-incipit-notes-panel].cceNotesOpen { display: flex; }
+[data-incipit-notes-tabs] {
+  display: flex;
+  gap: 16px;
+  flex: 0 0 auto;
+  padding: 5px 8px 7px;
+}
+[data-incipit-notes-tab] {
+  position: relative;
+  padding: 2px 1px 6px;
+  border: none;
+  background: transparent;
+  color: rgba(248,248,246,0.46);
+  font-family: var(--incipit-emphasis-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  cursor: pointer;
+}
+[data-incipit-notes-tab]:hover { color: rgba(248,248,246,0.80); }
+[data-incipit-notes-tab][data-active="1"] { color: #f8f8f6; }
+[data-incipit-notes-tab][data-active="1"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: #a8896e;
+}
+[data-incipit-notes-list] {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px;
+}
+[data-incipit-notes-empty] {
+  padding: 22px 12px;
+  text-align: center;
+  color: rgba(248,248,246,0.40);
+}
+[data-incipit-notes-row] {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+[data-incipit-notes-row]:hover { background: #121212; }
+[data-incipit-notes-insert] {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #f8f8f6;
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+/* Row actions stay out of the way until the row is hovered — keeps the resting
+   list clean, the way editor row-actions reveal on hover. */
+[data-incipit-notes-edit],
+[data-incipit-notes-delete] {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(248,248,246,0.50);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.10s ease;
+}
+[data-incipit-notes-row]:hover [data-incipit-notes-edit],
+[data-incipit-notes-row]:hover [data-incipit-notes-delete] { opacity: 1; }
+[data-incipit-notes-edit]:hover,
+[data-incipit-notes-delete]:hover { background: rgba(255,255,255,0.10); color: #f8f8f6; }
+[data-incipit-notes-footer] {
+  flex: 0 0 auto;
+  padding: 2px;
+}
+[data-incipit-notes-add] {
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(248,248,246,0.58);
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  text-align: left;
+  cursor: pointer;
+}
+[data-incipit-notes-add]:hover { background: #121212; color: #f8f8f6; }
+[data-incipit-notes-editor] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 6px 6px;
+}
+[data-incipit-notes-textarea] {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 94px;
+  resize: vertical;
+  padding: 8px 9px;
+  border: none;
+  border-radius: 6px;
+  background: #1f1f1e;
+  color: #f8f8f6;
+  caret-color: #a8896e;
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  line-height: 1.5;
+  outline: none;
+}
+[data-incipit-notes-textarea]::placeholder { color: rgba(248,248,246,0.36); }
+[data-incipit-notes-editor-actions] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+[data-incipit-notes-editor-cancel],
+[data-incipit-notes-editor-save] {
+  min-width: 70px;
+  height: 28px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  cursor: pointer;
+}
+[data-incipit-notes-editor-cancel] {
+  background: transparent;
+  color: rgba(248,248,246,0.62);
+}
+[data-incipit-notes-editor-cancel]:hover { background: #121212; color: #f8f8f6; }
+[data-incipit-notes-editor-save] {
+  background: #a8896e;
+  color: #1f1f1e;
+  font-weight: 500;
+}
+[data-incipit-notes-editor-save]:hover { filter: brightness(1.08); }
+
+[data-incipit-notes-bubble] {
+  position: fixed;
+  z-index: 99999;
+  display: none;
+  box-sizing: border-box;
+  width: min(320px, calc(100vw - 16px));
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 11px 12px;
+  background: #2c2c2a;
+  border: none;
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.35);
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  line-height: 1.5;
+  color: #f8f8f6;
+}
+[data-incipit-notes-bubble].cceNoteBubbleOpen { display: block; }
+[data-incipit-notes-bubble-text] {
+  margin-bottom: 9px;
+  color: rgba(248,248,246,0.86);
+  word-break: break-word;
+}
+[data-incipit-notes-bubble-actions] {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+[data-incipit-notes-bubble-dismiss],
+[data-incipit-notes-bubble-insert] {
+  min-width: 64px;
+  height: 27px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 6px;
+  font-family: var(--incipit-body-font);
+  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  cursor: pointer;
+}
+[data-incipit-notes-bubble-dismiss] {
+  background: transparent;
+  color: rgba(248,248,246,0.62);
+}
+[data-incipit-notes-bubble-dismiss]:hover { background: #121212; color: #f8f8f6; }
+[data-incipit-notes-bubble-insert] {
+  background: #a8896e;
+  color: #1f1f1e;
+  font-weight: 500;
+}
+[data-incipit-notes-bubble-insert]:hover { filter: brightness(1.08); }
+
+/* ============================================================
    Effort brain icons.
 
    The source art was generated as a five-step concept sheet from the
@@ -5738,7 +6051,7 @@ pre code {
   --incipit-scrollbar-track: transparent;
 }
 
-* {
+*:not([class*="inputContainer_"]):not([class*="inputContainer_"] *):not([contenteditable]):not([contenteditable] *) {
   scrollbar-width: auto !important;
   scrollbar-color: var(--incipit-scrollbar-thumb) var(--incipit-scrollbar-track) !important;
 }
