@@ -506,6 +506,20 @@ function formatApplyChangeSummary(result) {
   return t('apply.report.summary_changed', { updated: changed, current });
 }
 
+// The hostRoute "未知版本/内容指纹" line is provenance attestation, NOT a
+// functional degradation. It fires every time the host auto-updates before the
+// maintainer registers the new build's sha256 in HOST_CONTACT_ROUTE_CATALOG,
+// while every real patch anchor still succeeds (semantic anchoring works across
+// versions). It is not user-actionable — only a new incipit release adds the
+// sha — yet it looks identical to a real degradation, so surfacing it as a
+// yellow warning is structural alarm fatigue that fires precisely when nothing
+// is wrong. Keep it OUT of the user warnings entirely: the contract matrix test
+// still catches unregistered builds for the maintainer, and the line stays in
+// the report object for diagnostics. Do NOT re-route it back into warnings.
+function isHostRouteProvenanceLine(text) {
+  return /宿主版本路由/.test(text) || /未知版本\/内容指纹/.test(text);
+}
+
 function collectApplyWarnings(report) {
   const sources = [
     report && report.extensionJs && report.extensionJs.statusLines,
@@ -513,7 +527,7 @@ function collectApplyWarnings(report) {
   ];
   const out = [];
   const hasSpecificDegradation = sources.some(lines =>
-    Array.isArray(lines) && lines.some(line => /降级|degraded/i.test(String(line || '')) && !/契约|contract/i.test(String(line || ''))),
+    Array.isArray(lines) && lines.some(line => /降级|degraded/i.test(String(line || '')) && !/契约|contract/i.test(String(line || '')) && !isHostRouteProvenanceLine(String(line || ''))),
   );
   const hasStreamingCodeDegradation = sources.some(lines =>
     Array.isArray(lines) && lines.some(line => /流式代码高亮|streaming code/i.test(String(line || '')) && /降级|degraded/i.test(String(line || ''))),
@@ -524,6 +538,7 @@ function collectApplyWarnings(report) {
       if (!line) continue;
       const text = String(line).trim();
       if (!/降级|degraded/i.test(text)) continue;
+      if (isHostRouteProvenanceLine(text)) continue;
       if (hasSpecificDegradation && /契约|contract/i.test(text)) continue;
       if (hasStreamingCodeDegradation && /markdown 代码渲染|markdown code/i.test(text)) continue;
       if (!out.includes(text)) out.push(text);
@@ -2944,4 +2959,4 @@ async function main(argv) {
   }
 }
 
-module.exports = { main };
+module.exports = { main, __test: { collectApplyWarnings, isHostRouteProvenanceLine } };
