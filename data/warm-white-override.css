@@ -593,6 +593,15 @@
 [data-incipit-change-review-file] {
   border-top: 1px solid rgba(13,13,13,0.07) !important;
 }
+[data-incipit-change-review-more] {
+  border-color: rgba(13,13,13,0.08) !important;
+  background: rgba(13,13,13,0.025) !important;
+  color: rgba(13,13,13,0.58) !important;
+}
+[data-incipit-change-review-more]:hover {
+  background: rgba(13,13,13,0.055) !important;
+  color: rgba(13,13,13,0.86) !important;
+}
 [data-incipit-change-review-counts],
 [data-incipit-change-review-status] {
   color: rgba(13,13,13,0.48) !important;

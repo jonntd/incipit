@@ -27,6 +27,9 @@ const EDIT_ACTIVITY_INDEX_DIR = path.join(os.homedir(), '.incipit', 'claude-edit
 const CHANGE_REVIEW_SCHEMA_VERSION = 1;
 const CHANGE_REVIEW_INDEX_DIR = path.join(os.homedir(), '.incipit', 'change-review-v1');
 const CHANGE_REVIEW_DIFF_MAX_BYTES = 768 * 1024;
+const CHANGE_REVIEW_DIFF_CONTEXT_LINES = 3;
+const CHANGE_REVIEW_DIFF_MAX_RENDER_ROWS = 360;
+const CHANGE_REVIEW_DIFF_EXACT_CELL_LIMIT = 600 * 1000;
 const CHANGE_REVIEW_LINE_STATS_VERSION = 2;
 // Change review is a per-turn runtime surface: after the first successful
 // Write/Edit/MultiEdit it stays visible until that assistant turn finalizes.
@@ -4300,6 +4303,246 @@ function readReviewTextFile(filePath, role) {
   return bytes.toString('utf8');
 }
 
+function changeReviewDiffLines(text) {
+  return text === '' ? [] : String(text).split('\n');
+}
+
+function changeReviewDiffGapRow() {
+  return { kind: 'gap', oldLine: null, newLine: null, text: '...' };
+}
+
+// Longest non-crossing chain of lines that occur EXACTLY ONCE in both regions
+// (patience-diff anchors). Returns [{oi, nj}] sorted ascending on both indices.
+function changeReviewAnchorChain(oldLines, newLines, oStart, oEnd, nStart, nEnd) {
+  const oldCount = new Map();
+  const newCount = new Map();
+  const newIndex = new Map();
+  for (let i = oStart; i < oEnd; i++) {
+    const t = oldLines[i];
+    oldCount.set(t, (oldCount.get(t) || 0) + 1);
+  }
+  for (let j = nStart; j < nEnd; j++) {
+    const t = newLines[j];
+    newCount.set(t, (newCount.get(t) || 0) + 1);
+    newIndex.set(t, j);
+  }
+  const pts = [];
+  for (let i = oStart; i < oEnd; i++) {
+    const t = oldLines[i];
+    if (oldCount.get(t) === 1 && newCount.get(t) === 1) {
+      pts.push({ oi: i, nj: newIndex.get(t) });
+    }
+  }
+  if (!pts.length) return [];
+  // LIS on nj (pts already ascending on oi) -> non-crossing matching.
+  const prev = new Array(pts.length).fill(-1);
+  const tailIdx = [];
+  for (let k = 0; k < pts.length; k++) {
+    const nj = pts[k].nj;
+    let lo = 0;
+    let hi = tailIdx.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pts[tailIdx[mid]].nj < nj) lo = mid + 1;
+      else hi = mid;
+    }
+    prev[k] = lo > 0 ? tailIdx[lo - 1] : -1;
+    if (lo === tailIdx.length) tailIdx.push(k);
+    else tailIdx[lo] = k;
+  }
+  const chain = [];
+  let k = tailIdx[tailIdx.length - 1];
+  while (k !== -1) {
+    chain.push(pts[k]);
+    k = prev[k];
+  }
+  chain.reverse();
+  return chain;
+}
+
+// Last-resort alignment for a region with no unique common anchors. Uses the
+// exact O(m*n) LCS only while the cell budget allows; otherwise marks the region
+// as a full delete+add. After anchoring, such regions are small in practice.
+function pushChangeReviewLcsRows(rows, oldLines, newLines, oStart, oEnd, nStart, nEnd) {
+  const m = oEnd - oStart;
+  const n = nEnd - nStart;
+  if (m && n && m * n <= CHANGE_REVIEW_DIFF_EXACT_CELL_LIMIT) {
+    const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        dp[i][j] = oldLines[oStart + i] === newLines[nStart + j]
+          ? dp[i + 1][j + 1] + 1
+          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (oldLines[oStart + i] === newLines[nStart + j]) {
+        rows.push({ kind: 'ctx', oldLine: oStart + i + 1, newLine: nStart + j + 1, text: newLines[nStart + j] });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        rows.push({ kind: 'del', oldLine: oStart + i + 1, newLine: null, text: oldLines[oStart + i] });
+        i++;
+      } else {
+        rows.push({ kind: 'add', oldLine: null, newLine: nStart + j + 1, text: newLines[nStart + j] });
+        j++;
+      }
+    }
+    while (i < m) { rows.push({ kind: 'del', oldLine: oStart + i + 1, newLine: null, text: oldLines[oStart + i] }); i++; }
+    while (j < n) { rows.push({ kind: 'add', oldLine: null, newLine: nStart + j + 1, text: newLines[nStart + j] }); j++; }
+  } else {
+    for (let i = oStart; i < oEnd; i++) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i] });
+    for (let j = nStart; j < nEnd; j++) rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j] });
+  }
+}
+
+// Patience-style recursive line diff. Trims common prefix/suffix, then splits on
+// unique common anchor lines and recurses into the gaps. This is what keeps a
+// tiny edit in a huge file tiny: the unchanged body is all unique lines -> all
+// anchors -> context, so the O(m*n) base case only ever sees the changed slivers.
+// The old contiguous-suffix-only trim collapsed the whole tail into one O(m*n)
+// region whenever the LAST line changed, blew past the cell budget, and degraded
+// to a whole-file delete+add (the +N/-M header then disagreed with the body).
+function pushChangeReviewLineDiff(rows, oldLines, newLines, oStart, oEnd, nStart, nEnd) {
+  while (oStart < oEnd && nStart < nEnd && oldLines[oStart] === newLines[nStart]) {
+    rows.push({ kind: 'ctx', oldLine: oStart + 1, newLine: nStart + 1, text: oldLines[oStart] });
+    oStart++;
+    nStart++;
+  }
+  const suffix = [];
+  while (oEnd > oStart && nEnd > nStart && oldLines[oEnd - 1] === newLines[nEnd - 1]) {
+    oEnd--;
+    nEnd--;
+    suffix.push({ kind: 'ctx', oldLine: oEnd + 1, newLine: nEnd + 1, text: oldLines[oEnd] });
+  }
+
+  if (oStart >= oEnd && nStart >= nEnd) {
+    // fully reduced
+  } else if (oStart >= oEnd) {
+    for (let j = nStart; j < nEnd; j++) rows.push({ kind: 'add', oldLine: null, newLine: j + 1, text: newLines[j] });
+  } else if (nStart >= nEnd) {
+    for (let i = oStart; i < oEnd; i++) rows.push({ kind: 'del', oldLine: i + 1, newLine: null, text: oldLines[i] });
+  } else {
+    const anchors = changeReviewAnchorChain(oldLines, newLines, oStart, oEnd, nStart, nEnd);
+    if (anchors.length) {
+      let oi = oStart;
+      let nj = nStart;
+      for (const a of anchors) {
+        pushChangeReviewLineDiff(rows, oldLines, newLines, oi, a.oi, nj, a.nj);
+        rows.push({ kind: 'ctx', oldLine: a.oi + 1, newLine: a.nj + 1, text: oldLines[a.oi] });
+        oi = a.oi + 1;
+        nj = a.nj + 1;
+      }
+      pushChangeReviewLineDiff(rows, oldLines, newLines, oi, oEnd, nj, nEnd);
+    } else {
+      pushChangeReviewLcsRows(rows, oldLines, newLines, oStart, oEnd, nStart, nEnd);
+    }
+  }
+
+  for (let k = suffix.length - 1; k >= 0; k--) rows.push(suffix[k]);
+}
+
+function buildChangeReviewFullDiffRows(oldText, newText) {
+  const oldLines = changeReviewDiffLines(oldText);
+  const newLines = changeReviewDiffLines(newText);
+  if (!oldLines.length && !newLines.length) return [];
+  if (!oldLines.length) {
+    return newLines.map((text, i) => ({ kind: 'add', oldLine: null, newLine: i + 1, text }));
+  }
+  if (!newLines.length) {
+    return oldLines.map((text, i) => ({ kind: 'del', oldLine: i + 1, newLine: null, text }));
+  }
+  const rows = [];
+  pushChangeReviewLineDiff(rows, oldLines, newLines, 0, oldLines.length, 0, newLines.length);
+  return rows;
+}
+
+function isChangeReviewContextRow(row) {
+  return !!row && row.kind === 'ctx';
+}
+
+function compactChangeReviewDiffRows(rows) {
+  rows = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!rows.length) return [];
+  const ranges = [];
+  let i = 0;
+  while (i < rows.length) {
+    while (i < rows.length && isChangeReviewContextRow(rows[i])) i++;
+    const start = i;
+    while (i < rows.length && !isChangeReviewContextRow(rows[i])) i++;
+    if (start < i) {
+      ranges.push([
+        Math.max(0, start - CHANGE_REVIEW_DIFF_CONTEXT_LINES),
+        Math.min(rows.length, i + CHANGE_REVIEW_DIFF_CONTEXT_LINES),
+      ]);
+    }
+  }
+  if (!ranges.length) return rows.slice(0, Math.min(rows.length, CHANGE_REVIEW_DIFF_CONTEXT_LINES * 2 + 1));
+
+  const merged = [];
+  for (const range of ranges) {
+    const prev = merged[merged.length - 1];
+    if (prev && range[0] <= prev[1]) prev[1] = Math.max(prev[1], range[1]);
+    else merged.push(range);
+  }
+
+  const out = [];
+  let lastEnd = 0;
+  for (const range of merged) {
+    if (out.length && range[0] > lastEnd) out.push(changeReviewDiffGapRow());
+    for (let idx = range[0]; idx < range[1]; idx++) out.push(rows[idx]);
+    lastEnd = range[1];
+  }
+  return trimChangeReviewDiffRows(out);
+}
+
+function trimChangeReviewDiffRows(rows) {
+  if (!Array.isArray(rows) || rows.length <= CHANGE_REVIEW_DIFF_MAX_RENDER_ROWS) return rows;
+  const head = Math.floor((CHANGE_REVIEW_DIFF_MAX_RENDER_ROWS - 1) / 2);
+  const tail = CHANGE_REVIEW_DIFF_MAX_RENDER_ROWS - 1 - head;
+  return rows.slice(0, head)
+    .concat([changeReviewDiffGapRow()])
+    .concat(rows.slice(rows.length - tail));
+}
+
+function firstChangeReviewLine(rows, key) {
+  for (const row of rows || []) {
+    const value = row && Number(row[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 1;
+}
+
+function changeReviewRowsText(rows, side) {
+  const lines = [];
+  for (const row of rows || []) {
+    if (!row) continue;
+    if (row.kind === 'gap') {
+      if (lines.length && lines[lines.length - 1] !== '...') lines.push('...');
+      continue;
+    }
+    if (side === 'old' && row.kind === 'add') continue;
+    if (side === 'new' && row.kind === 'del') continue;
+    lines.push(typeof row.text === 'string' ? row.text : '');
+  }
+  return lines.join('\n');
+}
+
+function buildChangeReviewDiffPayload(file, oldText, currentText) {
+  const rows = compactChangeReviewDiffRows(buildChangeReviewFullDiffRows(oldText, currentText));
+  return {
+    filePath: file.filePath,
+    displayPath: file.displayPath,
+    oldText: changeReviewRowsText(rows, 'old'),
+    newText: changeReviewRowsText(rows, 'new'),
+    oldStartLine: firstChangeReviewLine(rows, 'oldLine'),
+    newStartLine: firstChangeReviewLine(rows, 'newLine'),
+    rows,
+  };
+}
+
 function resolveChangeReviewDiff(state, comm, message) {
   const ctx = changeReviewContext(state, comm, message);
   const file = findChangeReviewFile(ctx.parser, message.fileId);
@@ -4319,12 +4562,7 @@ function resolveChangeReviewDiff(state, comm, message) {
   return {
     ok: true,
     file: changeReviewFilePayload(file, ctx.reviewState),
-    diff: {
-      filePath: file.filePath,
-      displayPath: file.displayPath,
-      oldText,
-      newText: currentText,
-    },
+    diff: buildChangeReviewDiffPayload(file, oldText, currentText),
   };
 }
 
@@ -4988,6 +5226,8 @@ module.exports.__test = {
   loadChangeReviewState,
   saveChangeReviewState,
   resolveChangeReviewDiff,
+  buildChangeReviewFullDiffRows,
+  compactChangeReviewDiffRows,
   resolveChangeReviewReject,
   captureChangeReviewGuards,
   changeReviewEntryId,

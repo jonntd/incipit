@@ -1080,6 +1080,86 @@ function assertNoActiveTurn(payload, message = 'active composer review payload m
   }
 })();
 
+(function reviewDiffPayloadIsCompactHunkNotWholeFile() {
+  const dir = tmp();
+  const sessionId = 'cr-compact-diff-' + Date.now();
+  const hist = backupDir(sessionId);
+  try {
+    fs.mkdirSync(hist, { recursive: true });
+    const oldLines = Array.from({ length: 80 }, (_, i) => `line ${i + 1}`);
+    const newLines = oldLines.slice();
+    oldLines[49] = 'old target line';
+    newLines[49] = 'new target line';
+    fs.writeFileSync(path.join(hist, 'old@v1'), oldLines.join('\n') + '\n');
+    fs.writeFileSync(path.join(dir, 'target.txt'), newLines.join('\n') + '\n');
+    const { state, comm } = makeHarness(dir, sessionId, [
+      userLine(sessionId, dir, 'u1'),
+      snapshotLine('u1', {
+        'target.txt': {
+          backupFileName: 'old@v1',
+          version: 1,
+          backupTime: '2026-06-03T10:00:00.001Z',
+        },
+      }),
+      assistantToolLine(sessionId, dir, 'assistant-u1', 'tool-u1', 'Edit', {
+        file_path: 'target.txt',
+        old_string: 'old target line',
+        new_string: 'new target line',
+      }),
+      toolResultLine(sessionId, dir, 'tool-result-u1', 'tool-u1', 'assistant-u1'),
+    ]);
+    const finalized = T.resolveChangeReviewTurnFinalized(state, comm, { sessionId, cwd: dir, turnKey: 'u1' });
+    const file = finalized.latestTurn.files[0];
+    const diff = T.resolveChangeReviewDiff(state, comm, { sessionId, cwd: dir, fileId: file.id });
+    assert.strictEqual(diff.ok, true);
+    assert.ok(Array.isArray(diff.diff.rows), 'review diff must provide precomputed compact rows');
+    assert.ok(diff.diff.rows.length <= 8, 'single-line edit should keep only nearby context rows');
+    assert.ok(diff.diff.rows.some(row => row.kind === 'del' && row.oldLine === 50 && row.text === 'old target line'));
+    assert.ok(diff.diff.rows.some(row => row.kind === 'add' && row.newLine === 50 && row.text === 'new target line'));
+    assert.ok(!diff.diff.rows.some(row => row.oldLine === 1 || row.newLine === 1), 'top of whole file must not be rendered');
+    assert.ok(!diff.diff.rows.some(row => row.oldLine === 80 || row.newLine === 80), 'bottom of whole file must not be rendered');
+    assert.ok(!diff.diff.oldText.includes('line 1') && !diff.diff.newText.includes('line 80'),
+      'fallback text payload must also be compact, not the full file');
+    assert.strictEqual(diff.diff.oldStartLine, 47);
+    assert.strictEqual(diff.diff.newStartLine, 47);
+    ok('review diff payload is a compact hunk, not the whole file');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(hist, { recursive: true, force: true });
+    fs.rmSync(reviewStatePath(sessionId), { force: true });
+  }
+})();
+
+(function scatteredEditWithChangedLastLineStaysCompact() {
+  // Regression: a tiny edit near the top PLUS a changed last line in a large
+  // file used to defeat the contiguous-suffix trim, dump the whole tail into the
+  // O(m*n) LCS, exceed the cell budget and degrade to a whole-file delete+add
+  // (the +N/-M header then disagreed with the rendered body). Patience anchoring
+  // must keep both edits as small, correctly-located hunks.
+  const oldLines = Array.from({ length: 2900 }, (_, i) => `line ${i + 1} body ${i % 9}`);
+  const newLines = oldLines.slice();
+  newLines.splice(508, 1, '// inserted comment', 'changed line 509 body 4');
+  newLines[newLines.length - 1] = 'module.exports = { main, __test };';
+
+  const rows = T.buildChangeReviewFullDiffRows(oldLines.join('\n'), newLines.join('\n'));
+  const compact = T.compactChangeReviewDiffRows(rows);
+
+  const dels = compact.filter(r => r.kind === 'del');
+  const adds = compact.filter(r => r.kind === 'add');
+  // Real change is 2 dels + 3 adds across two spots — never the whole file.
+  assert.ok(dels.length === 2, `expected 2 deletions, got ${dels.length}`);
+  assert.ok(adds.length === 3, `expected 3 additions, got ${adds.length}`);
+  assert.ok(compact.length < 40, `compact diff must stay small, got ${compact.length} rows`);
+  // Both hunks land at their true locations, not scattered across the file.
+  assert.ok(dels.some(r => r.oldLine === 509), 'first edit hunk must be at line 509');
+  assert.ok(dels.some(r => r.oldLine === 2900), 'last-line edit hunk must be at line 2900');
+  assert.ok(compact.some(r => r.kind === 'gap'), 'two separated hunks must be split by a gap');
+  // The huge unchanged body must never be emitted as add/del.
+  assert.ok(!adds.some(r => /body/.test(r.text) && r.text.indexOf('changed') === -1),
+    'unchanged body lines must not be rendered as additions');
+  ok('scattered edit with changed last line stays a compact diff');
+})();
+
 (function unknownBackupIsUnavailableNotInvalidName() {
   const dir = tmp();
   const sessionId = 'cr-no-backup-' + Date.now();

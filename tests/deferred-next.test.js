@@ -263,11 +263,12 @@ function cssRuleBody(selector) {
 (function changeReviewComposerMiniBarIsRemoved() {
   const state = functionBody('setupChangeReviewFileReview', 1800);
   const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
-  const updateBlock = functionBody('updateChangeReviewTurnBlock', 1600);
+  const updateBlock = functionBody('updateChangeReviewTurnBlock', 2600);
   const format = functionBody('formatChangeReviewSummary', 700);
   const stats = functionBody('appendChangeReviewLineStats', 700);
   const row = functionBody('renderChangeReviewFileRow', 1800);
   const summaryRow = functionBody('renderChangeReviewSummaryRow', 1400);
+  const moreRow = functionBody('renderChangeReviewMoreRow', 1200);
   assert.ok(!legacy.includes('function renderChangeReviewCard()') &&
     !legacy.includes('function ensureChangeReviewCard()') &&
     !legacy.includes('function changeReviewActiveTurn()') &&
@@ -298,6 +299,15 @@ function cssRuleBody(selector) {
     summaryRow.includes('appendChangeReviewLineStats(counts, summary.added, summary.removed)') &&
     !summaryRow.includes('openChangeReviewDiff'),
     'Agent/subagent summary rows must be visibly labeled and must not offer a fake diff');
+  assert.ok(legacy.includes('const CHANGE_REVIEW_VISIBLE_FILE_LIMIT = 3;') &&
+    updateBlock.includes('files.slice(0, CHANGE_REVIEW_VISIBLE_FILE_LIMIT)') &&
+    updateBlock.includes('renderChangeReviewMoreRow(block, turn, hiddenCount, expanded)') &&
+    moreRow.includes("row.setAttribute('data-incipit-change-review-more', '')") &&
+    moreRow.includes("block.dataset.incipitChangeReviewExpanded = '1'") &&
+    moreRow.includes("delete block.dataset.incipitChangeReviewExpanded") &&
+    theme.includes('[data-incipit-change-review-more]') &&
+    warm.includes('[data-incipit-change-review-more]'),
+    'finalized review blocks must initially show at most three concrete files, then reveal the remaining count on demand');
   assert.ok(theme.includes('[data-incipit-change-review-subagent-badge]') &&
     theme.includes('[data-incipit-change-review-source="subagent"]') &&
     theme.includes('margin: 8px 0 16px') &&
@@ -416,11 +426,18 @@ function cssRuleBody(selector) {
     'the existing write-diff modal renderer must be registered for change-review reuse');
   assert.ok(modal.includes('const renderer = changeReviewWriteDiffRenderer') &&
     modal.includes('renderer.languageClassForPath(filePath)') &&
+    modal.includes('if (diff && Array.isArray(diff.rows)) payload.rows = diff.rows;') &&
+    modal.includes('oldStartLine: diff.oldStartLine || diff.startLine || 1') &&
     modal.includes('closeChangeReviewModal();') &&
-    modal.includes('renderer.openModal(payload, block, stats, languageClass, null)') &&
+    modal.includes('renderer.openModal(payload, block, stats, languageClass, lineInfo)') &&
     !modal.includes('data-incipit-change-review-diff-grid') &&
     !modal.includes('fillChangeReviewDiffBody'),
-    'change-review successful diff open must delegate to the existing write-diff modal');
+    'change-review successful diff open must delegate compact row payloads to the existing write-diff modal');
+  assert.ok(legacy.includes('if (payload && Array.isArray(payload.rows))') &&
+    legacy.includes("row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx' || row.kind === 'gap'") &&
+    legacy.includes('absoluteLineNumber: true') &&
+    theme.includes('[data-incipit-write-diff-row="gap"]'),
+    'write-diff renderer must accept host-supplied compact hunk rows with absolute line numbers');
   assert.ok(!legacy.includes('function changeReviewDiffRows') &&
     !legacy.includes('function fillChangeReviewDiffBody') &&
     !legacy.includes('data-incipit-change-review-diff-grid') &&

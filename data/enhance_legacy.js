@@ -2162,6 +2162,8 @@ import {
     subagentLabel: 'Sub-agent',
     filesChanged: '{n} files changed',
     oneFileChanged: '1 file changed',
+    showMoreFiles: 'Show {n} more files',
+    showFewerFiles: 'Show fewer files',
     noFiles: 'No file changes',
     stale: 'Stale',
     rejected: 'Rejected',
@@ -2179,6 +2181,7 @@ import {
   let changeReviewStartTimer = 0;
   let changeReviewStartRetryUntil = 0;
   let changeReviewStartedTurnKey = '';
+  const CHANGE_REVIEW_VISIBLE_FILE_LIMIT = 3;
   let changeReviewSeq = 0;
   const changeReviewDiffPending = new Map();
   const changeReviewRejectPending = new Map();
@@ -2986,6 +2989,24 @@ import {
     return row;
   }
 
+  function renderChangeReviewMoreRow(block, turn, hiddenCount, expanded) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.setAttribute('data-incipit-change-review-more', '');
+    row.textContent = expanded
+      ? changeReviewText('showFewerFiles')
+      : changeReviewText('showMoreFiles', { n: hiddenCount });
+    row.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (!block) return;
+      if (expanded) delete block.dataset.incipitChangeReviewExpanded;
+      else block.dataset.incipitChangeReviewExpanded = '1';
+      updateChangeReviewTurnBlock(block, turn);
+    });
+    return row;
+  }
+
   function changeReviewStatusLabel(status) {
     if (status === 'stale') return changeReviewText('stale');
     if (status === 'rejected') return changeReviewText('rejected');
@@ -3202,6 +3223,7 @@ import {
 
   function updateChangeReviewTurnBlock(block, turn) {
     const busy = changeReviewBusySafe();
+    const expanded = block.dataset.incipitChangeReviewExpanded === '1';
     block.textContent = '';
     const header = document.createElement('div');
     header.setAttribute('data-incipit-change-review-turn-header', '');
@@ -3229,8 +3251,13 @@ import {
     if (files.length || summary) {
       const list = document.createElement('div');
       list.setAttribute('data-incipit-change-review-turn-files', '');
-      for (const file of files) {
+      const visibleFiles = expanded ? files : files.slice(0, CHANGE_REVIEW_VISIBLE_FILE_LIMIT);
+      for (const file of visibleFiles) {
         list.appendChild(renderChangeReviewFileRow(file, { busy }));
+      }
+      const hiddenCount = Math.max(0, files.length - visibleFiles.length);
+      if (hiddenCount > 0 || (expanded && files.length > CHANGE_REVIEW_VISIBLE_FILE_LIMIT)) {
+        list.appendChild(renderChangeReviewMoreRow(block, turn, hiddenCount, expanded));
       }
       if (summary) list.appendChild(renderChangeReviewSummaryRow(summary));
       block.appendChild(list);
@@ -3446,6 +3473,13 @@ import {
       oldText: diff && typeof diff.oldText === 'string' ? diff.oldText : '',
       newText: diff && typeof diff.newText === 'string' ? diff.newText : '',
     };
+    if (diff && Array.isArray(diff.rows)) payload.rows = diff.rows;
+    const lineInfo = diff && (diff.oldStartLine || diff.newStartLine || diff.startLine)
+      ? {
+          oldStartLine: diff.oldStartLine || diff.startLine || 1,
+          newStartLine: diff.newStartLine || diff.startLine || 1,
+        }
+      : null;
     const stats = changeReviewFileHasLineStats(file)
       ? {
           added: changeReviewNumber(file.added),
@@ -3459,7 +3493,7 @@ import {
     const languageClass = renderer.languageClassForPath(filePath);
     closeChangeReviewModal();
     try {
-      renderer.openModal(payload, block, stats, languageClass, null);
+      renderer.openModal(payload, block, stats, languageClass, lineInfo);
     } catch (error) {
       openChangeReviewModalShell(title,
         changeReviewText('diffFail', { msg: error && error.message ? error.message : String(error) }));
@@ -8782,12 +8816,12 @@ import {
     function annotateIncipitDiffRows(rows) {
       let i = 0;
       while (i < rows.length) {
-        if (rows[i].kind === 'ctx') {
+        if (rows[i].kind === 'ctx' || rows[i].kind === 'gap') {
           i++;
           continue;
         }
         const start = i;
-        while (i < rows.length && rows[i].kind !== 'ctx') i++;
+        while (i < rows.length && rows[i].kind !== 'ctx' && rows[i].kind !== 'gap') i++;
         const run = rows.slice(start, i);
         const dels = run.filter(row => row.kind === 'del');
         const adds = run.filter(row => row.kind === 'add');
@@ -8838,6 +8872,21 @@ import {
     }
 
     function buildIncipitDiffRows(payload) {
+      if (payload && Array.isArray(payload.rows)) {
+        const rows = payload.rows.map(row => {
+          const kind = row && (row.kind === 'add' || row.kind === 'del' || row.kind === 'ctx' || row.kind === 'gap')
+            ? row.kind
+            : 'ctx';
+          return {
+            kind,
+            oldLine: diffPositiveLineNumber(row && row.oldLine) || null,
+            newLine: diffPositiveLineNumber(row && row.newLine) || null,
+            text: typeof (row && row.text) === 'string' ? row.text : '',
+            absoluteLineNumber: true,
+          };
+        });
+        return annotateIncipitDiffRows(rows);
+      }
       const oldLines = writeDiffLines(payload.oldText);
       const newLines = writeDiffLines(payload.newText);
       if (!oldLines.length) {
@@ -8909,9 +8958,15 @@ import {
         const n = document.createElement('span');
         n.setAttribute('data-incipit-diff-island-number', '');
         n.setAttribute('data-incipit-write-diff-number', '');
-        const rawLine = row.kind === 'del' ? row.oldLine : row.newLine;
+        const rawLine = row.kind === 'del'
+          ? row.oldLine
+          : row.kind === 'add'
+            ? row.newLine
+            : (row.newLine || row.oldLine);
         const base = row.kind === 'del' ? oldBase : newBase;
-        n.textContent = rawLine ? String(base + rawLine - 1) : '';
+        n.textContent = rawLine
+          ? String(row.absoluteLineNumber ? rawLine : base + rawLine - 1)
+          : '';
 
         const pre = document.createElement('pre');
         pre.setAttribute('data-incipit-diff-island-pre', '');
@@ -8919,7 +8974,7 @@ import {
         const code = document.createElement('code');
         code.setAttribute('data-incipit-diff-island-code', '');
         code.setAttribute('data-incipit-write-diff-code', '');
-        if (languageClass) code.className = languageClass;
+        if (languageClass && row.kind !== 'gap') code.className = languageClass;
         code.textContent = row.text;
         code.__incipitDiffCharKind = row.kind;
         code.__incipitDiffCharRanges = row.charRanges || [];
