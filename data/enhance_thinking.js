@@ -32,6 +32,137 @@ export function initThinking() {
   // `m<msgIdx>t<thinkingIdx>`.
 
   const intentOpen = new Set();
+  const THINKING_REPLACE_GRACE_MS = 1500;
+  const thinkingTimingByKey = new Map();
+  const thinkingSummaryObservers = new Map();
+
+  const thinkingSummaryLabel = (summary) => {
+    if (!summary || !summary.querySelector) return null;
+    return summary.querySelector(':scope > span') || summary.firstElementChild || null;
+  };
+
+  const thinkingLabelText = (summary) => {
+    const label = thinkingSummaryLabel(summary);
+    return label ? (label.textContent || '').trim() : '';
+  };
+
+  const isLiveThinkingLabel = (text) => /^Thinking\.\.\./.test(String(text || '').trim());
+  const isDoneThinkingLabel = (text) => /^Thought for \d+s\b/.test(String(text || '').trim());
+  const formatThoughtDuration = (ms) => 'Thought for ' + Math.max(0, Math.round(ms / 1000)) + 's';
+  const nowMs = () => (window.performance && typeof window.performance.now === 'function')
+    ? window.performance.now()
+    : Date.now();
+
+  const markThinkingLive = (key, summary) => {
+    if (!key) return;
+    const now = nowMs();
+    const existing = thinkingTimingByKey.get(key);
+    if (!existing ||
+        existing.durationMs != null ||
+        (existing.pendingRemountUntilMs && now > existing.pendingRemountUntilMs)) {
+      thinkingTimingByKey.set(key, {
+        startMs: now,
+        durationMs: null,
+        activeSummary: summary || null,
+        pendingRemountEndMs: 0,
+        pendingRemountUntilMs: 0,
+      });
+      return;
+    }
+    existing.activeSummary = summary || existing.activeSummary || null;
+    existing.pendingRemountEndMs = 0;
+    existing.pendingRemountUntilMs = 0;
+  };
+
+  const noteThinkingSummaryDetached = (key, summary) => {
+    if (!key) return;
+    const existing = thinkingTimingByKey.get(key);
+    if (!existing || existing.durationMs != null || existing.activeSummary !== summary) return;
+    const endMs = nowMs();
+    existing.activeSummary = null;
+    existing.pendingRemountEndMs = endMs;
+    existing.pendingRemountUntilMs = endMs + THINKING_REPLACE_GRACE_MS;
+  };
+
+  const markThinkingDone = (key, summary) => {
+    if (!key) return null;
+    const existing = thinkingTimingByKey.get(key);
+    if (!existing || !existing.startMs) return existing || null;
+    if (existing.durationMs == null) {
+      const endMs = nowMs();
+      const observedSameSummary = summary && existing.activeSummary === summary;
+      const observedPromptRemount =
+        existing.pendingRemountEndMs > 0 &&
+        existing.pendingRemountUntilMs > 0 &&
+        endMs <= existing.pendingRemountUntilMs;
+      if (!observedSameSummary && !observedPromptRemount) {
+        // Historical/virtualized thinking blocks can replay a transient
+        // "Thinking..." placeholder long after the real transition. If we
+        // missed the live->done edge, leave the host label alone instead of
+        // manufacturing a wall-clock duration from a stale start time.
+        thinkingTimingByKey.delete(key);
+        return null;
+      }
+      const effectiveEndMs = observedPromptRemount ? existing.pendingRemountEndMs : endMs;
+      existing.durationMs = Math.max(0, effectiveEndMs - existing.startMs);
+      existing.endMs = effectiveEndMs;
+      existing.activeSummary = null;
+      existing.pendingRemountEndMs = 0;
+      existing.pendingRemountUntilMs = 0;
+    }
+    return existing;
+  };
+
+  const syncThinkingSummaryDuration = (details, key) => {
+    const summary = details && details.querySelector && details.querySelector(':scope > summary');
+    if (!summary) return;
+    const label = thinkingSummaryLabel(summary);
+    if (!label) return;
+    const text = (label.textContent || '').trim();
+    if (isLiveThinkingLabel(text)) {
+      markThinkingLive(key, summary);
+      return;
+    }
+    if (!isDoneThinkingLabel(text)) return;
+    const timing = markThinkingDone(key, summary);
+    if (!timing || timing.durationMs == null) return;
+    const next = formatThoughtDuration(timing.durationMs);
+    if (label.textContent !== next) label.textContent = next;
+  };
+
+  const observeThinkingSummary = (summary, details, key) => {
+    if (!summary || !details || !key) return;
+    const existing = thinkingSummaryObservers.get(summary);
+    if (existing && existing.key === key) return;
+    if (existing) existing.observer.disconnect();
+    const observer = new MutationObserver(() => {
+      syncThinkingSummaryDuration(details, key);
+    });
+    // Scoped characterData observation is intentional: the body observer stays
+    // characterData-free, while this watches only the host's tiny summary label
+    // so we can end the real runtime clock when "Thinking..." becomes done.
+    observer.observe(summary, { childList: true, subtree: true, characterData: true });
+    thinkingSummaryObservers.set(summary, { observer, key });
+  };
+
+  const cleanupThinkingSummaryObservers = (seen) => {
+    for (const [summary, entry] of Array.from(thinkingSummaryObservers.entries())) {
+      if (summary.isConnected && seen.has(summary)) continue;
+      noteThinkingSummaryDetached(entry.key, summary);
+      entry.observer.disconnect();
+      thinkingSummaryObservers.delete(summary);
+    }
+  };
+
+  const currentlyMountedObservedSummaries = () => {
+    const seen = new Set();
+    for (const summary of thinkingSummaryObservers.keys()) {
+      if (summary && summary.isConnected && summary.closest && summary.closest(SEL.thinking)) {
+        seen.add(summary);
+      }
+    }
+    return seen;
+  };
 
   const keyFor = (details) => {
     const msg = details.closest(SEL.message);
@@ -71,7 +202,11 @@ export function initThinking() {
 
   const reconcileAll = () => {
     const all = document.querySelectorAll(SEL.thinking);
-    if (!all.length) return;
+    if (!all.length) {
+      cleanupThinkingSummaryObservers(new Set());
+      return;
+    }
+    cleanupThinkingSummaryObservers(currentlyMountedObservedSummaries());
     // Build msgIdx and tIdx in one pass instead of calling keyFor per node.
     // keyFor on its own is O(messages) for the message index lookup, so
     // calling it N times during a reconcile pass scales as N × messages —
@@ -85,6 +220,7 @@ export function initThinking() {
       const ts = msgs[i].querySelectorAll(SEL.thinking);
       for (let j = 0; j < ts.length; j++) tIdxOf.set(ts[j], j);
     }
+    const seenSummaries = new Set();
     for (let i = 0; i < all.length; i++) {
       const d = all[i];
       d.__claudeFrozen = true;
@@ -95,6 +231,15 @@ export function initThinking() {
       const ti = tIdxOf.get(d);
       if (ti == null) continue;
       const k = `m${mi}t${ti}`;
+      const summary = d.querySelector(':scope > summary');
+      if (summary) {
+        seenSummaries.add(summary);
+        const labelText = thinkingLabelText(summary);
+        if (isLiveThinkingLabel(labelText) || thinkingTimingByKey.has(k)) {
+          observeThinkingSummary(summary, d, k);
+          syncThinkingSummaryDuration(d, k);
+        }
+      }
       const shouldOpen = intentOpen.has(k);
       const isOpen = d.hasAttribute('open');
       if (shouldOpen && !isOpen) {
@@ -104,6 +249,7 @@ export function initThinking() {
         NATIVE_REMOVE.call(d, 'open');
       }
     }
+    cleanupThinkingSummaryObservers(seenSummaries);
   };
   reconcileAll();
 
