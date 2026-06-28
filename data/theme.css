@@ -230,6 +230,19 @@
   font-size: var(--incipit-body-size, 13px);
 }
 
+/* The host markdown root ships with `overflow-x:hidden`. In Chromium that can
+   make the same node a vertical scroll container (`overflow-y:auto` by
+   computed-value rules), so long assistant replies catch the mouse wheel and
+   show a full-height inner scrollbar. Assistant prose should flow through the
+   transcript's single messagesContainer scroller; keep only non-scroll x
+   clipping for pathological wide content. Scope this to real message rows so
+   unrelated CSS-module `root_*` app shells keep their host overflow. */
+[data-incipit-message] > [data-incipit-markdown-root] {
+  max-height: none !important;
+  overflow: visible !important;
+  overflow-x: clip !important;
+}
+
 /* Calibrate the timeline marker dot and connector for the adjusted message
    typography. Different message shapes need slightly different top offsets. */
 
@@ -2998,12 +3011,18 @@ pre code {
    geometry from this subtree; changing border/width/box sizing or animating
    the container is harmless for short input but desynchronizes long,
    scrollable composer text after edits. Keep the real fieldset layout-owned by
-   the host; put only non-metric colour on the background layer below. */
+   the host; put only non-metric colour on the background layer below. The root
+   fieldset border stays transparent in every focus/permission state so a click
+   into the editor never draws an extra input-frame ring. */
 fieldset[class*="inputContainer_"],
 [class*="inputContainer_"]:has(> [class*="inputContainerBackground"]),
 fieldset[class*="inputContainer_"]:focus-within,
-[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within {
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within,
+fieldset[class*="inputContainer_"][data-permission-mode]:focus-within,
+[class*="inputContainer_"][data-permission-mode]:has(> [class*="inputContainerBackground"]):focus-within {
   --focus-ring-color: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
 }
 [class*="inputContainerBackground"] {
   background: #2c2c2a !important;
@@ -3026,6 +3045,8 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:focus-wit
 [class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]):focus-within {
   position: relative !important;
   --focus-ring-color: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
 }
 fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"] [class*="inputContainerBackground"],
 [class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]) [class*="inputContainerBackground"] {

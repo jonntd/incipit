@@ -41,13 +41,16 @@ function functionBody(name, span = 1800) {
   assert.ok(idx >= 0, 'missing function ' + name);
   return legacy.slice(idx, idx + span);
 }
-function cssRuleBody(selector) {
-  const idx = theme.indexOf(selector);
+function cssRuleBodyFrom(source, selector) {
+  const idx = source.indexOf(selector);
   assert.ok(idx >= 0, 'missing CSS selector ' + selector);
-  const open = theme.indexOf('{', idx);
-  const close = theme.indexOf('}', open);
+  const open = source.indexOf('{', idx);
+  const close = source.indexOf('}', open);
   assert.ok(open >= 0 && close > open, 'missing CSS block for ' + selector);
-  return theme.slice(open + 1, close);
+  return source.slice(open + 1, close);
+}
+function cssRuleBody(selector) {
+  return cssRuleBodyFrom(theme, selector);
 }
 
 (function legacyModuleIsSplitAndRegistered() {
@@ -222,6 +225,7 @@ function cssRuleBody(selector) {
   const mountPoint = functionBody('composerRailMountPoint', 500);
   const deferredMount = functionBody('deferredCardMountPoint', 500);
   const inputRule = cssRuleBody('fieldset[class*="inputContainer_"]');
+  const warmInputRule = cssRuleBodyFrom(warm, 'fieldset[class*="inputContainer_"]');
   const inputBgRule = cssRuleBody('\n[class*="inputContainerBackground"]');
   const railRule = cssRuleBody('[data-incipit-composer-rail]');
   assert.ok(legacy.includes('let composerRailEl = null') &&
@@ -252,6 +256,13 @@ function cssRuleBody(selector) {
     theme.includes('flex-direction: column') &&
     theme.includes('[data-incipit-composer-rail-hidden]') &&
     inputRule.includes('--focus-ring-color: transparent !important;') &&
+    inputRule.includes('border-color: transparent !important;') &&
+    inputRule.includes('outline: none !important;') &&
+    warmInputRule.includes('--focus-ring-color: transparent !important;') &&
+    warmInputRule.includes('border-color: transparent !important;') &&
+    warmInputRule.includes('outline: none !important;') &&
+    theme.includes('fieldset[class*="inputContainer_"][data-permission-mode]:focus-within') &&
+    warm.includes('fieldset[class*="inputContainer_"][data-permission-mode]:focus-within') &&
     !/box-sizing|width\s*:|max-width|min-width|min-inline-size|background\s*:|background-color|border\s*:|box-shadow|transition/.test(inputRule) &&
     inputBgRule.includes('background: #2c2c2a !important;') &&
     inputBgRule.includes('box-shadow: 0 2px 10px rgba(0,0,0,0.20)') &&
@@ -552,7 +563,9 @@ function cssRuleBody(selector) {
   const composerTextSelector = /\[class\*="(?:messageInput|mentionMirror|voiceInterim)"\]/;
   const composerChipSelector = 'fieldset[class*="inputContainer_"] [class*="inputMentionChip"]';
   const inputRule = cssRuleBody('fieldset[class*="inputContainer_"]');
+  const warmInputRule = cssRuleBodyFrom(warm, 'fieldset[class*="inputContainer_"]');
   const composerChip = cssRuleBody(composerChipSelector);
+  const assistantMarkdownRule = cssRuleBody('[data-incipit-message] > [data-incipit-markdown-root]');
   assert.ok(!legacy.includes('setupComposerInputState') &&
     !legacy.includes('composerEditorPlainText') &&
     !legacy.includes('data-incipit-composer-empty'),
@@ -590,6 +603,20 @@ function cssRuleBody(selector) {
     theme.includes('*:not([class*="inputContainer_"]):not([class*="inputContainer_"] *):not([contenteditable]):not([contenteditable] *)') &&
     theme.includes('scrollbar-width: auto !important;'),
     'global scrollbar styling must exclude the official composer/contenteditable subtree; when the composer becomes scrollable, forcing its scrollbar metrics desynchronizes text, mirror, and caret geometry');
+  assert.ok(/max-height\s*:\s*none\s*!important\s*;/.test(assistantMarkdownRule) &&
+    /overflow\s*:\s*visible\s*!important\s*;/.test(assistantMarkdownRule) &&
+    /overflow-x\s*:\s*clip\s*!important\s*;/.test(assistantMarkdownRule) &&
+    !/overflow-y\s*:/.test(assistantMarkdownRule),
+    'assistant markdown roots must not become nested vertical scrollers; host overflow-x:hidden computes into wheel-catching overflow-y:auto in long replies, so prose must flow through the transcript scroller');
+  assert.ok(inputRule.includes('--focus-ring-color: transparent !important;') &&
+    inputRule.includes('border-color: transparent !important;') &&
+    inputRule.includes('outline: none !important;') &&
+    warmInputRule.includes('--focus-ring-color: transparent !important;') &&
+    warmInputRule.includes('border-color: transparent !important;') &&
+    warmInputRule.includes('outline: none !important;') &&
+    theme.includes('fieldset[class*="inputContainer_"][data-permission-mode]:focus-within') &&
+    warm.includes('fieldset[class*="inputContainer_"][data-permission-mode]:focus-within'),
+    'composer input shell must not draw a focus/permission-state frame; only the caret inside the host editor should change on click');
   assert.ok(!/border\s*:|box-sizing\s*:|width\s*:|max-width\s*:|min-width\s*:|min-inline-size\s*:|transition\s*:|box-shadow\s*:|background(?:-color)?\s*:/.test(inputRule),
     'input container itself must not carry metric/layout/transition styling; long scrollable composer text uses that host box for caret and mirror geometry');
   assert.ok(!theme.includes('fieldset[class*="inputContainer_"] {\n  position: relative !important;') &&

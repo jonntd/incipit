@@ -507,12 +507,18 @@
   color: #bf5d3a !important;
 }
 
-/* ---------- Input container (pure white card on cream paper) ---------- */
+/* ---------- Input container (pure white card on cream paper)
+   Keep the root fieldset visually stable across focus/permission states;
+   the fixed card edge lives on inputContainerBackground. ---------- */
 fieldset[class*="inputContainer_"],
 [class*="inputContainer_"]:has(> [class*="inputContainerBackground"]),
 fieldset[class*="inputContainer_"]:focus-within,
-[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within {
+[class*="inputContainer_"]:has(> [class*="inputContainerBackground"]):focus-within,
+fieldset[class*="inputContainer_"][data-permission-mode]:focus-within,
+[class*="inputContainer_"][data-permission-mode]:has(> [class*="inputContainerBackground"]):focus-within {
   --focus-ring-color: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
 }
 [class*="inputContainerBackground"] {
   background: #ffffff !important;
@@ -530,6 +536,8 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"],
 fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]:focus-within,
 [class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]):focus-within {
   --focus-ring-color: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
 }
 fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"] [class*="inputContainerBackground"],
 [class*="inputContainer_"][data-incipit-file-drag-hint="over"]:has(> [class*="inputContainerBackground"]) [class*="inputContainerBackground"] {
