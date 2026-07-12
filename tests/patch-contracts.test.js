@@ -332,8 +332,8 @@ function assertRuntimeSourceContracts() {
     'installer must collect structured install contracts including hostRoute/I1/I2, inject __incipitInstallManifest, and expose them in the apply report',
   );
   assert(
-    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid']"),
-    'installer must copy capability/, legacy/, and mermaid/ webview asset subtrees',
+    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media']"),
+    'installer must copy capability/, legacy/, mermaid/, and hunkwise_media/ webview asset subtrees',
   );
   assert(
     install.includes('function patchCspDirective(') &&

@@ -58,6 +58,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'math_tokens.js'),         'math_tokens.js'],
   [path.join('data', 'math_rewriter.js'),       'math_rewriter.js'],
   [path.join('data', 'theme.css'),              THEME_TARGET_NAME],
+  [path.join('data', 'hunkwise_bundle.js'),     'hunkwise_bundle.js'],
   // Warm-white palette overrides. Always copied so users can flip the
   // setting without re-running apply just to ship the CSS file. enhance.js
   // only loads this stylesheet when `theme.palette === 'warm-white'`.
@@ -69,7 +70,7 @@ const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
 // Sync the whole subtree so math, highlighting, fonts, and mermaid work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid'];
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media'];
 const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({
   legacy: new Set(['session_status.js']),
 });
@@ -1679,6 +1680,35 @@ function patchExtensionJs(content) {
   [updated, statusAtMention] = patchAtMentionCommand(updated);
   statusLines.push(record('install.atMentionCommand', statusAtMention));
 
+  // --- Hunkwise: inject into activate ---
+  if (updated.includes('exports.activate = function(__hunkwiseCtx)')) {
+    statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在`);
+  } else if (updated.includes("require('./webview/hunkwise_bundle.js').activate(")) {
+    statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在 (inline)`);
+  } else {
+    const ACTIVATE_PATTERN = /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/;
+    const INLINE_ACTIVATE_PATTERN = /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/;
+    const MODULE_EXPORTS_PATTERN = /module\.exports\s*=\s*([^;]+);/;
+    if (ACTIVATE_PATTERN.test(updated)) {
+      updated = updated.replace(ACTIVATE_PATTERN, (match, funcName) => {
+        return `exports.activate = function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return ${funcName}(__hunkwiseCtx); };`;
+      });
+      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (exports.activate)`);
+    } else if (INLINE_ACTIVATE_PATTERN.test(updated)) {
+      updated = updated.replace(INLINE_ACTIVATE_PATTERN, (match, paramName) => {
+        return `${match} try { require('./webview/hunkwise_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } `;
+      });
+      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (inline)`);
+    } else if (MODULE_EXPORTS_PATTERN.test(updated)) {
+      updated = updated.replace(MODULE_EXPORTS_PATTERN, (match, exportedVal) => {
+        return `module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined; } }); })(${exportedVal});`;
+      });
+      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (module.exports)`);
+    } else {
+      statusLines.push(`${padLabel('Hunkwise 注入')}: 降级 (未找到 activate)`);
+    }
+  }
+
   assertExtensionPatchContracts(updated);
   statusLines.push(record('install.extensionContract', `${padLabel('extension 契约')}: ok`));
 
@@ -2535,6 +2565,63 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
         ? `${padLabel(label)}: 已存在 (${total} 个)`
         : `${padLabel(label)}: 已写入 ${written}/${total}`,
     );
+  }
+
+  // --- Hunkwise: patch package.json ---
+  const packageJsonPath = path.join(target.extensionDir, 'package.json');
+  if (fs.existsSync(packageJsonPath)) {
+    const pkgText = fs.readFileSync(packageJsonPath, 'utf8');
+    try {
+      const pkg = JSON.parse(pkgText);
+      let pkgModified = false;
+      if (!pkg.enabledApiProposals) pkg.enabledApiProposals = [];
+      if (!pkg.enabledApiProposals.includes("editorInsets")) {
+        pkg.enabledApiProposals.push("editorInsets");
+        pkgModified = true;
+      }
+      const hunkwisePkgPath = resourceFilePath(resourceRoot, path.join('data', 'hunkwise_package.json'));
+      if (fs.existsSync(hunkwisePkgPath)) {
+        const hunkwisePkg = JSON.parse(fs.readFileSync(hunkwisePkgPath, 'utf8'));
+        if (hunkwisePkg.contributes) {
+          if (!pkg.contributes) pkg.contributes = {};
+          for (const key of Object.keys(hunkwisePkg.contributes)) {
+            if (!pkg.contributes[key]) pkg.contributes[key] = Array.isArray(hunkwisePkg.contributes[key]) ? [] : {};
+            if (Array.isArray(hunkwisePkg.contributes[key])) {
+              const existingIds = pkg.contributes[key].map(item => item.command || item.id);
+              for (const item of hunkwisePkg.contributes[key]) {
+                const id = item.command || item.id;
+                if (!existingIds.includes(id)) {
+                  if (item.icon && typeof item.icon === 'string' && item.icon.startsWith('media/')) {
+                    item.icon = item.icon.replace('media/', 'webview/hunkwise_media/');
+                  }
+                  pkg.contributes[key].push(item);
+                  pkgModified = true;
+                }
+              }
+            } else if (typeof hunkwisePkg.contributes[key] === 'object') {
+               for (const menuKey of Object.keys(hunkwisePkg.contributes[key])) {
+                  if (!pkg.contributes[key][menuKey]) pkg.contributes[key][menuKey] = [];
+                  const existingMenu = pkg.contributes[key][menuKey].map(i => i.command);
+                  for (const item of hunkwisePkg.contributes[key][menuKey]) {
+                    if (!existingMenu.includes(item.command)) {
+                      pkg.contributes[key][menuKey].push(item);
+                      pkgModified = true;
+                    }
+                  }
+               }
+            }
+          }
+        }
+      }
+      if (pkgModified) {
+        fs.writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2), 'utf8');
+        rootResourceStatuses.push(`${padLabel('package.json')}: 已合并 hunkwise`);
+      } else {
+        rootResourceStatuses.push(`${padLabel('package.json')}: hunkwise 已存在`);
+      }
+    } catch (e) {
+      rootResourceStatuses.push(`${padLabel('package.json')}: 降级 (hunkwise 合并失败)`);
+    }
   }
 
   const extJsOriginal = fs.readFileSync(target.extensionJsPath, 'utf8');
