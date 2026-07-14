@@ -4,6 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const http = require('http');
+const https = require('https');
 const { fileURLToPath } = require('url');
 const { StringDecoder } = require('string_decoder');
 
@@ -100,7 +102,7 @@ function createState() {
     changeReviewStates: new Map(),
     truncateRollbacks: new Map(),
     log(message) {
-      try { console.log(`[cceBadge] ${message}`); } catch (_) {}
+      try { console.log(`[cceBadge] ${message}`); } catch (_) { }
     },
   };
 }
@@ -116,7 +118,7 @@ function wrapShutdown(comm, state) {
     state.comms.delete(comm);
     state.commIdentities.delete(comm);
     if (comm.__incipitMessageDisposable && typeof comm.__incipitMessageDisposable.dispose === 'function') {
-      try { comm.__incipitMessageDisposable.dispose(); } catch (_) {}
+      try { comm.__incipitMessageDisposable.dispose(); } catch (_) { }
       comm.__incipitMessageDisposable = null;
     }
     if (state.comms.size === 0) stopPolling(state);
@@ -137,6 +139,10 @@ function attachMessageHandler(comm, state) {
 function handleWebviewMessage(comm, state, message) {
   if (!message || message.__incipit !== true) return;
   if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;
+  if (message.type === 'prompt_enhancer_request') {
+    handlePromptEnhancerRequest(comm, state, message);
+    return;
+  }
   if (message.type === 'badge_identity_update') {
     handleBadgeIdentityUpdate(comm, state, message);
     return;
@@ -200,6 +206,465 @@ function isChangeReviewRuntimeMessage(type) {
     type === 'change_review_turn_finalized' ||
     type === 'change_review_turn_started' ||
     type === 'change_review_reject_request';
+}
+
+// Prompt enhancer reuses Claude Code's own settings (~/.claude/settings.json
+// + settings.local.json + optional project .claude/settings*.json) so it hits
+// the same base URL / auth / model alias mapping as the active VS Code plugin
+// session. See Claude Code's settings schema: `model`, `env.ANTHROPIC_*`.
+function readJsonObjectSafe(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function claudeConfigDir() {
+  if (process.env.CLAUDE_CONFIG_DIR && typeof process.env.CLAUDE_CONFIG_DIR === 'string') {
+    return process.env.CLAUDE_CONFIG_DIR;
+  }
+  return path.join(os.homedir(), '.claude');
+}
+
+function mergeClaudeSettings(base, overlay) {
+  if (!base) base = {};
+  if (!overlay) return { ...base, env: { ...(base.env && typeof base.env === 'object' ? base.env : {}) } };
+  const env = {
+    ...(base.env && typeof base.env === 'object' ? base.env : {}),
+    ...(overlay.env && typeof overlay.env === 'object' ? overlay.env : {}),
+  };
+  return { ...base, ...overlay, env };
+}
+
+function loadClaudeSettings(cwd) {
+  const dir = claudeConfigDir();
+  let settings = {};
+  settings = mergeClaudeSettings(settings, readJsonObjectSafe(path.join(dir, 'settings.json')));
+  settings = mergeClaudeSettings(settings, readJsonObjectSafe(path.join(dir, 'settings.local.json')));
+  if (cwd && typeof cwd === 'string') {
+    const projectDir = path.join(cwd, '.claude');
+    settings = mergeClaudeSettings(settings, readJsonObjectSafe(path.join(projectDir, 'settings.json')));
+    settings = mergeClaudeSettings(settings, readJsonObjectSafe(path.join(projectDir, 'settings.local.json')));
+  }
+  return settings;
+}
+
+function claudeEnvGet(settings, name) {
+  if (process.env[name]) return process.env[name];
+  const env = settings && settings.env && typeof settings.env === 'object' ? settings.env : null;
+  if (env && typeof env[name] === 'string' && env[name]) return env[name];
+  return null;
+}
+
+function resolveClaudeModel(settings) {
+  const get = name => claudeEnvGet(settings, name);
+  const selectedRaw = settings && typeof settings.model === 'string' && settings.model.trim()
+    ? settings.model.trim()
+    : 'default';
+  const selected = selectedRaw.toLowerCase();
+  const aliasDefaults = {
+    opus: get('ANTHROPIC_DEFAULT_OPUS_MODEL'),
+    sonnet: get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
+    haiku: get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
+    fable: get('ANTHROPIC_DEFAULT_FABLE_MODEL'),
+  };
+  // Family alias / prefix (e.g. "opus", "opus-4-8") → DEFAULT_* mapping when present.
+  for (const alias of Object.keys(aliasDefaults)) {
+    if (selected === alias || selected.startsWith(alias + '-') || selected.startsWith(alias + ' ')) {
+      if (aliasDefaults[alias]) return aliasDefaults[alias];
+      break;
+    }
+  }
+  if (selectedRaw && selected !== 'default') return selectedRaw;
+  // "default" (or missing): prefer explicit ANTHROPIC_MODEL, then family defaults.
+  return get('ANTHROPIC_MODEL')
+    || aliasDefaults.sonnet
+    || aliasDefaults.opus
+    || aliasDefaults.haiku
+    || 'claude-sonnet-4-20250514';
+}
+
+function resolveClaudeAuth(settings) {
+  const get = name => claudeEnvGet(settings, name);
+  // Prefer Claude Code's env/auth surface over a separate incipit key.
+  const authToken = get('ANTHROPIC_AUTH_TOKEN');
+  if (authToken) {
+    return {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      source: 'ANTHROPIC_AUTH_TOKEN',
+    };
+  }
+  let apiKey = get('ANTHROPIC_API_KEY');
+  if (!apiKey) {
+    // macOS keychain fallback used by Claude Code for primaryApiKey-style secrets.
+    try {
+      if (process.platform === 'darwin') {
+        const { execFileSync } = require('child_process');
+        const out = execFileSync(
+          'security',
+          ['find-generic-password', '-a', os.userInfo().username, '-w', '-s', 'Claude Code'],
+          { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+        );
+        if (out && out.trim()) apiKey = out.trim();
+      }
+    } catch (_) { }
+  }
+  if (!apiKey) {
+    try {
+      const cfg = readJsonObjectSafe(path.join(claudeConfigDir(), '.credentials.json'))
+        || readJsonObjectSafe(path.join(claudeConfigDir(), 'config.json'));
+      if (cfg && typeof cfg.primaryApiKey === 'string' && cfg.primaryApiKey) {
+        apiKey = cfg.primaryApiKey;
+      }
+    } catch (_) { }
+  }
+  if (apiKey) {
+    return {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      source: 'ANTHROPIC_API_KEY',
+    };
+  }
+  // Optional VS Code setting as last-resort escape hatch.
+  try {
+    const vscode = getVSCodeApi();
+    if (vscode && vscode.workspace && vscode.workspace.getConfiguration) {
+      const key = vscode.workspace.getConfiguration('incipit.promptEnhancer').get('apiKey');
+      if (key) {
+        return {
+          headers: {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          source: 'incipit.promptEnhancer.apiKey',
+        };
+      }
+    }
+  } catch (_) { }
+  return null;
+}
+
+function resolveClaudeBaseUrl(settings) {
+  const raw = claudeEnvGet(settings, 'ANTHROPIC_BASE_URL') || 'https://api.anthropic.com';
+  try {
+    const url = new URL(raw);
+    // Ensure we call /v1/messages even if base includes a trailing path.
+    let basePath = url.pathname || '';
+    if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
+    if (basePath === '' || basePath === '/') basePath = '';
+    const messagesPath = basePath.endsWith('/v1')
+      ? `${basePath}/messages`
+      : `${basePath}/v1/messages`;
+    return {
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || (url.protocol === 'http:' ? 80 : 443),
+      path: messagesPath || '/v1/messages',
+    };
+  } catch (_) {
+    return {
+      protocol: 'https:',
+      hostname: 'api.anthropic.com',
+      port: 443,
+      path: '/v1/messages',
+    };
+  }
+}
+
+function sanitizeEnhancedPrompt(raw, original) {
+  let text = String(raw || '').trim();
+
+  // Strip BEGIN/END RESPONSE wrappers if the model followed the format.
+  const beginIdx = text.search(/###\s*BEGIN RESPONSE\s*###/i);
+  if (beginIdx >= 0) {
+    const from = text.indexOf('\n', beginIdx);
+    text = text.slice(from >= 0 ? from + 1 : beginIdx).trim();
+  }
+  text = text.replace(/###\s*END RESPONSE\s*###[\s\S]*$/i, '').trim();
+
+  // Drop the boilerplate lead-in if the model echoed it.
+  text = text
+    .replace(
+      /^Here is an enhanced version of the original instruction that is more specific and clear:\s*/i,
+      '',
+    )
+    .trim();
+
+  // Drop accidental tool-call / agent scaffolding some gateway models emit.
+  text = text
+    .replace(/```[\s\S]*?```/g, (block) => {
+      if (/tool_call|function_call|<parameter=|<function=/i.test(block)) return '';
+      return block;
+    })
+    .replace(/<\/?tool_call[\s\S]*?>/gi, '')
+    .replace(/<\/?function[\s\S]*?>/gi, '')
+    .replace(/invoke\s+\w+\s+with\s+[\s\S]*/gi, '')
+    .replace(/^\s*I need more context[\s\S]*$/i, '')
+    .trim();
+
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith('“') && text.endsWith('”')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1).trim();
+  }
+
+  // If sanitizing wiped everything, fall back to original so the composer
+  // never goes blank on a bad model response.
+  return text || String(original || '').trim();
+}
+
+function buildPromptEnhancerUserContent(userText) {
+  return [
+    '⚠️ NO TOOLS ALLOWED ⚠️',
+    '',
+    "Here is an instruction that I'd like to give you, but it needs to be improved. Rewrite and enhance this instruction to make it clearer, more specific, less ambiguous, and correct any mistakes. Do not use any tools: reply immediately with your answer, even if you're not sure. Consider the context of our conversation history when enhancing the prompt. If there is code in triple backticks (```) consider whether it is a code sample and should remain unchanged. Reply with the following format:",
+    '',
+    '### BEGIN RESPONSE ###',
+    'Here is an enhanced version of the original instruction that is more specific and clear:',
+    '(put the enhanced instruction here — only the rewritten prompt, no commentary)',
+    '',
+    '### END RESPONSE ###',
+    '',
+    'Here is my original instruction:',
+    '',
+    userText,
+  ].join('\n');
+}
+
+// Prompt-enhancer HTTP: 3 attempts with short backoff. Client latch is 70s so
+// worst-case (3 × 20s + backoffs) still finishes before the webview gives up.
+const PROMPT_ENHANCER_MAX_ATTEMPTS = 3;
+const PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS = 20000;
+const PROMPT_ENHANCER_BACKOFF_MS = [0, 800, 2000];
+
+function isRetryablePromptEnhancerError(error) {
+  if (!error) return false;
+  if (error.retryable === true) return true;
+  if (error.retryable === false) return false;
+  const status = Number(error.statusCode);
+  if (status === 408 || status === 409 || status === 425 || status === 429) return true;
+  if (status >= 500 && status <= 599) return true;
+  const code = String(error.code || '');
+  if (/^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT)$/i.test(code)) {
+    return true;
+  }
+  const msg = String(error.message || error || '');
+  if (/timeout|timed out|socket hang up|network|temporar|overloaded|rate.?limit|try again|ECONN|ETIMEDOUT|529|502|503|504/i.test(msg)) {
+    return true;
+  }
+  // Auth / bad request / empty body shape — don't burn retries.
+  if (/No Claude auth|invalid.?api.?key|authentication|unauthorized|forbidden|empty prompt|credit|billing/i.test(msg)) {
+    return false;
+  }
+  if (status >= 400 && status < 500) return false;
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const auth = resolveClaudeAuth(settings);
+    if (!auth) {
+      const err = new Error(
+        'No Claude auth found. Set env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY in ~/.claude/settings.json',
+      );
+      err.retryable = false;
+      reject(err);
+      return;
+    }
+    const model = resolveClaudeModel(settings);
+    const endpoint = resolveClaudeBaseUrl(settings);
+    // Single-turn rewrite contract. Instructions live in the user turn so they
+    // survive providers that ignore/override `system`. Response body is cleaned
+    // by sanitizeEnhancedPrompt (BEGIN/END wrappers + boilerplate stripped).
+    const system = 'You enhance user instructions. Follow the response format exactly. No tools.';
+    const userContent = buildPromptEnhancerUserContent(userText);
+
+    const requestBody = JSON.stringify({
+      model,
+      max_tokens: 2048,
+      system,
+      messages: [{ role: 'user', content: userContent }],
+    });
+
+    const headers = {
+      ...auth.headers,
+      'Content-Length': Buffer.byteLength(requestBody),
+    };
+    const options = {
+      hostname: endpoint.hostname,
+      port: endpoint.port,
+      path: endpoint.path,
+      method: 'POST',
+      headers,
+    };
+    const transport = endpoint.protocol === 'http:' ? http : https;
+    const attemptTimeout = typeof timeoutMs === 'number' && timeoutMs > 0
+      ? timeoutMs
+      : PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS;
+    const req = transport.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        const statusCode = res.statusCode || 0;
+        try {
+          const response = JSON.parse(data);
+          if (response.error) {
+            const msg = response.error.message || response.error.type || 'API error';
+            const err = new Error(`${msg} (model=${model}, status=${statusCode})`);
+            err.statusCode = statusCode;
+            err.retryable = statusCode === 429 || statusCode >= 500;
+            reject(err);
+            return;
+          }
+          if (statusCode >= 400) {
+            const err = new Error(
+              `HTTP ${statusCode} from API (model=${model}): ${String(data).slice(0, 200)}`,
+            );
+            err.statusCode = statusCode;
+            err.retryable = statusCode === 429 || statusCode >= 500;
+            reject(err);
+            return;
+          }
+          const text = response.content
+            && response.content[0]
+            && response.content[0].text;
+          if (text) {
+            resolve(sanitizeEnhancedPrompt(text, userText));
+          } else {
+            const err = new Error(`No text in API response (model=${model}, status=${statusCode})`);
+            err.statusCode = statusCode;
+            // Empty content is occasionally a flaky gateway — allow one retry path.
+            err.retryable = statusCode >= 500 || statusCode === 0;
+            reject(err);
+          }
+        } catch (e) {
+          const err = new Error(
+            `Invalid API response (status=${statusCode}): ${String(data).slice(0, 200)}`,
+          );
+          err.statusCode = statusCode;
+          err.retryable = statusCode === 429 || statusCode >= 500 || statusCode === 0;
+          reject(err);
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      if (error && error.retryable == null) error.retryable = true;
+      reject(error);
+    });
+    req.setTimeout(attemptTimeout, () => {
+      req.destroy();
+      const err = new Error(`API request timeout (model=${model}, ${attemptTimeout}ms)`);
+      err.code = 'ETIMEDOUT';
+      err.retryable = true;
+      reject(err);
+    });
+
+    req.write(requestBody);
+    req.end();
+  });
+}
+
+async function callClaudeMessagesAPIWithRetry({ settings, userText, log }) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= PROMPT_ENHANCER_MAX_ATTEMPTS; attempt++) {
+    const backoff = PROMPT_ENHANCER_BACKOFF_MS[Math.min(attempt - 1, PROMPT_ENHANCER_BACKOFF_MS.length - 1)] || 0;
+    if (backoff > 0) {
+      if (typeof log === 'function') log(`retry wait ${backoff}ms before attempt ${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+      await sleep(backoff);
+    }
+    try {
+      if (typeof log === 'function' && attempt > 1) {
+        log(`retry attempt=${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+      }
+      return await callClaudeMessagesAPI({
+        settings,
+        userText,
+        timeoutMs: PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS,
+      });
+    } catch (error) {
+      lastError = error;
+      const retryable = isRetryablePromptEnhancerError(error);
+      const msg = error && error.message ? error.message : String(error);
+      if (!retryable || attempt >= PROMPT_ENHANCER_MAX_ATTEMPTS) {
+        if (typeof log === 'function') {
+          log(
+            retryable
+              ? `API error after ${attempt} attempt(s): ${msg}`
+              : `API error (no retry): ${msg}`,
+          );
+        }
+        throw error;
+      }
+      if (typeof log === 'function') {
+        log(`API error attempt=${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS} (will retry): ${msg}`);
+      }
+    }
+  }
+  throw lastError || new Error('Prompt enhance failed');
+}
+
+function handlePromptEnhancerRequest(comm, state, message) {
+  const requestId = message && message.requestId != null ? message.requestId : null;
+  const log = step => {
+    try {
+      state.log(`[prompt-enhancer] ${step}${requestId != null ? ` · requestId=${requestId}` : ''}`);
+    } catch (_) { }
+  };
+  const reply = (text, error) => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'prompt_enhancer_response',
+        requestId,
+        text: text || null,
+        error: error || null,
+      });
+    } catch (_) { }
+  };
+  try {
+    const text = typeof message.text === 'string' ? message.text : '';
+    if (!text.trim()) {
+      log('reject empty prompt');
+      reply(null, 'empty prompt');
+      return;
+    }
+    const identity = state.commIdentities && state.commIdentities.get(comm);
+    const cwd = identity && identity.cwd ? identity.cwd : null;
+    const settings = loadClaudeSettings(cwd);
+    const model = resolveClaudeModel(settings);
+    const endpoint = resolveClaudeBaseUrl(settings);
+    log(`start chars=${text.length} model=${model} host=${endpoint.hostname} maxAttempts=${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+    callClaudeMessagesAPIWithRetry({ settings, userText: text, log })
+      .then(enhanced => {
+        log(`done chars=${enhanced ? String(enhanced).length : 0}`);
+        reply(enhanced);
+      })
+      .catch(error => {
+        log(`API error: ${error && error.message ? error.message : error}`);
+        reply(null, String(error && error.message ? error.message : error));
+      });
+  } catch (error) {
+    log(`error: ${error && error.message ? error.message : error}`);
+    reply(null, String(error && error.message ? error.message : error));
+  }
 }
 
 function handleBadgeIdentityUpdate(comm, state, message) {
@@ -306,7 +771,7 @@ function handleDiffLineInfoRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     reply(resolveDiffLineInfo(message));
@@ -326,7 +791,7 @@ function handleConversationMutationRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     reply(resolveConversationMutation(state, message));
@@ -346,7 +811,7 @@ async function handleFileRevealRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     reply(await revealContainingFolder(state, comm, message));
@@ -366,11 +831,11 @@ function handleFilePathCopyRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     let vscode = null;
-    try { vscode = getVSCodeApi(); } catch (_) {}
+    try { vscode = getVSCodeApi(); } catch (_) { }
     reply({ ok: true, ...resolveFileCopyPaths(state, comm, message, vscode) });
   } catch (error) {
     state.log(`file path copy error: ${error && error.message ? error.message : error}`);
@@ -388,7 +853,7 @@ function handleChangeReviewDiffRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     reply(resolveChangeReviewDiff(state, comm, message || {}));
@@ -430,7 +895,7 @@ function handleChangeReviewRejectRequest(comm, state, message) {
         requestId,
         payload,
       });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     const payload = resolveChangeReviewReject(state, comm, message || {});
@@ -669,7 +1134,7 @@ function readFileTextSlice(filePath, start, length) {
     return '';
   } finally {
     if (fd !== null) {
-      try { fs.closeSync(fd); } catch (_) {}
+      try { fs.closeSync(fd); } catch (_) { }
     }
   }
 }
@@ -761,7 +1226,7 @@ function resolveFileCopyPaths(state, comm, message, vscode) {
 function stateLogFileRevealFallback(error) {
   try {
     console.warn('[cceBadge] revealFileInOS failed; falling back to openExternal:', error && error.message ? error.message : error);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function resolveDiffLineInfo(message) {
@@ -929,7 +1394,7 @@ function resolveConversationMutation(state, message) {
     rollbackExpiresAt = rollback.expiresAt;
   }
   resetTranscriptParserState(state, target);
-  try { poll(state); } catch (_) {}
+  try { poll(state); } catch (_) { }
 
   return {
     ok: true,
@@ -1029,7 +1494,7 @@ function rollbackTruncateFromUser(state, target, uuid, message) {
   atomicWriteTranscript(target, entry.beforeText);
   state.truncateRollbacks.delete(token);
   resetTranscriptParserState(state, target);
-  try { poll(state); } catch (_) {}
+  try { poll(state); } catch (_) { }
   return {
     ok: true,
     op: 'rollback_truncate_from_user',
@@ -1073,7 +1538,7 @@ function peekTruncateState(state, target, uuid, message) {
     const st = fs.statSync(target);
     sizeBytes = st.size;
     mtimeMs = st.mtimeMs;
-  } catch (_) {}
+  } catch (_) { }
   if (!entry) {
     return {
       ok: true,
@@ -1158,7 +1623,7 @@ function readTranscript(filePath) {
   const rows = lines.map((line, index) => {
     const row = { raw: line, index, entry: null, changed: false, drop: false };
     if (line.trim()) {
-      try { row.entry = JSON.parse(line); } catch (_) {}
+      try { row.entry = JSON.parse(line); } catch (_) { }
     }
     return row;
   });
@@ -1212,7 +1677,7 @@ function atomicWriteTranscript(filePath, text) {
     fs.writeFileSync(tmp, text, 'utf8');
     fs.renameSync(tmp, filePath);
   } catch (error) {
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) { }
     throw error;
   }
 }
@@ -1507,16 +1972,16 @@ function applyTruncateFromUser(transcript, uuid) {
     const e = r.entry;
     if (!e || typeof e !== 'object') continue;
     if (e.type === 'file-history-snapshot' &&
-        typeof e.messageId === 'string' &&
-        droppedUuids.has(e.messageId) &&
-        !keptUuids.has(e.messageId)) {
+      typeof e.messageId === 'string' &&
+      droppedUuids.has(e.messageId) &&
+      !keptUuids.has(e.messageId)) {
       r.drop = true;
     }
     // Drop summaries whose leafUuid lands in the cut region.
     if (e.type === 'summary' &&
-        typeof e.leafUuid === 'string' &&
-        droppedUuids.has(e.leafUuid) &&
-        !keptUuids.has(e.leafUuid)) {
+      typeof e.leafUuid === 'string' &&
+      droppedUuids.has(e.leafUuid) &&
+      !keptUuids.has(e.leafUuid)) {
       r.drop = true;
     }
   }
@@ -1760,9 +2225,9 @@ function attachWriteStreamPoll(state, stream) {
   // they cover the only moments at which a new poll is actually useful.
   const schedule = () => schedulePoll(state, WRITE_POLL_DEBOUNCE_MS);
   if (typeof stream.once === 'function') {
-    try { stream.once('finish', schedule); } catch (_) {}
-    try { stream.once('close', schedule); } catch (_) {}
-    try { stream.once('end', schedule); } catch (_) {}
+    try { stream.once('finish', schedule); } catch (_) { }
+    try { stream.once('close', schedule); } catch (_) { }
+    try { stream.once('end', schedule); } catch (_) { }
   }
 }
 
@@ -2190,7 +2655,7 @@ function deleteUsageCacheIndex(filePath) {
   try {
     const indexPath = usageCacheIndexPath(filePath);
     if (fs.existsSync(indexPath)) fs.unlinkSync(indexPath);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function readFileHashSlice(filePath, start, length) {
@@ -2736,9 +3201,9 @@ function processUsageEntry(parser, entry) {
   const old = parser.byRequest.get(requestId);
   if (old) {
     parser.sums.fresh -= old.usage.input_tokens || 0;
-    parser.sums.cw    -= old.usage.cache_creation_input_tokens || 0;
-    parser.sums.cr    -= old.usage.cache_read_input_tokens || 0;
-    parser.sums.out   -= old.usage.output_tokens || 0;
+    parser.sums.cw -= old.usage.cache_creation_input_tokens || 0;
+    parser.sums.cr -= old.usage.cache_read_input_tokens || 0;
+    parser.sums.out -= old.usage.output_tokens || 0;
     if (parser.order[parser.order.length - 1] !== requestId) {
       const idx = parser.order.indexOf(requestId);
       if (idx !== -1) parser.order.splice(idx, 1);
@@ -2748,9 +3213,9 @@ function processUsageEntry(parser, entry) {
     parser.order.push(requestId);
   }
   parser.sums.fresh += usage.input_tokens || 0;
-  parser.sums.cw    += usage.cache_creation_input_tokens || 0;
-  parser.sums.cr    += usage.cache_read_input_tokens || 0;
-  parser.sums.out   += usage.output_tokens || 0;
+  parser.sums.cw += usage.cache_creation_input_tokens || 0;
+  parser.sums.cr += usage.cache_read_input_tokens || 0;
+  parser.sums.out += usage.output_tokens || 0;
   parser.byRequest.set(requestId, { usage, ts });
   parser.latestUsageId = requestId;
   parser.usageVersion += 1;
@@ -2961,7 +3426,7 @@ function patchChangeReviewFileBackup(file, update) {
   // intermediate version; Reject must return to the state before the turn's
   // first successful file edit.
   if (Object.prototype.hasOwnProperty.call(update, 'backupFileName') &&
-      file.backupFileName === undefined) {
+    file.backupFileName === undefined) {
     file.backupFileName = update.backupFileName === null ? null
       : (typeof update.backupFileName === 'string' ? update.backupFileName : file.backupFileName);
     changed = true;
@@ -3014,7 +3479,7 @@ function rememberChangeReviewSnapshotUpdate(parser, assistantUuid, rawPath, patc
   const idx = list.findIndex(item => (changeReviewSnapshotUpdateKey(item) || item.rawPath) === key);
   if (idx === -1) list.push(update);
   else if (!Object.prototype.hasOwnProperty.call(list[idx], 'backupFileName') &&
-      Object.prototype.hasOwnProperty.call(update, 'backupFileName')) {
+    Object.prototype.hasOwnProperty.call(update, 'backupFileName')) {
     list[idx] = update;
   }
   parser.changeReviewSnapshotUpdates.set(assistantUuid, list);
@@ -3034,8 +3499,8 @@ function rememberChangeReviewTurnBaseline(parser, turnKey, rawPath, patch, meta 
   }
   const existing = baselines.get(key);
   if (!existing ||
-      (!Object.prototype.hasOwnProperty.call(existing, 'backupFileName') &&
-        Object.prototype.hasOwnProperty.call(update, 'backupFileName'))) {
+    (!Object.prototype.hasOwnProperty.call(existing, 'backupFileName') &&
+      Object.prototype.hasOwnProperty.call(update, 'backupFileName'))) {
     baselines.set(key, update);
     parser.persistDirty = true;
   }
@@ -3079,8 +3544,8 @@ function repairChangeReviewFileBackupFromBaseline(parser, file) {
       if (!line) continue;
       const entry = parseJsonLine(line);
       if (!entry || entry.type !== 'file-history-snapshot' ||
-          entry.isSnapshotUpdate === true ||
-          entry.messageId !== file.turnKey) continue;
+        entry.isSnapshotUpdate === true ||
+        entry.messageId !== file.turnKey) continue;
       const snapshot = entry.snapshot && typeof entry.snapshot === 'object' ? entry.snapshot : null;
       const backups = snapshot && snapshot.trackedFileBackups && typeof snapshot.trackedFileBackups === 'object'
         ? snapshot.trackedFileBackups
@@ -3223,9 +3688,9 @@ function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
     };
     turn.files.set(key, file);
   } else if (Number.isFinite(turn.lifecycleStartedAt) &&
-      turn.lifecycleStartedAt > 0 &&
-      Number.isFinite(file.lastSeenAt) &&
-      file.lastSeenAt < turn.lifecycleStartedAt) {
+    turn.lifecycleStartedAt > 0 &&
+    Number.isFinite(file.lastSeenAt) &&
+    file.lastSeenAt < turn.lifecycleStartedAt) {
     file.rawPath = rawPath;
     file.filePath = resolved;
     file.displayPath = displayChangeReviewPath(resolved, turn.cwd || parser.projectCwd, rawPath);
@@ -3243,7 +3708,7 @@ function upsertChangeReviewFile(parser, turn, rawPath, patch = {}) {
   file.filePath = resolved;
   file.displayPath = displayChangeReviewPath(resolved, turn.cwd || parser.projectCwd, rawPath);
   if (Object.prototype.hasOwnProperty.call(patch, 'backupFileName') &&
-      file.backupFileName === undefined) {
+    file.backupFileName === undefined) {
     file.backupFileName = patch.backupFileName === null ? null
       : (typeof patch.backupFileName === 'string' ? patch.backupFileName : file.backupFileName);
   }
@@ -3334,9 +3799,9 @@ function changeReviewSummaryBeforeLifecycle(turn, item) {
   if (!startedAt || !item) return false;
   const summary = turn.summary;
   if (summary &&
-      summary.toolIds instanceof Set &&
-      typeof item.id === 'string' &&
-      summary.toolIds.has(item.id)) {
+    summary.toolIds instanceof Set &&
+    typeof item.id === 'string' &&
+    summary.toolIds.has(item.id)) {
     return true;
   }
   const itemMs = timestampMs(item.ts);
@@ -3352,8 +3817,8 @@ function countChangeReviewSummaryTool(parser, item, result) {
   if (changeReviewSummaryBeforeLifecycle(turn, item)) return;
   const startedAt = Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0;
   if (!turn.summary || (startedAt > 0 &&
-      Number.isFinite(turn.summary.lastSeenAt) &&
-      turn.summary.lastSeenAt < startedAt)) {
+    Number.isFinite(turn.summary.lastSeenAt) &&
+    turn.summary.lastSeenAt < startedAt)) {
     turn.summary = {
       source: item.source || 'subagent',
       sourceLabel: item.sourceLabel || 'Sub-agent',
@@ -3608,7 +4073,7 @@ function buildPayload(parser, includeHistory) {
   };
   if (parser.order.length >= 2) {
     const firstTs = parser.byRequest.get(parser.order[0]).ts;
-    const lastTs  = parser.byRequest.get(lastId).ts;
+    const lastTs = parser.byRequest.get(lastId).ts;
     const a = Date.parse(firstTs);
     const b = Date.parse(lastTs);
     if (!Number.isNaN(a) && !Number.isNaN(b)) totals.durationMs = b - a;
@@ -3742,7 +4207,7 @@ function changeReviewSummaryForTurn(turn, reviewState) {
   if (!turn || !turn.summary || safeTokenNumber(turn.summary.files) <= 0) return null;
   const startedAt = changeReviewLifecycleStartedAt(reviewState, turn.turnKey);
   if (startedAt &&
-      (!Number.isFinite(turn.summary.lastSeenAt) || turn.summary.lastSeenAt < startedAt)) {
+    (!Number.isFinite(turn.summary.lastSeenAt) || turn.summary.lastSeenAt < startedAt)) {
     return null;
   }
   return {
@@ -3792,9 +4257,9 @@ function changeReviewItemBeforeLifecycle(turn, item, existingFile = null) {
   const startedAt = turn && Number.isFinite(turn.lifecycleStartedAt) ? turn.lifecycleStartedAt : 0;
   if (!startedAt || !item) return false;
   if (existingFile &&
-      existingFile.toolIds instanceof Set &&
-      typeof item.id === 'string' &&
-      existingFile.toolIds.has(item.id)) {
+    existingFile.toolIds instanceof Set &&
+    typeof item.id === 'string' &&
+    existingFile.toolIds.has(item.id)) {
     return true;
   }
   const itemMs = timestampMs(item.ts);
@@ -3986,7 +4451,7 @@ function captureChangeReviewGuards(parser, reviewState, options = {}) {
     if (onlyFinalized && !isChangeReviewTurnFinalized(reviewState, turn.turnKey)) continue;
     for (const file of changeReviewFilesForTurn(turn, reviewState)) {
       if (file.backupFileName === undefined &&
-          repairChangeReviewFileBackupFromBaseline(parser, file)) {
+        repairChangeReviewFileBackupFromBaseline(parser, file)) {
         parserChanged = true;
       }
       if (file.backupFileName === undefined) continue;
@@ -3994,9 +4459,9 @@ function captureChangeReviewGuards(parser, reviewState, options = {}) {
       if (!entry || entry.status === 'rejected') continue;
       const sig = guardSignatureForFile(file);
       if (!force &&
-          entry.guard &&
-          entry.guard.signature === sig &&
-          entry.guard.lineStatsVersion === CHANGE_REVIEW_LINE_STATS_VERSION) continue;
+        entry.guard &&
+        entry.guard.signature === sig &&
+        entry.guard.lineStatsVersion === CHANGE_REVIEW_LINE_STATS_VERSION) continue;
       try {
         const guard = currentFileGuard(file.filePath);
         if (!guard.ok) {
@@ -4007,9 +4472,9 @@ function captureChangeReviewGuards(parser, reviewState, options = {}) {
           const oldRemoved = file.removed || 0;
           const oldHasLineStats = file.hasLineStats === true;
           if (deriveChangeReviewLineStats(file) &&
-              (file.added !== oldAdded ||
-               file.removed !== oldRemoved ||
-               file.hasLineStats !== oldHasLineStats)) {
+            (file.added !== oldAdded ||
+              file.removed !== oldRemoved ||
+              file.hasLineStats !== oldHasLineStats)) {
             parser.changeReviewVersion += 1;
             parser.persistDirty = true;
             parserChanged = true;
@@ -4129,7 +4594,7 @@ function atomicWriteFileBuffer(filePath, buffer) {
     fs.writeFileSync(tmp, buffer);
     fs.renameSync(tmp, filePath);
   } catch (error) {
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) { }
     throw error;
   }
 }
@@ -4705,7 +5170,7 @@ function saveProjectEditActivityIndex(index) {
     const tmpPath = finalPath + '.tmp-' + process.pid + '-' + Date.now();
     fs.writeFileSync(tmpPath, JSON.stringify(index));
     fs.renameSync(tmpPath, finalPath);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // ============================================================
@@ -4774,7 +5239,7 @@ function loadNotes(scope, cwd, baseDir) {
     if (parsed && parsed.schemaVersion === NOTES_SCHEMA_VERSION && Array.isArray(parsed.notes)) {
       return sanitizeNotesList(parsed.notes);
     }
-  } catch (_) {}
+  } catch (_) { }
   return [];
 }
 
@@ -4804,7 +5269,7 @@ function handleNotesLoadRequest(comm, state, message) {
   const reply = payload => {
     try {
       comm.webview.postMessage({ __incipit: true, type: 'notes_load_response', requestId, payload });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
@@ -4822,7 +5287,7 @@ function handleNotesSaveRequest(comm, state, message) {
   const reply = payload => {
     try {
       comm.webview.postMessage({ __incipit: true, type: 'notes_save_response', requestId, payload });
-    } catch (_) {}
+    } catch (_) { }
   };
   try {
     const cwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
@@ -4882,13 +5347,13 @@ function upsertProjectIndexSession(index, payload, filePath, stat, editVersion) 
   };
   const old = index.sessions[sessionId];
   if (old &&
-      old.size === next.size &&
-      old.mtimeMs === next.mtimeMs &&
-      old.editVersion === next.editVersion &&
-      old.totals &&
-      old.totals.added === next.totals.added &&
-      old.totals.removed === next.totals.removed &&
-      old.totals.edits === next.totals.edits) {
+    old.size === next.size &&
+    old.mtimeMs === next.mtimeMs &&
+    old.editVersion === next.editVersion &&
+    old.totals &&
+    old.totals.added === next.totals.added &&
+    old.totals.removed === next.totals.removed &&
+    old.totals.edits === next.totals.edits) {
     return metaChanged;
   }
   index.sessions[sessionId] = next;
@@ -4905,7 +5370,7 @@ function projectJsonlFiles(projectDir) {
     try {
       const stat = fs.statSync(filePath);
       files.push({ filePath, stat, sessionId: path.basename(entry.name, JSONL_SUFFIX) });
-    } catch (_) {}
+    } catch (_) { }
   }
   files.sort((a, b) => (b.stat.mtimeMs || 0) - (a.stat.mtimeMs || 0));
   return files;
@@ -4919,7 +5384,7 @@ function claudeProjectDirs() {
     if (!entry.isDirectory()) continue;
     const dir = path.join(projectsRoot(), entry.name);
     let stat = null;
-    try { stat = fs.statSync(dir); } catch (_) {}
+    try { stat = fs.statSync(dir); } catch (_) { }
     dirs.push({ projectDir: dir, mtimeMs: stat ? stat.mtimeMs : 0 });
   }
   dirs.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
@@ -4986,7 +5451,7 @@ function loadAllProjectEditActivityIndexes(state) {
       if (!parsed.sessions || typeof parsed.sessions !== 'object') parsed.sessions = {};
       state.editProjectIndexes.set(parsed.projectKey, parsed);
       indexes.set(parsed.projectKey, parsed);
-    } catch (_) {}
+    } catch (_) { }
   }
   return Array.from(indexes.values());
 }
@@ -5029,8 +5494,8 @@ function runGlobalIndexJob(state) {
   const changedIndexes = new Set();
 
   while (processed < PROJECT_INDEX_BATCH_FILES &&
-         bytes < PROJECT_INDEX_BATCH_BYTES &&
-         (job.fileQueue.length || job.dirCursor < job.projectDirs.length)) {
+    bytes < PROJECT_INDEX_BATCH_BYTES &&
+    (job.fileQueue.length || job.dirCursor < job.projectDirs.length)) {
     if (!job.fileQueue.length) {
       const projectDir = job.projectDirs[job.dirCursor++];
       scannedDirs++;
@@ -5052,7 +5517,7 @@ function runGlobalIndexJob(state) {
     } catch (error) {
       try {
         state.log(`global edit activity index skip ${file.filePath}: ${error && error.message ? error.message : error}`);
-      } catch (_) {}
+      } catch (_) { }
       continue;
     }
     if (upsertProjectIndexSession(file.index, payload, file.filePath, file.stat, null)) {
@@ -5098,8 +5563,8 @@ function runProjectIndexJob(state, projectKey) {
   let bytes = 0;
   let changed = false;
   while (job.cursor < job.files.length &&
-         processed < PROJECT_INDEX_BATCH_FILES &&
-         bytes < PROJECT_INDEX_BATCH_BYTES) {
+    processed < PROJECT_INDEX_BATCH_FILES &&
+    bytes < PROJECT_INDEX_BATCH_BYTES) {
     const file = job.files[job.cursor++];
     bytes += file.stat.size || 0;
     processed++;
@@ -5110,7 +5575,7 @@ function runProjectIndexJob(state, projectKey) {
     } catch (error) {
       try {
         state.log(`edit activity index skip ${file.filePath}: ${error && error.message ? error.message : error}`);
-      } catch (_) {}
+      } catch (_) { }
       continue;
     }
     if (upsertProjectIndexSession(job.index, payload, file.filePath, file.stat, null)) changed = true;
@@ -5329,7 +5794,7 @@ function sendPayload(comm, payload) {
       throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
     }
     comm.webview.postMessage({ __cceBadge: true, payload });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function sendEditActivityPayload(comm, payload) {
@@ -5338,7 +5803,7 @@ function sendEditActivityPayload(comm, payload) {
       throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
     }
     comm.webview.postMessage({ __incipitEditActivity: true, payload });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function sendChangeReviewPayload(comm, payload) {
@@ -5347,7 +5812,7 @@ function sendChangeReviewPayload(comm, payload) {
       throw new Error('[cceBadge] attachComm expected a comm.webview.postMessage()');
     }
     comm.webview.postMessage({ __incipitChangeReview: true, payload });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function projectsRoot() {

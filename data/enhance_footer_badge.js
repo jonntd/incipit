@@ -293,7 +293,7 @@ function setupCacheBadge() {
   var TEXT_CLASS = 'cceBadgeText';
   var POPUP_CLASS = 'cceStatPopup';
   // Outline icon with descending bars for a lightweight stats metaphor.
-  var ICON_SVG = '<svg class="cceBadgeIcon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">' +
+  var ICON_SVG = '<svg class="cceBadgeIcon" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' +
     '<line x1="4" y1="6" x2="16" y2="6"/>' +
     '<line x1="4" y1="10" x2="13" y2="10"/>' +
     '<line x1="4" y1="14" x2="9" y2="14"/>' +
@@ -301,7 +301,7 @@ function setupCacheBadge() {
   // The "Ctx" word is dropped entirely — the badge's own leading three-bar icon
   // (ICON_SVG) already reads as the context indicator right before the value.
   // Only "Cache" gets an inline stand-in glyph: a database cylinder.
-  var CACHE_GLYPH_SVG = '<svg class="cceBadgeGlyph" width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  var CACHE_GLYPH_SVG = '<svg class="cceBadgeGlyph" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<ellipse cx="8" cy="4" rx="4.6" ry="1.9"/>' +
     '<path d="M3.4 4 V12 C3.4 13.05 5.45 13.9 8 13.9 C10.55 13.9 12.6 13.05 12.6 12 V4"/>' +
     '<path d="M3.4 8 C3.4 9.05 5.45 9.9 8 9.9 C10.55 9.9 12.6 9.05 12.6 8"/>' +
@@ -390,16 +390,28 @@ function setupCacheBadge() {
 
   function fmtTokens(n) {
     if (!Number.isFinite(n) || n <= 0) return '—';
-    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e6) {
+      var m = n / 1e6;
+      return (m >= 10 ? m.toFixed(1) : m.toFixed(2)) + 'M';
+    }
     if (n >= 1000) {
       var k = n / 1000;
-      return (k >= 100 ? k.toFixed(0) : k.toFixed(1)) + 'k';
+      // 125k / 12.5k / 1.2k — drop noisy trailing .0
+      if (k >= 100) return Math.round(k) + 'k';
+      var k1 = Math.round(k * 10) / 10;
+      return (k1 % 1 === 0 ? String(k1 | 0) : k1.toFixed(1)) + 'k';
     }
-    return String(n);
+    return String(Math.round(n));
   }
   function fmtPct(p) {
     if (!Number.isFinite(p) || p < 0) return '—';
-    return (p * 100).toFixed(2) + '%';
+    var pct = p * 100;
+    // Prefer calm, short labels: 0% / 8% / 12.5% / 99.9% — never "0.00%".
+    if (pct <= 0) return '0%';
+    if (pct >= 99.95) return '100%';
+    if (pct >= 10) return Math.round(pct) + '%';
+    var one = Math.round(pct * 10) / 10;
+    return (one % 1 === 0 ? String(one | 0) : one.toFixed(1)) + '%';
   }
   function pad2(n) {
     return n < 10 ? '0' + n : String(n);
@@ -457,47 +469,19 @@ function setupCacheBadge() {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
   }
+  // Soft crossfade on value change. The old per-glyph scramble ran ~1–2s and
+  // fought host reflows (felt janky next to Auto/send). One opacity pulse is
+  // enough to signal an update without thrashing layout.
   function revealVal(el, target) {
     if (el.__cceRAF) { cancelAnimationFrame(el.__cceRAF); el.__cceRAF = null; }
-    if (!target) { el.textContent = ''; return; }
-    var len = target.length;
-    var display = new Array(len + 1).join(' ');
-    // Frame-counted instead of timestamp-based: STEP=40ms vs rAF's 16.67ms
-    // gave a 2-2-3-2-3 cadence that read as jitter. N frames per step keeps
-    // every advance landing on a vsync edge — clean rhythm at any refresh
-    // rate, slightly faster on 120Hz panels (acceptable trade for stability).
-    var FRAMES_PER_STEP = 16;
-    var index = 0, frameSkip = 0;
-    function pick(a) { return a[Math.floor(Math.random() * a.length)]; }
-    function frame() {
-      if (frameSkip < FRAMES_PER_STEP - 1) {
-        frameSkip++;
-        el.__cceRAF = requestAnimationFrame(frame);
-        return;
-      }
-      frameSkip = 0;
-      if (index - 3 >= len) {
-        el.textContent = target;
-        el.__cceRAF = null;
-        return;
-      }
-      var arr = display.split('');
-      for (var w = 0; w <= 3; w++) {
-        var F = index - w;
-        if (F >= 0 && F < len) {
-          var ch = target[F];
-          if (ch === ' ') arr[F] = ' ';
-          else if (w === 3) arr[F] = ch;
-          else if (w === 0) arr[F] = '\u258C';
-          else arr[F] = pick(['.', '_', ch]);
-        }
-      }
-      display = arr.join('');
-      el.textContent = display;
-      index++;
-      el.__cceRAF = requestAnimationFrame(frame);
-    }
-    el.__cceRAF = requestAnimationFrame(frame);
+    if (!target) { el.textContent = ''; el.style.opacity = '1'; return; }
+    if (el.textContent === target) { el.style.opacity = '1'; return; }
+    el.style.opacity = '0.4';
+    el.textContent = target;
+    el.__cceRAF = requestAnimationFrame(function() {
+      el.__cceRAF = null;
+      el.style.opacity = '1';
+    });
   }
   // Some backends expose no prompt-cache counters at all.
   // Show `—` instead of `0%` so the UI reads as unsupported, not as a miss.
@@ -508,21 +492,31 @@ function setupCacheBadge() {
   }
   function renderText(textEl) {
     if (!textEl) return;
-    var ctxStr, hitStr;
+    var ctxStr, hitStr, noCache;
     if (!latest) {
-      ctxStr = '—'; hitStr = '—';
+      ctxStr = '—'; hitStr = '—'; noCache = true;
     } else {
+      noCache = sessionHasNoCache(latest);
       ctxStr = fmtTokens(latest.ctx);
-      hitStr = sessionHasNoCache(latest) ? '—' : fmtPct(latest.hit);
+      hitStr = noCache ? '—' : fmtPct(latest.hit);
     }
     if (!textEl.__cceBuilt) {
+      // Structured segments + CSS gap (no raw space runs) so values stay
+      // aligned with the host's 26px footer controls and never reflow the
+      // Auto/send cluster when digits change width.
       textEl.innerHTML =
-        '<span class="cceBadgeVal" data-cce-val="ctx" title="Context window"></span>' +
-        '    ' +
-        '<span class="cceBadgeLabel" title="Cache hit rate">' + CACHE_GLYPH_SVG + '</span> ' +
-        '<span class="cceBadgeVal" data-cce-val="hit"></span>';
+        '<span class="cceBadgeSeg" data-cce-seg="ctx" title="Context window">' +
+          '<span class="cceBadgeVal" data-cce-val="ctx"></span>' +
+        '</span>' +
+        '<span class="cceBadgeDot" aria-hidden="true"></span>' +
+        '<span class="cceBadgeSeg" data-cce-seg="hit" title="Cache hit rate">' +
+          '<span class="cceBadgeLabel">' + CACHE_GLYPH_SVG + '</span>' +
+          '<span class="cceBadgeVal" data-cce-val="hit"></span>' +
+        '</span>';
       textEl.__cceBuilt = true;
     }
+    textEl.classList.toggle('cceBadgeTextEmpty', !latest);
+    textEl.classList.toggle('cceBadgeTextNoCache', !!noCache);
     var ctxEl = textEl.querySelector('[data-cce-val="ctx"]');
     var hitEl = textEl.querySelector('[data-cce-val="hit"]');
     if (ctxEl && ctxEl.__cceLast !== ctxStr) {
@@ -1326,9 +1320,9 @@ function setupCacheBadge() {
     if (!isOpen()) return;
     var t = ev.target;
     if (popupEl && popupEl.contains(t)) return;
-    if (popupAnchor && popupAnchor.contains(t)) return;
+    if (popupAnchor && (popupAnchor === t || popupAnchor.contains(t))) return;
     closePopup();
-  }, true);
+  }, { capture: true });
   document.addEventListener('keydown', function(ev) {
     if (ev.key === 'Escape' && isOpen()) closePopup();
   }, true);
@@ -2688,4 +2682,367 @@ export function initFooterBadge() {
   setupFooterAbbreviation();
   setupKbdSymbols();
   setupNotes();
+  setupPromptEnhancer();
+}
+
+// ============================================================
+// Prompt Enhancer Feature
+// ============================================================
+export function setupPromptEnhancer() {
+  var ENHANCER_BADGE_CLASS = 'incipit-prompt-enhancer';
+  var ENHANCER_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sparkles"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>';
+  var isEnhancing = false;
+  // Host setInputText() assigns React state + textContent directly and does
+  // NOT push a browser undo entry (unlike typing / execCommand). Keep a small
+  // app-level undo/redo stack so Cmd/Ctrl+Z can restore the pre-enhance text.
+  var undoStack = [];
+  var redoStack = [];
+  var pendingOriginal = null;
+  var enhanceTimeoutId = null;
+  // Monotonic request id so a late response from an earlier enhance cannot
+  // re-latch UI / rewrite text after the user already undid and re-ran.
+  var enhanceRequestId = 0;
+  var MAX_UNDO = 20;
+  // Host retries up to 3 × 20s + backoff (~2.8s). Keep the client latch a bit
+  // above that so a late success after retries can still apply.
+  var ENHANCE_TIMEOUT_MS = 70000;
+
+  function findComposerInput() {
+    var nodes = document.querySelectorAll('[class*="messageInput"][contenteditable]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el && el.isConnected && el.closest('[class*="messageInputContainer"]')) return el;
+    }
+    return null;
+  }
+
+  function normalizeComposerText(text) {
+    return String(text == null ? '' : text).replace(/\r\n?/g, '\n');
+  }
+
+  function readComposerText(input) {
+    if (!input) return '';
+    return normalizeComposerText(input.textContent || input.innerText || '');
+  }
+
+  function hostComposerSetText(input, text) {
+    try {
+      var key = null, keys = Object.keys(input);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0 || keys[i].indexOf('__reactInternalInstance$') === 0) { key = keys[i]; break; }
+      }
+      if (!key) return false;
+      var fiber = input[key], hops = 0;
+      while (fiber && hops++ < 40) {
+        var ref = fiber.ref;
+        if (ref && typeof ref === 'object' && ref.current && typeof ref.current.setInputText === 'function') {
+          ref.current.setInputText(text);
+          if (typeof ref.current.focus === 'function') ref.current.focus();
+          return true;
+        }
+        fiber = fiber.return;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function applyComposerText(text) {
+    var input = findComposerInput();
+    if (!input) return false;
+    return hostComposerSetText(input, normalizeComposerText(text));
+  }
+
+  function pushUndoEntry(before, after) {
+    var b = normalizeComposerText(before);
+    var a = normalizeComposerText(after);
+    if (!a || b === a) return;
+    undoStack.push({ before: b, after: a });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+  }
+
+  function canUndoEnhancer(current) {
+    if (!undoStack.length) return false;
+    var top = undoStack[undoStack.length - 1];
+    // Only intercept Cmd+Z when the composer still holds the enhanced text
+    // we last wrote. If the user already edited further, let the host undo.
+    return normalizeComposerText(current) === top.after;
+  }
+
+  function canRedoEnhancer(current) {
+    if (!redoStack.length) return false;
+    var top = redoStack[redoStack.length - 1];
+    return normalizeComposerText(current) === top.before;
+  }
+
+  function undoEnhancer() {
+    var input = findComposerInput();
+    if (!input || !undoStack.length) return false;
+    var current = readComposerText(input);
+    if (!canUndoEnhancer(current)) return false;
+    var entry = undoStack.pop();
+    if (!applyComposerText(entry.before)) {
+      undoStack.push(entry);
+      return false;
+    }
+    redoStack.push(entry);
+    return true;
+  }
+
+  function redoEnhancer() {
+    var input = findComposerInput();
+    if (!input || !redoStack.length) return false;
+    var current = readComposerText(input);
+    if (!canRedoEnhancer(current)) return false;
+    var entry = redoStack.pop();
+    if (!applyComposerText(entry.after)) {
+      redoStack.push(entry);
+      return false;
+    }
+    undoStack.push(entry);
+    return true;
+  }
+
+  // Same acquisition path as the badge/notes host bridge. VS Code only allows
+  // acquireVsCodeApi() once per webview; a bare second call throws and used to
+  // leave isEnhancing stuck true after the first successful enhance.
+  function getIncipitVsCodeApi() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') {
+        return globalThis.__incipitGetVsCodeApi();
+      }
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function logEnhancer(step, detail) {
+    try {
+      var msg = '[incipit][prompt-enhancer] ' + step +
+        (detail ? ' · ' + detail : '');
+      console.log(msg);
+    } catch (_) {}
+  }
+
+  function setEnhancingUi(active, errorMsg) {
+    var btn = document.querySelector('.' + ENHANCER_BADGE_CLASS);
+    if (!btn) return;
+    // Prefer class-driven CSS animation over inline pulse (which had no
+    // keyframes and looked dead). Clear residual inline styles from older builds.
+    btn.style.animation = '';
+    btn.style.opacity = '';
+    btn.style.pointerEvents = '';
+    btn.style.color = '';
+    if (active) {
+      btn.classList.add('incipit-prompt-enhancer-running');
+      btn.classList.remove('incipit-prompt-enhancer-error');
+      btn.setAttribute('aria-busy', 'true');
+      btn.title = 'Enhancing prompt…';
+      return;
+    }
+    btn.classList.remove('incipit-prompt-enhancer-running');
+    btn.removeAttribute('aria-busy');
+    if (errorMsg) {
+      btn.classList.add('incipit-prompt-enhancer-error');
+      btn.title = 'Error: ' + errorMsg;
+      setTimeout(function() {
+        btn.classList.remove('incipit-prompt-enhancer-error');
+        btn.title = 'Prompt Enhancer (Cmd + /) · undo with Cmd/Ctrl+Z';
+      }, 3000);
+    } else {
+      btn.classList.remove('incipit-prompt-enhancer-error');
+      btn.title = 'Prompt Enhancer (Cmd + /) · undo with Cmd/Ctrl+Z';
+    }
+  }
+
+  function resetEnhancing(errorMsg) {
+    isEnhancing = false;
+    pendingOriginal = null;
+    if (enhanceTimeoutId != null) {
+      clearTimeout(enhanceTimeoutId);
+      enhanceTimeoutId = null;
+    }
+    setEnhancingUi(false, errorMsg || null);
+  }
+
+  function triggerPromptEnhancer() {
+    if (isEnhancing) {
+      logEnhancer('skip', 'already running');
+      return;
+    }
+    var input = findComposerInput();
+    if (!input) {
+      logEnhancer('skip', 'composer input not found');
+      return;
+    }
+    var currentText = readComposerText(input);
+    if (!currentText.trim()) {
+      logEnhancer('skip', 'empty prompt');
+      return;
+    }
+
+    // Resolve the API *before* flipping isEnhancing. The historical bug was:
+    // set isEnhancing=true, then bare acquireVsCodeApi() threw on the 2nd call
+    // (VS Code allows it once per webview), so the latch never cleared and
+    // every later trigger silently no-op'd after the first undo/re-run.
+    var api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') {
+      logEnhancer('error', 'VS Code API unavailable');
+      setEnhancingUi(false, 'VS Code API unavailable');
+      return;
+    }
+
+    var requestId = ++enhanceRequestId;
+    isEnhancing = true;
+    pendingOriginal = currentText;
+    setEnhancingUi(true);
+    logEnhancer('start', 'requestId=' + requestId + ' chars=' + currentText.length);
+    if (enhanceTimeoutId != null) clearTimeout(enhanceTimeoutId);
+    enhanceTimeoutId = setTimeout(function() {
+      // Only the still-current request may time out the latch.
+      if (isEnhancing && requestId === enhanceRequestId) {
+        logEnhancer('timeout', 'requestId=' + requestId);
+        resetEnhancing('Prompt enhance timed out');
+      }
+    }, ENHANCE_TIMEOUT_MS);
+
+    try {
+      logEnhancer('request', 'posting to host · requestId=' + requestId);
+      api.postMessage({
+        __incipit: true,
+        type: 'prompt_enhancer_request',
+        requestId: requestId,
+        text: currentText
+      });
+      logEnhancer('waiting', 'host API call in flight');
+    } catch (err) {
+      if (requestId === enhanceRequestId) {
+        logEnhancer('error', String(err && err.message ? err.message : err || 'postMessage failed'));
+        resetEnhancing(String(err && err.message ? err.message : err || 'postMessage failed'));
+      }
+    }
+  }
+
+  function ensurePromptEnhancer() {
+    var input = findComposerInput();
+    if (!input) return;
+
+    // Fallback to input.parentNode if messageInputContainer is missing
+    var host = input.closest('[class*="messageInputContainer"]') || input.parentNode;
+    if (!host) return;
+
+    var existing = host.querySelector('.' + ENHANCER_BADGE_CLASS);
+    if (existing) return;
+
+    var enhancer = document.createElement('button');
+    enhancer.type = 'button';
+    enhancer.className = ENHANCER_BADGE_CLASS;
+    enhancer.innerHTML = ENHANCER_ICON_SVG;
+    enhancer.title = 'Prompt Enhancer (Cmd + /) · undo with Cmd/Ctrl+Z';
+    host.style.position = 'relative';
+    // Position it securely inside the text area container (top-right corner)
+    // Visual styles live in theme.css (.incipit-prompt-enhancer[+running/error]).
+
+    enhancer.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      triggerPromptEnhancer();
+    });
+
+    host.appendChild(enhancer);
+  }
+
+  window.addEventListener('message', function(ev) {
+    var d = ev && ev.data;
+    if (d && d.__incipit && d.type === 'prompt_enhancer_response') {
+      // Drop stale replies (user undid / re-ran while an older request was
+      // still in flight). Missing requestId is treated as "current" for older hosts.
+      if (d.requestId != null && d.requestId !== enhanceRequestId) {
+        logEnhancer('stale-response', 'got=' + d.requestId + ' current=' + enhanceRequestId);
+        return;
+      }
+
+      logEnhancer('response', d.error
+        ? ('error · ' + d.error)
+        : ('ok · chars=' + (d.text ? String(d.text).length : 0)));
+
+      // Always clear the in-flight latch first so a second enhance can run
+      // even if apply/write fails below.
+      if (enhanceTimeoutId != null) {
+        clearTimeout(enhanceTimeoutId);
+        enhanceTimeoutId = null;
+      }
+      isEnhancing = false;
+      setEnhancingUi(false, d.error || null);
+      if (d.error) {
+        pendingOriginal = null;
+        return;
+      }
+      var input = findComposerInput();
+      if (!input || !d.text) {
+        pendingOriginal = null;
+        logEnhancer('apply-skip', !input ? 'composer missing' : 'empty response text');
+        return;
+      }
+      var enhanced = normalizeComposerText(d.text);
+      var before = pendingOriginal != null
+        ? normalizeComposerText(pendingOriginal)
+        : readComposerText(input);
+      pendingOriginal = null;
+      if (!enhanced || enhanced === before) {
+        logEnhancer('apply-skip', 'unchanged text');
+        return;
+      }
+      if (applyComposerText(enhanced)) {
+        pushUndoEntry(before, enhanced);
+        logEnhancer('done', 'applied · undo stack=' + undoStack.length);
+      } else {
+        logEnhancer('error', 'failed to write enhanced text into composer');
+      }
+    }
+  });
+
+  window.addEventListener('keydown', function(ev) {
+    var input = findComposerInput();
+    var inComposer = input && (
+      document.activeElement === input ||
+      input.contains(document.activeElement)
+    );
+
+    // Cmd/Ctrl+Z → undo enhance; Cmd/Ctrl+Shift+Z or Ctrl+Y → redo.
+    // Only intercept when the composer still holds our last written text so
+    // normal typing undo remains with the host editor.
+    if (inComposer && (ev.metaKey || ev.ctrlKey) && !ev.altKey) {
+      var key = ev.key;
+      var isUndo = !ev.shiftKey && (key === 'z' || key === 'Z');
+      var isRedo = (ev.shiftKey && (key === 'z' || key === 'Z')) ||
+        (!ev.shiftKey && (key === 'y' || key === 'Y') && ev.ctrlKey && !ev.metaKey);
+      if (isUndo) {
+        var curU = readComposerText(input);
+        if (canUndoEnhancer(curU) && undoEnhancer()) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      } else if (isRedo) {
+        var curR = readComposerText(input);
+        if (canRedoEnhancer(curR) && redoEnhancer()) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      }
+    }
+
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === '/') {
+      // Since nodeInsideFocusedEditor is not extracted, we rely on input existing.
+      // We check if input is actively focused by ensuring activeElement is inside it.
+      if (inComposer) {
+        ev.preventDefault();
+        triggerPromptEnhancer();
+      }
+    }
+  }, true);
+
+  setInterval(ensurePromptEnhancer, 1000);
 }

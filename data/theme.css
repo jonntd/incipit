@@ -5108,24 +5108,29 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
    Inserted into the input footer before the bypass/send controls.
    Data arrives from the extension host through `webview.postMessage`.
    ============================================================ */
-/* Pill-shaped button that matches the footer control language. */
+/* Compact chip flush with the host's 26px footer controls
+   (notes / Auto / send). Height is locked so digit-width changes
+   never reflow the right cluster. */
 .cceBadge {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-family: var(--incipit-body-font);
-  font-size: var(--incipit-body-size, 13px);
-  font-weight: 400;
-  font-variant-numeric: tabular-nums; /* Keep digits monospaced to avoid width jitter. */
-  color: #f8f8f6;                     /* Match the footer button text color. */
+  gap: 5px;
+  height: 26px;
+  box-sizing: border-box;
+  font-family: var(--incipit-mono-font, var(--incipit-body-font));
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: rgba(248, 248, 246, 0.78);
   background: transparent;
   border: none;
-  border-radius: 4px;
-  padding: 4px 8px;
+  border-radius: 6px;
+  padding: 0 7px 0 5px;
   margin: 0;
-  white-space: pre;                   /* Preserve multi-space separators. */
+  white-space: nowrap;
   user-select: none;
-  letter-spacing: 0;
+  letter-spacing: 0.01em;
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   -webkit-appearance: none;
@@ -5134,50 +5139,80 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 .cceBadge:hover,
 .cceBadge:focus-visible {
-  background: #3a3b3a;                /* Solid hover and focus background. */
+  background: rgba(255, 255, 255, 0.06);
   color: #f8f8f6;
   outline: none;
 }
 .cceBadge:active {
-  background: #2c2c2a;                /* Deeper pressed state. */
+  background: rgba(255, 255, 255, 0.04);
 }
 .cceBadgeIcon {
   flex: 0 0 auto;
   display: block;
-  width: 18px;                        /* Match the notes icon; serves as Ctx. */
-  height: 18px;
-  color: #f8f8f6;                     /* SVG follows `currentColor`. */
+  width: 14px;
+  height: 14px;
+  opacity: 0.72;
+  color: inherit;
+}
+.cceBadge:hover .cceBadgeIcon,
+.cceBadge:focus-visible .cceBadgeIcon {
+  opacity: 0.92;
 }
 .cceBadgeText {
-  display: inline-block;
-}
-.cceBadgeLabel {
-  color: #f8f8f6;
   display: inline-flex;
   align-items: center;
-  vertical-align: middle;
+  gap: 6px;
+  min-width: 0;
 }
-/* Cache cylinder glyph standing in for the "Cache" word. Sized to match the
-   notes icon (20px); follows the label colour via currentColor so warm-white
-   needs no extra override. */
+.cceBadgeSeg {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+/* Quiet separator between ctx and cache — calmer than multi-space. */
+.cceBadgeDot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.28;
+  flex: 0 0 auto;
+}
+.cceBadgeLabel {
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.72;
+}
 .cceBadgeGlyph {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
   color: inherit;
 }
 .cceBadgeVal {
-  color: #989898;
+  color: rgba(248, 248, 246, 0.92);
+  display: inline-block;
+  white-space: nowrap;
+  vertical-align: middle;
+  min-width: 2.6ch;
+  text-align: left;
+  transition: opacity 0.14s ease;
+  font-variant-numeric: tabular-nums;
+}
+.cceBadgeSeg[data-cce-seg="ctx"] .cceBadgeVal {
+  min-width: 3.2ch;
+}
+.cceBadgeTextNoCache .cceBadgeSeg[data-cce-seg="hit"] {
+  opacity: 0.55;
+}
+.cceBadgeTextEmpty {
+  opacity: 0.55;
 }
 .cceBadge.cceBadgeActive {
-  background: #3a3b3a;
-}
-
-/* Preserve width during reveal animation to avoid layout jitter. */
-.cceBadgeVal {
-  display: inline-block;
-  white-space: pre;
-  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8f8f6;
 }
 
 /* ============================================================
@@ -6297,4 +6332,73 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [class*="menuHeaderHint"] kbd[data-incipit-kbd-svg="1"] svg,
 [class*="keys_"] kbd[data-incipit-kbd-svg="1"] svg {
   stroke: none !important;
+}
+
+
+/* ============================================================
+   Prompt Enhancer button (composer top-right sparkles).
+   ============================================================ */
+.incipit-prompt-enhancer {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+  transition: opacity 0.16s ease, background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.incipit-prompt-enhancer:hover,
+.incipit-prompt-enhancer:focus-visible {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.18));
+  outline: none;
+}
+.incipit-prompt-enhancer svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  transform-origin: 50% 50%;
+}
+/* Running: soft breath + slow spin so the user can tell enhance is in flight. */
+.incipit-prompt-enhancer.incipit-prompt-enhancer-running {
+  opacity: 1;
+  pointer-events: none;
+  color: #c9a657;
+  background: rgba(201, 166, 87, 0.10);
+  box-shadow: 0 0 0 1px rgba(201, 166, 87, 0.22);
+  animation: incipit-prompt-enhancer-breathe 1.2s ease-in-out infinite;
+}
+.incipit-prompt-enhancer.incipit-prompt-enhancer-running svg {
+  animation: incipit-prompt-enhancer-spin 1.05s linear infinite;
+}
+.incipit-prompt-enhancer.incipit-prompt-enhancer-error {
+  color: #ff6b6b;
+  opacity: 1;
+}
+@keyframes incipit-prompt-enhancer-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes incipit-prompt-enhancer-breathe {
+  0%, 100% {
+    opacity: 0.82;
+    box-shadow: 0 0 0 1px rgba(201, 166, 87, 0.18);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 1px rgba(201, 166, 87, 0.42), 0 0 10px rgba(201, 166, 87, 0.22);
+  }
 }

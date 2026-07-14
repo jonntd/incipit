@@ -1308,27 +1308,31 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 
 /* ---------- Cache badge ---------- */
 .cceBadge {
-  color: #0d0d0d;
+  color: rgba(13, 13, 13, 0.72);
 }
 .cceBadge:hover,
 .cceBadge:focus-visible {
-  background: #DDDBD5;
+  background: rgba(0, 0, 0, 0.05);
   color: #0d0d0d;
 }
 .cceBadge:active {
-  background: #E6E4DE;
+  background: rgba(0, 0, 0, 0.035);
 }
 .cceBadgeIcon {
-  color: #0d0d0d;
+  color: inherit;
 }
 .cceBadgeLabel {
-  color: #0d0d0d;
+  color: inherit;
 }
 .cceBadgeVal {
-  color: #a39f8e;
+  color: rgba(13, 13, 13, 0.88);
+}
+.cceBadgeDot {
+  background: currentColor;
 }
 .cceBadge.cceBadgeActive {
-  background: #DDDBD5;
+  background: rgba(0, 0, 0, 0.06);
+  color: #0d0d0d;
 }
 
 /* ---------- Cache popup ---------- */
@@ -1775,4 +1779,15 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 .incipit-edit-chip-add:hover {
   border-color: rgba(191, 93, 58, 0.65) !important;
   color: rgba(191, 93, 58, 0.95) !important;
+}
+
+
+/* ---------- Prompt Enhancer ---------- */
+.incipit-prompt-enhancer.incipit-prompt-enhancer-running {
+  color: #9a6b2f;
+  background: rgba(154, 107, 47, 0.10);
+  box-shadow: 0 0 0 1px rgba(154, 107, 47, 0.22);
+}
+.incipit-prompt-enhancer.incipit-prompt-enhancer-error {
+  color: #b42318;
 }
