@@ -292,6 +292,32 @@ function resolveClaudeModel(settings) {
     || 'claude-sonnet-4-20250514';
 }
 
+// Prompt enhancer fallback chain: primary (current Claude model) → sonnet → haiku.
+// Dedupes case-insensitively so alias collapse / already-on-sonnet sessions don't
+// waste attempts on the same id. Missing DEFAULT_* env entries are skipped.
+function resolvePromptEnhancerModelChain(settings) {
+  const get = name => claudeEnvGet(settings, name);
+  const primary = resolveClaudeModel(settings);
+  const candidates = [
+    primary,
+    get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
+    get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
+  ];
+  const chain = [];
+  const seen = new Set();
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const model = raw.trim();
+    if (!model) continue;
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    chain.push(model);
+  }
+  if (!chain.length) chain.push('claude-sonnet-4-20250514');
+  return chain;
+}
+
 function resolveClaudeAuth(settings) {
   const get = name => claudeEnvGet(settings, name);
   // Prefer Claude Code's env/auth surface over a separate incipit key.
@@ -757,8 +783,10 @@ function buildPromptEnhancerUserContent(userText) {
   ].join('\n');
 }
 
-// Prompt-enhancer HTTP: 3 attempts with short backoff. Client latch is 70s so
-// worst-case (3 × 20s + backoffs) still finishes before the webview gives up.
+// Prompt-enhancer HTTP: walk primary → sonnet → haiku (deduped), one attempt
+// each, with short backoff between switches. When the chain collapses to a
+// single model, keep the historical same-model multi-attempt retry.
+// Client latch is 70s so worst-case (3 × 20s + backoffs) still finishes first.
 const PROMPT_ENHANCER_MAX_ATTEMPTS = 3;
 const PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS = 20000;
 const PROMPT_ENHANCER_BACKOFF_MS = [0, 800, 2000];
@@ -786,11 +814,28 @@ function isRetryablePromptEnhancerError(error) {
   return false;
 }
 
+// Errors where switching to the next chain model is worth trying. Broader than
+// same-model retry: model-not-found / unavailable often succeeds on sonnet/haiku.
+function isPromptEnhancerModelSwitchableError(error) {
+  if (isRetryablePromptEnhancerError(error)) return true;
+  if (!error) return false;
+  const status = Number(error.statusCode);
+  if (status === 404) return true;
+  const msg = String(error.message || error || '');
+  if (/No Claude auth|invalid.?api.?key|authentication|unauthorized|forbidden|empty prompt|credit|billing/i.test(msg)) {
+    return false;
+  }
+  if (/model[_ ]?(not[_ ]found|unavailable|disabled|does not exist|invalid|unknown)|not[_ ]supported|no such model|does not have access|unknown model/i.test(msg)) {
+    return true;
+  }
+  return false;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
+function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOverride }) {
   return new Promise((resolve, reject) => {
     const auth = resolveClaudeAuth(settings);
     if (!auth) {
@@ -801,7 +846,9 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
       reject(err);
       return;
     }
-    const model = resolveClaudeModel(settings);
+    const model = (typeof modelOverride === 'string' && modelOverride.trim())
+      ? modelOverride.trim()
+      : resolveClaudeModel(settings);
     const endpoint = resolveClaudeBaseUrl(settings);
     // Single-turn rewrite contract. Instructions live in the user turn so they
     // survive providers that ignore/override `system`. Response body is cleaned
@@ -843,6 +890,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
             const err = new Error(`${msg} (model=${model}, status=${statusCode})`);
             err.statusCode = statusCode;
             err.retryable = statusCode === 429 || statusCode >= 500;
+            err.model = model;
             reject(err);
             return;
           }
@@ -852,6 +900,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
             );
             err.statusCode = statusCode;
             err.retryable = statusCode === 429 || statusCode >= 500;
+            err.model = model;
             reject(err);
             return;
           }
@@ -865,6 +914,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
             err.statusCode = statusCode;
             // Empty content is occasionally a flaky gateway — allow one retry path.
             err.retryable = statusCode >= 500 || statusCode === 0;
+            err.model = model;
             reject(err);
           }
         } catch (e) {
@@ -873,6 +923,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
           );
           err.statusCode = statusCode;
           err.retryable = statusCode === 429 || statusCode >= 500 || statusCode === 0;
+          err.model = model;
           reject(err);
         }
       });
@@ -880,6 +931,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
 
     req.on('error', (error) => {
       if (error && error.retryable == null) error.retryable = true;
+      if (error && error.model == null) error.model = model;
       reject(error);
     });
     req.setTimeout(attemptTimeout, () => {
@@ -887,6 +939,7 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
       const err = new Error(`API request timeout (model=${model}, ${attemptTimeout}ms)`);
       err.code = 'ETIMEDOUT';
       err.retryable = true;
+      err.model = model;
       reject(err);
     });
 
@@ -896,38 +949,60 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs }) {
 }
 
 async function callClaudeMessagesAPIWithRetry({ settings, userText, log }) {
+  const chain = resolvePromptEnhancerModelChain(settings);
+  // Multi-model path: one attempt per distinct model. Single-model path: keep
+  // the historical PROMPT_ENHANCER_MAX_ATTEMPTS same-model retries.
+  const maxAttempts = chain.length > 1
+    ? chain.length
+    : PROMPT_ENHANCER_MAX_ATTEMPTS;
   let lastError = null;
-  for (let attempt = 1; attempt <= PROMPT_ENHANCER_MAX_ATTEMPTS; attempt++) {
+
+  if (typeof log === 'function') {
+    log(`model chain: ${chain.join(' → ')}`);
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const model = chain[Math.min(attempt - 1, chain.length - 1)];
     const backoff = PROMPT_ENHANCER_BACKOFF_MS[Math.min(attempt - 1, PROMPT_ENHANCER_BACKOFF_MS.length - 1)] || 0;
     if (backoff > 0) {
-      if (typeof log === 'function') log(`retry wait ${backoff}ms before attempt ${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+      if (typeof log === 'function') {
+        log(`retry wait ${backoff}ms before attempt ${attempt}/${maxAttempts} model=${model}`);
+      }
       await sleep(backoff);
     }
     try {
       if (typeof log === 'function' && attempt > 1) {
-        log(`retry attempt=${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+        log(`retry attempt=${attempt}/${maxAttempts} model=${model}`);
       }
       return await callClaudeMessagesAPI({
         settings,
         userText,
+        model,
         timeoutMs: PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS,
       });
     } catch (error) {
       lastError = error;
-      const retryable = isRetryablePromptEnhancerError(error);
       const msg = error && error.message ? error.message : String(error);
-      if (!retryable || attempt >= PROMPT_ENHANCER_MAX_ATTEMPTS) {
+      const canContinue = chain.length > 1
+        ? isPromptEnhancerModelSwitchableError(error)
+        : isRetryablePromptEnhancerError(error);
+      if (!canContinue || attempt >= maxAttempts) {
         if (typeof log === 'function') {
           log(
-            retryable
-              ? `API error after ${attempt} attempt(s): ${msg}`
-              : `API error (no retry): ${msg}`,
+            canContinue
+              ? `API error after ${attempt} attempt(s) model=${model}: ${msg}`
+              : `API error (no retry) model=${model}: ${msg}`,
           );
         }
         throw error;
       }
       if (typeof log === 'function') {
-        log(`API error attempt=${attempt}/${PROMPT_ENHANCER_MAX_ATTEMPTS} (will retry): ${msg}`);
+        const nextModel = chain[Math.min(attempt, chain.length - 1)];
+        log(
+          chain.length > 1
+            ? `API error attempt=${attempt}/${maxAttempts} model=${model} (will try ${nextModel}): ${msg}`
+            : `API error attempt=${attempt}/${maxAttempts} (will retry): ${msg}`,
+        );
       }
     }
   }
@@ -962,9 +1037,12 @@ function handlePromptEnhancerRequest(comm, state, message) {
     const identity = state.commIdentities && state.commIdentities.get(comm);
     const cwd = identity && identity.cwd ? identity.cwd : null;
     const settings = loadClaudeSettings(cwd);
-    const model = resolveClaudeModel(settings);
+    const chain = resolvePromptEnhancerModelChain(settings);
     const endpoint = resolveClaudeBaseUrl(settings);
-    log(`start chars=${text.length} model=${model} host=${endpoint.hostname} maxAttempts=${PROMPT_ENHANCER_MAX_ATTEMPTS}`);
+    log(
+      `start chars=${text.length} model=${chain[0] || '?'} chain=${chain.join('→')} ` +
+      `host=${endpoint.hostname} maxAttempts=${chain.length > 1 ? chain.length : PROMPT_ENHANCER_MAX_ATTEMPTS}`,
+    );
     callClaudeMessagesAPIWithRetry({ settings, userText: text, log })
       .then(enhanced => {
         log(`done chars=${enhanced ? String(enhanced).length : 0}`);
@@ -6194,4 +6272,9 @@ module.exports.__test = {
   saveNotes,
   NOTES_MAX_COUNT,
   NOTES_MAX_TEXT_BYTES,
+  // Prompt enhancer model chain (tests/prompt-enhancer-fallback.test.js)
+  resolveClaudeModel,
+  resolvePromptEnhancerModelChain,
+  isRetryablePromptEnhancerError,
+  isPromptEnhancerModelSwitchableError,
 };

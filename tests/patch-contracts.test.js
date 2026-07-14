@@ -631,6 +631,18 @@ function assertRuntimeSourceContracts() {
     'host-badge must fetch gateway models via settings.env ANTHROPIC_BASE_URL + auth',
   );
   assert(
+    hostBadge.includes('function resolvePromptEnhancerModelChain') &&
+      hostBadge.includes("get('ANTHROPIC_DEFAULT_SONNET_MODEL')") &&
+      hostBadge.includes("get('ANTHROPIC_DEFAULT_HAIKU_MODEL')") &&
+      hostBadge.includes('function isPromptEnhancerModelSwitchableError') &&
+      hostBadge.includes('model: modelOverride') &&
+      hostBadge.includes('const chain = resolvePromptEnhancerModelChain(settings)') &&
+      hostBadge.includes('callClaudeMessagesAPI({') &&
+      hostBadge.includes('model,') &&
+      hostBadge.includes("log(`model chain: ${chain.join(' → ')}`)"),
+    'prompt enhancer must fall back primary → sonnet → haiku on switchable failures',
+  );
+  assert(
     gatewayPicker.includes('setupGatewayModelPicker') &&
       gatewayPicker.includes("type: 'models_list_request'") &&
       gatewayPicker.includes("type !== 'models_list_response'") &&
