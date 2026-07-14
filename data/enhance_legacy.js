@@ -1617,6 +1617,452 @@ import {
     tick();
   }
 
+  // ============================================================
+  // Gateway model picker (footer host dropdown).
+  //
+  // Mounts next to the notes / cache-badge controls in
+  // [data-incipit-input-footer-host]. Model list comes from host-badge
+  // GET /models using ~/.claude/settings.json env. Selection uses
+  // official SessionState.setModel only.
+  // ============================================================
+  const GATEWAY_MODEL_PICKER_ATTR = 'data-incipit-model-picker';
+  const GATEWAY_MODEL_MENU_ATTR = 'data-incipit-model-picker-menu';
+  const FOOTER_HOST_SEL = '[data-incipit-input-footer-host]';
+  let gatewayModelPickerStarted = false;
+  let gatewayModelPickerTimer = 0;
+  let gatewayModelPickerRequestId = 0;
+  let gatewayModelPickerOpen = false;
+  let gatewayModelPickerAnchor = null;
+  let gatewayModelMenuEl = null;
+  let gatewayModelListScrollTop = 0;
+  let gatewayModelPickerState = {
+    models: [],
+    currentModel: '',
+    baseUrl: '',
+    status: '',
+    loading: false,
+    error: '',
+  };
+
+  function getIncipitVsCodeApiForModels() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') {
+        return globalThis.__incipitGetVsCodeApi();
+      }
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function footerHosts() {
+    return Array.from(document.querySelectorAll(FOOTER_HOST_SEL)).filter(Boolean);
+  }
+
+  function currentSessionModelId() {
+    try {
+      const session = locateActiveSessionState();
+      if (!session) return gatewayModelPickerState.currentModel || '';
+      const selection = session.modelSelection && session.modelSelection.value;
+      if (typeof selection === 'string' && selection.trim()) return selection.trim();
+      if (selection && typeof selection === 'object' && typeof selection.value === 'string') {
+        return selection.value.trim();
+      }
+      const setting = session.config && session.config.value && session.config.value.modelSetting;
+      if (typeof setting === 'string' && setting.trim()) return setting.trim();
+    } catch (_) {}
+    return gatewayModelPickerState.currentModel || '';
+  }
+
+  function shortModelLabel(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return 'Model';
+    // Prefer gateway display label when the active id is in the list.
+    const hit = (gatewayModelPickerState.models || []).find((m) => m && m.id === raw);
+    if (hit && hit.label) return String(hit.label);
+    return raw;
+  }
+
+  function captureGatewayMenuScroll() {
+    if (!gatewayModelMenuEl) return;
+    const list = gatewayModelMenuEl.querySelector('[data-incipit-model-picker-list]');
+    if (list) gatewayModelListScrollTop = list.scrollTop || 0;
+  }
+
+  function restoreGatewayMenuScroll() {
+    if (!gatewayModelMenuEl) return;
+    const list = gatewayModelMenuEl.querySelector('[data-incipit-model-picker-list]');
+    if (!list) return;
+    list.scrollTop = gatewayModelListScrollTop || 0;
+  }
+
+  function positionGatewayModelMenu() {
+    if (!gatewayModelMenuEl || !gatewayModelPickerAnchor) return;
+    const r = gatewayModelPickerAnchor.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    const menuW = Math.min(320, Math.max(220, vw - margin * 2));
+    gatewayModelMenuEl.style.width = menuW + 'px';
+    // Measure after width so height is accurate.
+    const menuH = gatewayModelMenuEl.offsetHeight || 280;
+    let left = Math.round(r.left);
+    if (left + menuW > vw - margin) left = vw - margin - menuW;
+    if (left < margin) left = margin;
+    // Prefer above the footer control; if not enough room, drop below.
+    let top = Math.round(r.top - menuH - 6);
+    if (top < margin) top = Math.round(r.bottom + 6);
+    if (top + menuH > vh - margin) top = Math.max(margin, vh - margin - menuH);
+    gatewayModelMenuEl.style.left = left + 'px';
+    gatewayModelMenuEl.style.top = top + 'px';
+    gatewayModelMenuEl.style.bottom = 'auto';
+  }
+
+  function updateGatewayPickerTriggers() {
+    const current = currentSessionModelId();
+    if (current) gatewayModelPickerState.currentModel = current;
+    const label = shortModelLabel(gatewayModelPickerState.currentModel);
+    const title = gatewayModelPickerState.baseUrl
+      ? ('Models from ' + gatewayModelPickerState.baseUrl)
+      : 'Switch model';
+    document.querySelectorAll('[' + GATEWAY_MODEL_PICKER_ATTR + ']').forEach((root) => {
+      const trigger = root.querySelector('[data-incipit-model-picker-trigger]');
+      const labelEl = root.querySelector('[data-incipit-model-picker-label]');
+      const chevron = root.querySelector('[data-incipit-model-picker-chevron]');
+      if (trigger) {
+        trigger.setAttribute('aria-expanded', gatewayModelPickerOpen && gatewayModelPickerAnchor === trigger ? 'true' : 'false');
+        trigger.title = title;
+        trigger.classList.toggle('is-open', gatewayModelPickerOpen && gatewayModelPickerAnchor === trigger);
+      }
+      if (labelEl && labelEl.textContent !== label) labelEl.textContent = label;
+      if (chevron) chevron.textContent = (gatewayModelPickerOpen && gatewayModelPickerAnchor === trigger) ? '▴' : '▾';
+    });
+  }
+
+  function requestGatewayModelsList(forceRefresh) {
+    const api = getIncipitVsCodeApiForModels();
+    if (!api || typeof api.postMessage !== 'function') {
+      gatewayModelPickerState.loading = false;
+      gatewayModelPickerState.error = 'VS Code API unavailable';
+      gatewayModelPickerState.status = 'VS Code API unavailable';
+      renderGatewayModelMenu();
+      updateGatewayPickerTriggers();
+      return;
+    }
+    const requestId = ++gatewayModelPickerRequestId;
+    gatewayModelPickerState.loading = true;
+    gatewayModelPickerState.error = '';
+    gatewayModelPickerState.status = forceRefresh ? 'Refreshing models…' : 'Loading models…';
+    renderGatewayModelMenu();
+    updateGatewayPickerTriggers();
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'models_list_request',
+        requestId,
+        forceRefresh: !!forceRefresh,
+      });
+    } catch (error) {
+      if (requestId !== gatewayModelPickerRequestId) return;
+      gatewayModelPickerState.loading = false;
+      gatewayModelPickerState.error = error && error.message ? error.message : String(error || 'request failed');
+      gatewayModelPickerState.status = gatewayModelPickerState.error;
+      renderGatewayModelMenu();
+      updateGatewayPickerTriggers();
+    }
+  }
+
+  async function applyGatewayModelSelection(modelId) {
+    const raw = String(modelId || '').trim();
+    if (!raw) return;
+    const session = locateActiveSessionState();
+    if (!session || typeof session.setModel !== 'function') {
+      gatewayModelPickerState.status = 'Session not ready';
+      renderGatewayModelMenu();
+      return;
+    }
+    gatewayModelPickerState.status = 'Switching…';
+    renderGatewayModelMenu();
+    try {
+      const result = await session.setModel(makeCustomModelOption(raw));
+      if (result === false) throw new Error('Host rejected this model ID');
+      gatewayModelPickerState.currentModel = raw;
+      gatewayModelPickerState.status = '';
+      closeGatewayModelMenu();
+      updateGatewayPickerTriggers();
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error || 'switch failed');
+      gatewayModelPickerState.status = 'Could not set model: ' + msg;
+      renderGatewayModelMenu();
+    }
+  }
+
+  function closeGatewayModelMenu() {
+    if (!gatewayModelPickerOpen && !gatewayModelMenuEl) return;
+    captureGatewayMenuScroll();
+    gatewayModelPickerOpen = false;
+    gatewayModelPickerAnchor = null;
+    if (gatewayModelMenuEl && gatewayModelMenuEl.parentElement) {
+      gatewayModelMenuEl.remove();
+    }
+    gatewayModelMenuEl = null;
+    updateGatewayPickerTriggers();
+  }
+
+  function renderGatewayModelMenu() {
+    if (!gatewayModelPickerOpen || !gatewayModelPickerAnchor) return;
+    captureGatewayMenuScroll();
+
+    if (!gatewayModelMenuEl) {
+      gatewayModelMenuEl = document.createElement('div');
+      gatewayModelMenuEl.setAttribute(GATEWAY_MODEL_MENU_ATTR, '');
+      gatewayModelMenuEl.setAttribute('role', 'listbox');
+      document.body.appendChild(gatewayModelMenuEl);
+    }
+
+    const current = currentSessionModelId();
+    if (current) gatewayModelPickerState.currentModel = current;
+    const models = Array.isArray(gatewayModelPickerState.models)
+      ? gatewayModelPickerState.models
+      : [];
+
+    gatewayModelMenuEl.innerHTML = '';
+
+    const head = document.createElement('div');
+    head.setAttribute('data-incipit-model-picker-head', '');
+    head.textContent = 'Model';
+    gatewayModelMenuEl.appendChild(head);
+
+    if (gatewayModelPickerState.status || gatewayModelPickerState.error) {
+      const status = document.createElement('div');
+      status.setAttribute('data-incipit-model-picker-status', '');
+      if (gatewayModelPickerState.error) status.setAttribute('data-error', '1');
+      status.textContent = gatewayModelPickerState.error || gatewayModelPickerState.status;
+      gatewayModelMenuEl.appendChild(status);
+    }
+
+    if (gatewayModelPickerState.baseUrl) {
+      const base = document.createElement('div');
+      base.setAttribute('data-incipit-model-picker-base', '');
+      base.textContent = gatewayModelPickerState.baseUrl;
+      gatewayModelMenuEl.appendChild(base);
+    }
+
+    const list = document.createElement('div');
+    list.setAttribute('data-incipit-model-picker-list', '');
+
+    if (!models.length && !gatewayModelPickerState.loading) {
+      const empty = document.createElement('div');
+      empty.setAttribute('data-incipit-model-picker-empty', '');
+      empty.textContent = gatewayModelPickerState.error
+        ? 'No models loaded'
+        : 'No models yet — click Refresh';
+      list.appendChild(empty);
+    }
+
+    for (const item of models) {
+      const id = item && typeof item === 'object' ? String(item.id || '').trim() : String(item || '').trim();
+      if (!id) continue;
+      const itemLabel = item && typeof item === 'object'
+        ? String(item.label || item.id || id)
+        : id;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-incipit-model-picker-item', '');
+      btn.setAttribute('role', 'option');
+      btn.setAttribute('data-model-id', id);
+      if (id === current) btn.setAttribute('data-active', '1');
+      btn.textContent = itemLabel;
+      btn.title = id;
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        applyGatewayModelSelection(id);
+      });
+      list.appendChild(btn);
+    }
+    gatewayModelMenuEl.appendChild(list);
+
+    const footer = document.createElement('div');
+    footer.setAttribute('data-incipit-model-picker-footer', '');
+
+    const customBtn = document.createElement('button');
+    customBtn.type = 'button';
+    customBtn.setAttribute('data-incipit-model-picker-custom', '');
+    customBtn.textContent = 'Use custom model ID…';
+    customBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      closeGatewayModelMenu();
+      openCustomModelDialog();
+    });
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.setAttribute('data-incipit-model-picker-refresh', '');
+    refreshBtn.textContent = gatewayModelPickerState.loading ? 'Loading…' : 'Refresh';
+    refreshBtn.disabled = !!gatewayModelPickerState.loading;
+    refreshBtn.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      requestGatewayModelsList(true);
+    });
+
+    footer.appendChild(customBtn);
+    footer.appendChild(refreshBtn);
+    gatewayModelMenuEl.appendChild(footer);
+
+    positionGatewayModelMenu();
+    // Restore after layout so the open list does not jump to top on refresh.
+    requestAnimationFrame(() => {
+      restoreGatewayMenuScroll();
+      positionGatewayModelMenu();
+    });
+  }
+
+  function openGatewayModelMenu(anchor) {
+    gatewayModelPickerOpen = true;
+    gatewayModelPickerAnchor = anchor || gatewayModelPickerAnchor;
+    updateGatewayPickerTriggers();
+    renderGatewayModelMenu();
+    if (!gatewayModelPickerState.models.length && !gatewayModelPickerState.loading) {
+      requestGatewayModelsList(false);
+    }
+  }
+
+  function ensureGatewayModelPickerMounted() {
+    const hosts = footerHosts();
+    if (!hosts.length) return;
+
+    const current = currentSessionModelId();
+    if (current) gatewayModelPickerState.currentModel = current;
+    const label = shortModelLabel(gatewayModelPickerState.currentModel);
+
+    for (const host of hosts) {
+      let root = host.querySelector(':scope > [' + GATEWAY_MODEL_PICKER_ATTR + ']');
+      if (!root) {
+        root = document.createElement('div');
+        root.setAttribute(GATEWAY_MODEL_PICKER_ATTR, '');
+
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.setAttribute('data-incipit-model-picker-trigger', '');
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.title = 'Switch model';
+
+        const labelEl = document.createElement('span');
+        labelEl.setAttribute('data-incipit-model-picker-label', '');
+        labelEl.textContent = label;
+
+        const chevron = document.createElement('span');
+        chevron.setAttribute('data-incipit-model-picker-chevron', '');
+        chevron.textContent = '▾';
+
+        trigger.appendChild(labelEl);
+        trigger.appendChild(chevron);
+        trigger.addEventListener('click', (evt) => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          const btn = evt.currentTarget;
+          if (gatewayModelPickerOpen && gatewayModelPickerAnchor === btn) {
+            closeGatewayModelMenu();
+          } else {
+            openGatewayModelMenu(btn);
+          }
+        });
+
+        root.appendChild(trigger);
+        // Same footer cluster as notes/cache badge: sit at the leading edge.
+        host.insertBefore(root, host.firstChild);
+      }
+
+      // Keep order: model picker → notes → cache badge (heal races).
+      const note = host.querySelector(':scope > .cceNoteBtn');
+      const badge = host.querySelector(':scope > .cceBadge');
+      if (note && root.nextElementSibling !== note) host.insertBefore(root, note);
+      else if (!note && badge && root.nextElementSibling !== badge) host.insertBefore(root, badge);
+    }
+
+    // Interval path: only refresh trigger labels. Never rebuild an open menu
+    // unless the anchor was destroyed (which close+reopen handles).
+    updateGatewayPickerTriggers();
+    if (gatewayModelPickerOpen) {
+      if (!gatewayModelPickerAnchor || !gatewayModelPickerAnchor.isConnected) {
+        closeGatewayModelMenu();
+      } else {
+        positionGatewayModelMenu();
+      }
+    }
+  }
+
+  function setupGatewayModelPicker() {
+    if (gatewayModelPickerStarted) return;
+    gatewayModelPickerStarted = true;
+
+    window.addEventListener('message', (ev) => {
+      const data = ev && ev.data;
+      if (!data || data.__incipit !== true || data.type !== 'models_list_response') return;
+      if (data.requestId != null && data.requestId !== gatewayModelPickerRequestId) return;
+
+      const models = Array.isArray(data.models) ? data.models : [];
+      gatewayModelPickerState.models = models.map((item) => {
+        if (item && typeof item === 'object') {
+          const id = String(item.id || item.value || item.name || '').trim();
+          return { id, label: String(item.label || item.displayName || id) };
+        }
+        const id = String(item || '').trim();
+        return { id, label: id };
+      }).filter((item) => item.id);
+      gatewayModelPickerState.currentModel = String(data.currentModel || gatewayModelPickerState.currentModel || '').trim();
+      gatewayModelPickerState.baseUrl = String(data.baseUrl || '').trim();
+      gatewayModelPickerState.loading = false;
+      gatewayModelPickerState.error = data.error ? String(data.error) : '';
+      gatewayModelPickerState.status = gatewayModelPickerState.error
+        ? ''
+        : (data.cached ? 'Cached list' : (gatewayModelPickerState.models.length + ' models'));
+      // Only rebuild menu content on real list responses, preserving scroll.
+      if (gatewayModelPickerOpen) renderGatewayModelMenu();
+      updateGatewayPickerTriggers();
+      reportHealth(
+        'legacy.gateway_model_picker',
+        gatewayModelPickerState.error ? 'degraded' : 'ok',
+        gatewayModelPickerState.error
+          ? { reason: 'fetch-failed' }
+          : { models: gatewayModelPickerState.models.length },
+      );
+    });
+
+    document.addEventListener('click', (evt) => {
+      if (!gatewayModelPickerOpen) return;
+      const t = evt.target;
+      if (t && t.closest && (
+        t.closest('[' + GATEWAY_MODEL_PICKER_ATTR + ']') ||
+        t.closest('[' + GATEWAY_MODEL_MENU_ATTR + ']')
+      )) return;
+      closeGatewayModelMenu();
+    }, true);
+
+    document.addEventListener('keydown', (evt) => {
+      if (!gatewayModelPickerOpen) return;
+      if (evt.key !== 'Escape') return;
+      evt.preventDefault();
+      closeGatewayModelMenu();
+    }, true);
+
+    window.addEventListener('resize', () => {
+      if (gatewayModelPickerOpen) positionGatewayModelMenu();
+    });
+    // Composer footer can shift when transcript scrolls; keep menu pinned.
+    window.addEventListener('scroll', () => {
+      if (gatewayModelPickerOpen) positionGatewayModelMenu();
+    }, true);
+
+    requestGatewayModelsList(false);
+    ensureGatewayModelPickerMounted();
+    gatewayModelPickerTimer = setInterval(ensureGatewayModelPickerMounted, 1000);
+    reportHealth('legacy.gateway_model_picker', 'starting');
+  }
+
   // Look up the *current* record by uuid from active SessionState's
   // messages.value. Edits replace the Ez instance in the array (uuid
   // stable, identity changes), so any callback that captured the
@@ -11114,6 +11560,7 @@ import {
       setupAskRequestRefinement,
       setupCommandMenuTransientSelectionCleanup,
       setupCustomModelPicker,
+      setupGatewayModelPicker,
       setupTranscriptActionDebugTools,
       assertForkRewindReady,
     };
@@ -11127,6 +11574,7 @@ import {
     setupChangeReviewFileReview();
     setupCommandMenuTransientSelectionCleanup();
     setupCustomModelPicker();
+    setupGatewayModelPicker();
     initLegacyAskRefinement(legacyContext);
     initLegacyTranscriptActionDebug(legacyContext);
     reportHealth('legacy', 'ok');

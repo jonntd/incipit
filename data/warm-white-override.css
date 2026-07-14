@@ -688,6 +688,52 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
   background-color: #a8896e !important;
   color: #1f1f1e !important;
 }
+[data-incipit-model-picker-trigger] {
+  color: #0d0d0d !important;
+}
+[data-incipit-model-picker-trigger]:hover,
+[data-incipit-model-picker-trigger]:focus-visible,
+[data-incipit-model-picker-trigger].is-open {
+  background: #E6E4DE !important;
+}
+[data-incipit-model-picker-menu] {
+  background: #ffffff !important;
+  color: #0d0d0d !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08) !important;
+}
+[data-incipit-model-picker-status],
+[data-incipit-model-picker-base],
+[data-incipit-model-picker-empty] {
+  color: rgba(13, 13, 13, 0.52) !important;
+}
+[data-incipit-model-picker-status][data-error="1"] {
+  color: #9b3b2e !important;
+}
+[data-incipit-model-picker-item] {
+  color: #0d0d0d !important;
+}
+[data-incipit-model-picker-item]:hover,
+[data-incipit-model-picker-item]:focus-visible {
+  background: #F4F2EC !important;
+}
+[data-incipit-model-picker-item][data-active="1"] {
+  background: #E6E4DE !important;
+  color: #0d0d0d !important;
+}
+[data-incipit-model-picker-footer] {
+  border-top-color: rgba(13, 13, 13, 0.08) !important;
+}
+[data-incipit-model-picker-custom],
+[data-incipit-model-picker-refresh] {
+  border-color: rgba(13, 13, 13, 0.10) !important;
+  color: rgba(13, 13, 13, 0.82) !important;
+}
+[data-incipit-model-picker-custom]:hover,
+[data-incipit-model-picker-refresh]:hover,
+[data-incipit-model-picker-custom]:focus-visible,
+[data-incipit-model-picker-refresh]:focus-visible {
+  background: #F4F2EC !important;
+}
 
 /* Notes icon + panel + reject bubble (warm-white). Flat menu language: no
    frames, selection = #E6E4DE fill on hover, fields = #faf9f5, action = #a8896e. */

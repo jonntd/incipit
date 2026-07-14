@@ -193,6 +193,11 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'notes_save_request') {
     handleNotesSaveRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'models_list_request') {
+    handleModelsListRequest(comm, state, message);
+    return;
   }
   // Note insertion is no longer a host round-trip: the webview inserts snippets
   // directly via a native composer text edit (execCommand insertText), since the
@@ -371,6 +376,8 @@ function resolveClaudeBaseUrl(settings) {
       hostname: url.hostname,
       port: url.port || (url.protocol === 'http:' ? 80 : 443),
       path: messagesPath || '/v1/messages',
+      origin: url.origin,
+      rawBase: raw,
     };
   } catch (_) {
     return {
@@ -378,7 +385,313 @@ function resolveClaudeBaseUrl(settings) {
       hostname: 'api.anthropic.com',
       port: 443,
       path: '/v1/messages',
+      origin: 'https://api.anthropic.com',
+      rawBase: 'https://api.anthropic.com',
     };
+  }
+}
+
+// Gateway model list: GET {ANTHROPIC_BASE_URL}/v1/models (with /models fallback).
+// Same settings/auth surface as prompt enhancer so the picker sees whatever
+// the active Claude Code session is already configured to talk to.
+const MODELS_LIST_TIMEOUT_MS = 15000;
+const MODELS_LIST_CACHE_TTL_MS = 60 * 1000;
+const modelsListCache = {
+  key: '',
+  models: null,
+  fetchedAt: 0,
+  baseUrl: '',
+  authSource: '',
+  currentModel: '',
+  error: null,
+};
+
+function resolveClaudeModelsEndpoints(settings) {
+  const endpoint = resolveClaudeBaseUrl(settings);
+  let basePath = '';
+  try {
+    const url = new URL(claudeEnvGet(settings, 'ANTHROPIC_BASE_URL') || 'https://api.anthropic.com');
+    basePath = url.pathname || '';
+    if (basePath.endsWith('/')) basePath = basePath.slice(0, -1);
+    if (basePath === '/') basePath = '';
+  } catch (_) {
+    basePath = '';
+  }
+  const paths = [];
+  const push = (p) => {
+    const pathValue = p || '/v1/models';
+    if (!paths.includes(pathValue)) paths.push(pathValue);
+  };
+  if (basePath.endsWith('/v1')) {
+    push(`${basePath}/models`);
+    push(`${basePath.replace(/\/v1$/, '')}/models`);
+  } else if (basePath) {
+    push(`${basePath}/v1/models`);
+    push(`${basePath}/models`);
+  } else {
+    push('/v1/models');
+    push('/models');
+  }
+  return paths.map((pathValue) => ({
+    protocol: endpoint.protocol,
+    hostname: endpoint.hostname,
+    port: endpoint.port,
+    path: pathValue,
+    origin: endpoint.origin,
+    rawBase: endpoint.rawBase,
+  }));
+}
+
+function normalizeModelId(raw) {
+  if (typeof raw === 'string') return raw.trim();
+  if (!raw || typeof raw !== 'object') return '';
+  const id = raw.id || raw.name || raw.model || raw.value || raw.model_id || raw.modelId;
+  return typeof id === 'string' ? id.trim() : '';
+}
+
+function normalizeModelLabel(raw, id) {
+  if (typeof raw === 'string') return raw.trim() || id;
+  if (!raw || typeof raw !== 'object') return id;
+  const label = raw.display_name || raw.displayName || raw.label || raw.name || raw.title || id;
+  return typeof label === 'string' && label.trim() ? label.trim() : id;
+}
+
+function parseProviderModels(json) {
+  if (!json || typeof json !== 'object') return [];
+  const out = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const id = normalizeModelId(raw);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push({
+      id,
+      label: normalizeModelLabel(raw, id),
+    });
+  };
+
+  if (Array.isArray(json.data)) {
+    for (const item of json.data) add(item);
+  }
+  if (Array.isArray(json.models)) {
+    for (const item of json.models) add(item);
+  }
+  if (Array.isArray(json.model_ids)) {
+    for (const item of json.model_ids) add(item);
+  }
+  if (Array.isArray(json.modelIds)) {
+    for (const item of json.modelIds) add(item);
+  }
+  return out.slice(0, 5000);
+}
+
+function fetchJsonGet({ protocol, hostname, port, path: reqPath, headers, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const transport = protocol === 'http:' ? http : https;
+    const options = {
+      hostname,
+      port,
+      path: reqPath,
+      method: 'GET',
+      headers: headers || {},
+    };
+    const req = transport.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        const statusCode = res.statusCode || 0;
+        if (statusCode === 404) {
+          const err = new Error(`HTTP 404 ${reqPath}`);
+          err.statusCode = 404;
+          err.notFound = true;
+          reject(err);
+          return;
+        }
+        if (statusCode >= 400) {
+          const err = new Error(
+            `HTTP ${statusCode} from models endpoint: ${String(data).slice(0, 200)}`,
+          );
+          err.statusCode = statusCode;
+          reject(err);
+          return;
+        }
+        try {
+          resolve(JSON.parse(data));
+        } catch (_) {
+          reject(new Error(`Invalid JSON from models endpoint (status=${statusCode})`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || MODELS_LIST_TIMEOUT_MS, () => {
+      req.destroy();
+      const err = new Error(`Models request timeout (${timeoutMs || MODELS_LIST_TIMEOUT_MS}ms)`);
+      err.code = 'ETIMEDOUT';
+      reject(err);
+    });
+    req.end();
+  });
+}
+
+async function fetchClaudeModelsList(settings) {
+  const auth = resolveClaudeAuth(settings);
+  if (!auth) {
+    const err = new Error(
+      'No Claude auth found. Set env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY in ~/.claude/settings.json',
+    );
+    err.retryable = false;
+    throw err;
+  }
+  const endpoints = resolveClaudeModelsEndpoints(settings);
+  const headers = { ...auth.headers };
+  // GET /models should not need a body content-type.
+  delete headers['Content-Type'];
+  delete headers['content-type'];
+
+  let lastError = null;
+  for (const endpoint of endpoints) {
+    try {
+      const json = await fetchJsonGet({
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port,
+        path: endpoint.path,
+        headers,
+        timeoutMs: MODELS_LIST_TIMEOUT_MS,
+      });
+      const models = parseProviderModels(json);
+      if (!models.length) {
+        lastError = new Error(`Models endpoint returned no model ids (${endpoint.path})`);
+        continue;
+      }
+      return {
+        models,
+        baseUrl: endpoint.rawBase || endpoint.origin,
+        path: endpoint.path,
+        authSource: auth.source,
+        currentModel: resolveClaudeModel(settings),
+      };
+    } catch (error) {
+      lastError = error;
+      if (error && error.notFound) continue;
+      // Non-404 failures on the first candidate still allow trying the next path,
+      // because some gateways only expose one of /v1/models vs /models.
+      continue;
+    }
+  }
+  throw lastError || new Error('Failed to fetch models');
+}
+
+function modelsListCacheKey(settings, cwd) {
+  const base = claudeEnvGet(settings, 'ANTHROPIC_BASE_URL') || 'https://api.anthropic.com';
+  const auth = resolveClaudeAuth(settings);
+  const tokenHint = auth
+    ? (auth.source || 'auth')
+    : 'no-auth';
+  return `${cwd || ''}|${base}|${tokenHint}`;
+}
+
+function handleModelsListRequest(comm, state, message) {
+  const requestId = message && message.requestId != null ? message.requestId : null;
+  const forceRefresh = message && message.forceRefresh === true;
+  const log = (step) => {
+    try {
+      state.log(`[models-list] ${step}${requestId != null ? ` · requestId=${requestId}` : ''}`);
+    } catch (_) { }
+  };
+  const reply = (payload) => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'models_list_response',
+        requestId,
+        ...(payload || {}),
+      });
+    } catch (_) { }
+  };
+
+  try {
+    const identity = state.commIdentities && state.commIdentities.get(comm);
+    const cwd = identity && identity.cwd ? identity.cwd : null;
+    const settings = loadClaudeSettings(cwd);
+    const cacheKey = modelsListCacheKey(settings, cwd);
+    const now = Date.now();
+    if (
+      !forceRefresh &&
+      modelsListCache.key === cacheKey &&
+      Array.isArray(modelsListCache.models) &&
+      now - modelsListCache.fetchedAt < MODELS_LIST_CACHE_TTL_MS
+    ) {
+      log(`cache hit models=${modelsListCache.models.length}`);
+      reply({
+        models: modelsListCache.models,
+        currentModel: modelsListCache.currentModel || resolveClaudeModel(settings),
+        baseUrl: modelsListCache.baseUrl,
+        authSource: modelsListCache.authSource,
+        error: null,
+        cached: true,
+      });
+      return;
+    }
+
+    log('fetch start');
+    fetchClaudeModelsList(settings)
+      .then((result) => {
+        const models = (result.models || []).map((item) => {
+          if (item && typeof item === 'object') {
+            const id = String(item.id || '').trim();
+            return {
+              id,
+              label: String(item.label || item.display_name || item.displayName || id),
+            };
+          }
+          const id = String(item || '').trim();
+          return { id, label: id };
+        }).filter((item) => item.id);
+        modelsListCache.key = cacheKey;
+        modelsListCache.models = models;
+        modelsListCache.fetchedAt = Date.now();
+        modelsListCache.baseUrl = result.baseUrl || '';
+        modelsListCache.authSource = result.authSource || '';
+        modelsListCache.currentModel = result.currentModel || '';
+        modelsListCache.error = null;
+        log(`fetch ok models=${models.length} path=${result.path || '?'} host=${result.baseUrl || '?'}`);
+        reply({
+          models,
+          currentModel: result.currentModel || '',
+          baseUrl: result.baseUrl || '',
+          authSource: result.authSource || '',
+          error: null,
+          cached: false,
+        });
+      })
+      .catch((error) => {
+        const msg = error && error.message ? error.message : String(error || 'Failed to fetch models');
+        modelsListCache.key = cacheKey;
+        modelsListCache.models = null;
+        modelsListCache.fetchedAt = Date.now();
+        modelsListCache.error = msg;
+        log(`fetch error: ${msg}`);
+        reply({
+          models: [],
+          currentModel: resolveClaudeModel(settings),
+          baseUrl: claudeEnvGet(settings, 'ANTHROPIC_BASE_URL') || '',
+          authSource: null,
+          error: msg,
+          cached: false,
+        });
+      });
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error || 'Failed to fetch models');
+    log(`error: ${msg}`);
+    reply({
+      models: [],
+      currentModel: '',
+      baseUrl: '',
+      authSource: null,
+      error: msg,
+      cached: false,
+    });
   }
 }
 

@@ -577,10 +577,15 @@ function assertRuntimeSourceContracts() {
   }
   const warmWhite = fs.readFileSync(path.join(__dirname, '..', 'data', 'warm-white-override.css'), 'utf8');
   const customModelStart = legacy.indexOf('Custom model picker.');
-  const customModelEnd = legacy.indexOf('// Look up the *current* record', customModelStart);
+  const customModelEnd = legacy.indexOf('// Gateway model picker', customModelStart);
   assert(customModelStart >= 0 && customModelEnd > customModelStart,
     'custom model picker source block must be present and bounded');
   const customModel = legacy.slice(customModelStart, customModelEnd);
+  const gatewayPickerStart = legacy.indexOf('// Gateway model picker');
+  const gatewayPickerEnd = legacy.indexOf('// Look up the *current* record', gatewayPickerStart);
+  assert(gatewayPickerStart >= 0 && gatewayPickerEnd > gatewayPickerStart,
+    'gateway model picker source block must be present and bounded');
+  const gatewayPicker = legacy.slice(gatewayPickerStart, gatewayPickerEnd);
   const legacyInit = legacy.match(/\n  function init\(\) \{([\s\S]*?)\n  \}\n\n  whenDOMReady\(init\);/);
   assert(legacyInit, 'legacy root init() body must be findable for dormant feature audits');
   assert(
@@ -602,13 +607,40 @@ function assertRuntimeSourceContracts() {
     'custom model picker must call official SessionState.setModel(modelObject) with the entered model ID',
   );
   assert(
-    !legacy.includes('/model') &&
+    !customModel.includes('/model') &&
       !customModel.includes('io_message') &&
       !customModel.includes('session.send') &&
       !customModel.includes('localStorage') &&
       !customModel.includes('recentModels') &&
-      !customModel.includes('recent model'),
+      !customModel.includes('recent model') &&
+      !gatewayPicker.includes('io_message') &&
+      !gatewayPicker.includes('session.send') &&
+      !gatewayPicker.includes('localStorage') &&
+      !gatewayPicker.includes('recentModels'),
     'custom model picker must not simulate slash input or keep recent-model state in the menu',
+  );
+  assert(
+    hostBadge.includes("message.type === 'models_list_request'") &&
+      hostBadge.includes('function handleModelsListRequest') &&
+      hostBadge.includes('function fetchClaudeModelsList') &&
+      hostBadge.includes('resolveClaudeModelsEndpoints') &&
+      hostBadge.includes('parseProviderModels') &&
+      hostBadge.includes("type: 'models_list_response'") &&
+      hostBadge.includes("claudeEnvGet(settings, 'ANTHROPIC_BASE_URL')") &&
+      hostBadge.includes('resolveClaudeAuth(settings)'),
+    'host-badge must fetch gateway models via settings.env ANTHROPIC_BASE_URL + auth',
+  );
+  assert(
+    gatewayPicker.includes('setupGatewayModelPicker') &&
+      gatewayPicker.includes("type: 'models_list_request'") &&
+      gatewayPicker.includes("type !== 'models_list_response'") &&
+      gatewayPicker.includes('session.setModel(makeCustomModelOption(raw))') &&
+      gatewayPicker.includes('data-incipit-model-picker') &&
+      gatewayPicker.includes('[data-incipit-input-footer-host]') &&
+      gatewayPicker.includes('gatewayModelListScrollTop') &&
+      legacyInit[1].includes('setupGatewayModelPicker,') &&
+      /^\s*setupGatewayModelPicker\(\);/m.test(legacyInit[1]),
+    'gateway model picker must mount in the composer and apply models via SessionState.setModel',
   );
   assert(
     theme.includes('[data-incipit-custom-model-modal]') &&
@@ -624,13 +656,18 @@ function assertRuntimeSourceContracts() {
       theme.includes('[data-incipit-custom-model-input]:focus') &&
       theme.includes('box-shadow: none !important') &&
       theme.includes('background: #a8896e !important') &&
+      theme.includes('[data-incipit-model-picker]') &&
+      theme.includes('[data-incipit-model-picker-menu]') &&
+      theme.includes('[data-incipit-model-picker-item]') &&
       warmWhite.includes('[data-incipit-custom-model-modal]') &&
       warmWhite.includes('[data-incipit-custom-model-action]::after') &&
       warmWhite.includes('[data-incipit-custom-model-dialog]') &&
       warmWhite.includes('background: #ffffff !important') &&
       warmWhite.includes('caret-color: #a8896e !important') &&
       warmWhite.includes('box-shadow: none !important') &&
-      warmWhite.includes('background: #a8896e !important'),
+      warmWhite.includes('background: #a8896e !important') &&
+      warmWhite.includes('[data-incipit-model-picker-trigger]') &&
+      warmWhite.includes('[data-incipit-model-picker-menu]'),
     'custom model modal must use scoped incipit styling, stable input focus, and effort-slider yellow buttons in both palettes',
   );
   assert(
