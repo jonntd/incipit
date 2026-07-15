@@ -622,6 +622,9 @@ function assertRuntimeSourceContracts() {
   assert(
     hostBadge.includes("message.type === 'models_list_request'") &&
       hostBadge.includes('function handleModelsListRequest') &&
+      hostBadge.includes("message.type === 'models_set_request'") &&
+      hostBadge.includes('function handleModelsSetRequest') &&
+      hostBadge.includes('function writeClaudeUserSettingsModel') &&
       hostBadge.includes('function fetchClaudeModelsList') &&
       hostBadge.includes('resolveClaudeModelsEndpoints') &&
       hostBadge.includes('parseProviderModels') &&
@@ -636,7 +639,7 @@ function assertRuntimeSourceContracts() {
       hostBadge.includes("get('ANTHROPIC_DEFAULT_HAIKU_MODEL')") &&
       hostBadge.includes('function isPromptEnhancerModelSwitchableError') &&
       hostBadge.includes('model: modelOverride') &&
-      hostBadge.includes('const chain = resolvePromptEnhancerModelChain(settings)') &&
+      hostBadge.includes('resolvePromptEnhancerModelChain(settings, preferredModel)') &&
       hostBadge.includes('callClaudeMessagesAPI({') &&
       hostBadge.includes('model,') &&
       hostBadge.includes("log(`model chain: ${chain.join(' → ')}`)"),
@@ -647,6 +650,8 @@ function assertRuntimeSourceContracts() {
       gatewayPicker.includes("type: 'models_list_request'") &&
       gatewayPicker.includes("type !== 'models_list_response'") &&
       gatewayPicker.includes('session.setModel(makeCustomModelOption(raw))') &&
+      gatewayPicker.includes("type: 'models_set_request'") &&
+      gatewayPicker.includes('persistSelectedModelToSettings') &&
       gatewayPicker.includes('data-incipit-model-picker') &&
       gatewayPicker.includes('[data-incipit-input-footer-host]') &&
       gatewayPicker.includes('gatewayModelListScrollTop') &&

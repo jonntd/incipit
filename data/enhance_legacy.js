@@ -1342,6 +1342,20 @@ import {
     try {
       const result = await session.setModel(makeCustomModelOption(raw));
       if (result === false) throw new Error('The host rejected this model ID.');
+      try { globalThis.__incipitSelectedModelId = raw; } catch (_) {}
+      try {
+        const api = typeof getIncipitVsCodeApiForModels === 'function'
+          ? getIncipitVsCodeApiForModels()
+          : (typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null);
+        if (api && typeof api.postMessage === 'function') {
+          api.postMessage({
+            __incipit: true,
+            type: 'models_set_request',
+            requestId: Date.now(),
+            modelId: raw,
+          });
+        }
+      } catch (_) {}
       closeCustomModelDialog();
     } catch (error) {
       const msg = error && error.message ? error.message : String(error || 'Unknown error');
@@ -1635,9 +1649,22 @@ import {
   let gatewayModelPickerAnchor = null;
   let gatewayModelMenuEl = null;
   let gatewayModelListScrollTop = 0;
+  // After the user switches models, ignore transcript-derived responseModel
+  // until the next assistant turn finalizes.  Otherwise the host re-reads
+  // the *previous* turn's message.model and immediately undoes the clear.
+  let responseModelBlockedUntilTurn = false;
   let gatewayModelPickerState = {
     models: [],
     currentModel: '',
+    // settings.model as stored (may be alias: opus/sonnet/haiku/default)
+    selectedModel: '',
+    // Alias expanded via host resolveClaudeModel — what requests actually use
+    resolvedModel: '',
+    // Actual model id from the API response (message.model in transcript).
+    // When this differs from resolvedModel/selectedModel, the gateway remapped
+    // the model id (e.g. "hy3-free" → "grok-4.5").  This is the ground truth
+    // for what the backend actually ran.
+    responseModel: '',
     baseUrl: '',
     status: '',
     loading: false,
@@ -1658,27 +1685,108 @@ import {
     return Array.from(document.querySelectorAll(FOOTER_HOST_SEL)).filter(Boolean);
   }
 
-  function currentSessionModelId() {
+  function isModelFamilyAlias(id) {
+    const s = String(id || '').trim().toLowerCase();
+    if (!s) return false;
+    if (s === 'default' || s === 'auto') return true;
+    // Family aliases Claude settings accept: "opus", "sonnet-4-5", "haiku ", etc.
+    return /^(opus|sonnet|haiku|fable)([-\s]|$)/.test(s);
+  }
+
+  // Session UI selection (may be alias). Prefer live session state over cache.
+  // Official "Switch model…" trailing label also uses modelSelection (+ lastServed).
+  // Never let host settings.model win over a live session selection — that is the
+  // main cause of footer showing grok while the menu shows z-ai/glm-5.2.
+  function currentSelectedModelId() {
     try {
       const session = locateActiveSessionState();
-      if (!session) return gatewayModelPickerState.currentModel || '';
+      if (!session) return gatewayModelPickerState.selectedModel || gatewayModelPickerState.currentModel || '';
       const selection = session.modelSelection && session.modelSelection.value;
       if (typeof selection === 'string' && selection.trim()) return selection.trim();
       if (selection && typeof selection === 'object' && typeof selection.value === 'string') {
         return selection.value.trim();
       }
+      // Some hosts keep the pick on modelSelection as { value, displayName }.
+      if (selection && typeof selection === 'object' && typeof selection.id === 'string' && selection.id.trim()) {
+        return selection.id.trim();
+      }
       const setting = session.config && session.config.value && session.config.value.modelSetting;
       if (typeof setting === 'string' && setting.trim()) return setting.trim();
     } catch (_) {}
-    return gatewayModelPickerState.currentModel || '';
+    return gatewayModelPickerState.selectedModel || gatewayModelPickerState.currentModel || '';
+  }
+
+  // Official setModel clears lastServedModel; assistant replies set it to the
+  // model that actually served the turn. The menu indicator prefers this when
+  // it disagrees with a bare alias / default selection (see webview sbe()).
+  function currentLastServedModelId() {
+    try {
+      const session = locateActiveSessionState();
+      if (!session) return '';
+      const raw = session.lastServedModel && session.lastServedModel.value;
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      if (raw && typeof raw === 'object') {
+        const id = raw.value || raw.id || raw.model;
+        if (typeof id === 'string' && id.trim()) return id.trim();
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  // What the footer should SHOW — keep in lockstep with official Switch model…
+  // trailing indicator:
+  //   1. concrete modelSelection id
+  //   2. lastServedModel (when selection is alias/default/auto or empty)
+  //   3. host-resolved expansion of an alias
+  //   4. selection / cache fallback
+  function currentSessionModelId() {
+    const selected = currentSelectedModelId();
+    const lastServed = currentLastServedModelId();
+    if (selected && !isModelFamilyAlias(selected)) {
+      return selected;
+    }
+    // Alias / empty selection: official menu often shows lastServed (e.g. haiku → z-ai/glm-5.2).
+    if (lastServed) return lastServed;
+    if (gatewayModelPickerState.resolvedModel) {
+      return gatewayModelPickerState.resolvedModel;
+    }
+    if (gatewayModelPickerState.currentModel && !isModelFamilyAlias(gatewayModelPickerState.currentModel)) {
+      return gatewayModelPickerState.currentModel;
+    }
+    return selected || gatewayModelPickerState.currentModel || '';
+  }
+
+  function modelIdsMatch(a, b) {
+    const x = String(a || '').trim().toLowerCase();
+    const y = String(b || '').trim().toLowerCase();
+    if (!x || !y) return false;
+    if (x === y) return true;
+    // Alias vs resolved: sonnet matches DEFAULT_SONNET id when host told us.
+    if (isModelFamilyAlias(x) && gatewayModelPickerState.resolvedModel) {
+      return String(gatewayModelPickerState.resolvedModel).trim().toLowerCase() === y;
+    }
+    if (isModelFamilyAlias(y) && gatewayModelPickerState.resolvedModel) {
+      return String(gatewayModelPickerState.resolvedModel).trim().toLowerCase() === x;
+    }
+    return false;
   }
 
   function shortModelLabel(id) {
     const raw = String(id || '').trim();
     if (!raw) return 'Model';
     // Prefer gateway display label when the active id is in the list.
-    const hit = (gatewayModelPickerState.models || []).find((m) => m && m.id === raw);
+    // Primary label is always the *selected / request* model id — never the
+    // unrelated response/upstream model (those are different models).
+    const hit = (gatewayModelPickerState.models || []).find((m) => m && modelIdsMatch(m.id, raw));
     if (hit && hit.label) return String(hit.label);
+    // Family alias (sonnet/opus/…) → show resolved request id from host.
+    const selected = currentSelectedModelId();
+    if (isModelFamilyAlias(selected) && gatewayModelPickerState.resolvedModel) {
+      const resolved = gatewayModelPickerState.resolvedModel;
+      const resolvedHit = (gatewayModelPickerState.models || []).find((m) => m && modelIdsMatch(m.id, resolved));
+      const resolvedLabel = resolvedHit && resolvedHit.label ? resolvedHit.label : resolved;
+      return resolvedLabel;
+    }
     return raw;
   }
 
@@ -1721,9 +1829,17 @@ import {
     const current = currentSessionModelId();
     if (current) gatewayModelPickerState.currentModel = current;
     const label = shortModelLabel(gatewayModelPickerState.currentModel);
-    const title = gatewayModelPickerState.baseUrl
+    const selected = currentSelectedModelId();
+    const resolved = currentSessionModelId();
+    let title = gatewayModelPickerState.baseUrl
       ? ('Models from ' + gatewayModelPickerState.baseUrl)
       : 'Switch model';
+    // Title shows the request-side model only (what setModel / API model param use).
+    if (selected && resolved && selected !== resolved) {
+      title = 'Selected: ' + selected + ' · request model: ' + resolved;
+    } else if (resolved) {
+      title = 'Model: ' + resolved + (gatewayModelPickerState.baseUrl ? (' · ' + gatewayModelPickerState.baseUrl) : '');
+    }
     document.querySelectorAll('[' + GATEWAY_MODEL_PICKER_ATTR + ']').forEach((root) => {
       const trigger = root.querySelector('[data-incipit-model-picker-trigger]');
       const labelEl = root.querySelector('[data-incipit-model-picker-label]');
@@ -1771,6 +1887,21 @@ import {
     }
   }
 
+  function persistSelectedModelToSettings(modelId) {
+    const raw = String(modelId || '').trim();
+    if (!raw) return;
+    const api = getIncipitVsCodeApiForModels();
+    if (!api || typeof api.postMessage !== 'function') return;
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'models_set_request',
+        requestId: ++gatewayModelPickerRequestId,
+        modelId: raw,
+      });
+    } catch (_) {}
+  }
+
   async function applyGatewayModelSelection(modelId) {
     const raw = String(modelId || '').trim();
     if (!raw) return;
@@ -1786,9 +1917,20 @@ import {
       const result = await session.setModel(makeCustomModelOption(raw));
       if (result === false) throw new Error('Host rejected this model ID');
       gatewayModelPickerState.currentModel = raw;
+      gatewayModelPickerState.selectedModel = raw;
+      // Selection is the request model. Do not let a different upstream model
+      // overwrite the footer label.
+      gatewayModelPickerState.responseModel = '';
+      responseModelBlockedUntilTurn = true;
+      if (!isModelFamilyAlias(raw)) gatewayModelPickerState.resolvedModel = raw;
+      try { globalThis.__incipitSelectedModelId = raw; } catch (_) {}
       gatewayModelPickerState.status = '';
       closeGatewayModelMenu();
       updateGatewayPickerTriggers();
+      // Keep ~/.claude/settings.json model + ANTHROPIC_MODEL in lockstep so
+      // host helpers (and Claude Code defaults) use the same model as the UI.
+      persistSelectedModelToSettings(raw);
+      requestGatewayModelsList(false);
     } catch (error) {
       const msg = error && error.message ? error.message : String(error || 'switch failed');
       gatewayModelPickerState.status = 'Could not set model: ' + msg;
@@ -1870,7 +2012,7 @@ import {
       btn.setAttribute('data-incipit-model-picker-item', '');
       btn.setAttribute('role', 'option');
       btn.setAttribute('data-model-id', id);
-      if (id === current) btn.setAttribute('data-active', '1');
+      if (modelIdsMatch(id, current) || modelIdsMatch(id, currentSelectedModelId())) btn.setAttribute('data-active', '1');
       btn.textContent = itemLabel;
       btn.title = id;
       btn.addEventListener('click', (evt) => {
@@ -1933,8 +2075,16 @@ import {
     const hosts = footerHosts();
     if (!hosts.length) return;
 
+    // Always re-read live session (modelSelection / lastServed). Do not keep a
+    // stale settings-driven currentModel when the official menu has moved on.
     const current = currentSessionModelId();
-    if (current) gatewayModelPickerState.currentModel = current;
+    if (current) {
+      gatewayModelPickerState.currentModel = current;
+      const selected = currentSelectedModelId();
+      if (selected) gatewayModelPickerState.selectedModel = selected;
+    }
+    updateGatewayPickerTriggers();
+
     const label = shortModelLabel(gatewayModelPickerState.currentModel);
 
     for (const host of hosts) {
@@ -2013,7 +2163,46 @@ import {
         const id = String(item || '').trim();
         return { id, label: id };
       }).filter((item) => item.id);
-      gatewayModelPickerState.currentModel = String(data.currentModel || gatewayModelPickerState.currentModel || '').trim();
+      const hostResolved = String(data.resolvedModel || data.currentModel || gatewayModelPickerState.resolvedModel || '').trim();
+      const hostSelected = String(data.selectedModel || '').trim();
+      const responseModel = String(data.responseModel || '').trim();
+      // Session is the single source of truth for what both UIs should show.
+      // settings.model from the host is only a fallback when the session has no
+      // selection yet — never override a live pick (including family aliases
+      // like "haiku") with a stale settings.model (e.g. "grok-4.5").
+      const liveSelected = currentSelectedModelId();
+      const lastServed = currentLastServedModelId();
+      if (liveSelected) {
+        gatewayModelPickerState.selectedModel = liveSelected;
+        if (!isModelFamilyAlias(liveSelected)) {
+          gatewayModelPickerState.resolvedModel = liveSelected;
+          gatewayModelPickerState.currentModel = liveSelected;
+        } else {
+          // Alias: prefer lastServed (matches official menu), then host resolve.
+          const display = lastServed || hostResolved || liveSelected;
+          if (hostResolved) gatewayModelPickerState.resolvedModel = hostResolved;
+          else if (lastServed) gatewayModelPickerState.resolvedModel = lastServed;
+          gatewayModelPickerState.currentModel = display;
+        }
+      } else if (lastServed) {
+        gatewayModelPickerState.currentModel = lastServed;
+        if (!gatewayModelPickerState.resolvedModel) gatewayModelPickerState.resolvedModel = lastServed;
+        if (hostSelected) gatewayModelPickerState.selectedModel = hostSelected;
+      } else {
+        if (hostSelected) gatewayModelPickerState.selectedModel = hostSelected;
+        if (hostResolved) gatewayModelPickerState.resolvedModel = hostResolved;
+        gatewayModelPickerState.currentModel =
+          hostResolved || hostSelected || gatewayModelPickerState.currentModel || '';
+      }
+      // Expose request model for other webview modules (e.g. prompt enhancer).
+      try {
+        const expose = currentSessionModelId() || gatewayModelPickerState.currentModel || '';
+        if (expose) globalThis.__incipitSelectedModelId = expose;
+      } catch (_) {}
+      // Keep responseModel for diagnostics only; never use it as the UI label.
+      if (responseModel && !responseModelBlockedUntilTurn) {
+        gatewayModelPickerState.responseModel = responseModel;
+      }
       gatewayModelPickerState.baseUrl = String(data.baseUrl || '').trim();
       gatewayModelPickerState.loading = false;
       gatewayModelPickerState.error = data.error ? String(data.error) : '';
@@ -2060,6 +2249,20 @@ import {
     requestGatewayModelsList(false);
     ensureGatewayModelPickerMounted();
     gatewayModelPickerTimer = setInterval(ensureGatewayModelPickerMounted, 1000);
+    // Refresh the response model (actual backend id) after each assistant turn.
+    // This catches gateway remapping that the initial models_list didn't see.
+    let responseRefreshPending = false;
+    subscribeRuntime('assistantTurnFinalized', () => {
+      // Unblock so the next models_list may apply the fresh response model.
+      responseModelBlockedUntilTurn = false;
+      if (responseRefreshPending) return;
+      responseRefreshPending = true;
+      // Small delay to let the transcript settle before the host reads it.
+      setTimeout(() => {
+        responseRefreshPending = false;
+        requestGatewayModelsList(true);
+      }, 500);
+    });
     reportHealth('legacy.gateway_model_picker', 'starting');
   }
 

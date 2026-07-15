@@ -47,6 +47,11 @@ const PROJECT_INDEX_BATCH_DELAY_MS = 45;
 const PROJECT_INDEX_SCAN_MIN_INTERVAL_MS = 12000;
 const GLOBAL_INDEX_SCAN_MIN_INTERVAL_MS = 60000;
 const FILE_REVEAL_CWD_SCAN_BYTES = 512 * 1024;
+// Durable prompt-enhancer logs — Extension Host console is easy to miss;
+// this file is always writable from the host process.
+const PROMPT_ENHANCER_LOG_DIR = path.join(os.homedir(), '.incipit', 'logs');
+const PROMPT_ENHANCER_LOG_PATH = path.join(PROMPT_ENHANCER_LOG_DIR, 'prompt-enhancer.log');
+const PROMPT_ENHANCER_LOG_MAX_BYTES = 512 * 1024;
 // Keep rollback tokens long enough to cover Claude Code's 5-minute
 // launch/byte watchdog path, but cap entries because each one keeps
 // the original transcript text in memory until send succeeds or fails.
@@ -69,6 +74,15 @@ const HISTORY_MAX_BUCKETS = 1500;
 function attachComm(comm) {
   const state = getOrCreateState();
   state.comms.add(comm);
+  // Claude Code passes its LogOutputChannel as comm.output (name: "Claude VSCode").
+  // Prefer that so prompt-enhancer / badge logs show in the Output panel.
+  try {
+    if (comm && comm.output) {
+      if (!state.outputChannels) state.outputChannels = new Set();
+      state.outputChannels.add(comm.output);
+      state.primaryOutput = comm.output;
+    }
+  } catch (_) { }
   wrapShutdown(comm, state);
   attachMessageHandler(comm, state);
   startPolling(state);
@@ -82,9 +96,48 @@ function getOrCreateState() {
   return state;
 }
 
+function writeClaudeOutput(level, message) {
+  try {
+    const state = globalThis[GLOBAL_KEY];
+    const channels = [];
+    if (state && state.primaryOutput) channels.push(state.primaryOutput);
+    if (state && state.outputChannels) {
+      for (const ch of state.outputChannels) {
+        if (ch && channels.indexOf(ch) === -1) channels.push(ch);
+      }
+    }
+    // Fallback: open/reuse the official Claude VSCode LogOutputChannel by name
+    // if attachComm hasn't stored one yet (or older host shapes differ).
+    if (!channels.length) {
+      try {
+        const vscode = getVSCodeApi();
+        if (vscode && vscode.window && typeof vscode.window.createOutputChannel === 'function') {
+          if (!globalThis.__incipitClaudeOutput) {
+            globalThis.__incipitClaudeOutput = vscode.window.createOutputChannel('Claude VSCode', { log: true });
+          }
+          channels.push(globalThis.__incipitClaudeOutput);
+        }
+      } catch (_) { }
+    }
+    const text = String(message == null ? '' : message);
+    for (const ch of channels) {
+      try {
+        if (!ch) continue;
+        if (level === 'error' && typeof ch.error === 'function') ch.error(text);
+        else if (level === 'warn' && typeof ch.warn === 'function') ch.warn(text);
+        else if (typeof ch.info === 'function') ch.info(text);
+        else if (typeof ch.appendLine === 'function') ch.appendLine(text);
+        else if (typeof ch.append === 'function') ch.append(text + '\n');
+      } catch (_) { }
+    }
+  } catch (_) { }
+}
+
 function createState() {
   return {
     comms: new Set(),
+    outputChannels: new Set(),
+    primaryOutput: null,
     started: false,
     patchedFs: false,
     ourFile: null,
@@ -102,7 +155,9 @@ function createState() {
     changeReviewStates: new Map(),
     truncateRollbacks: new Map(),
     log(message) {
-      try { console.log(`[cceBadge] ${message}`); } catch (_) { }
+      const line = `[cceBadge] ${message}`;
+      try { console.log(line); } catch (_) { }
+      writeClaudeOutput('info', line);
     },
   };
 }
@@ -136,10 +191,48 @@ function attachMessageHandler(comm, state) {
   });
 }
 
+function appendPromptEnhancerLog(line, level) {
+  const text = String(line == null ? '' : line);
+  try {
+    fs.mkdirSync(PROMPT_ENHANCER_LOG_DIR, { recursive: true });
+    const stamp = new Date().toISOString();
+    const row = `[${stamp}] ${text}\n`;
+    try {
+      const st = fs.statSync(PROMPT_ENHANCER_LOG_PATH);
+      if (st && st.size > PROMPT_ENHANCER_LOG_MAX_BYTES) {
+        const buf = fs.readFileSync(PROMPT_ENHANCER_LOG_PATH);
+        const keep = buf.slice(Math.max(0, buf.length - Math.floor(PROMPT_ENHANCER_LOG_MAX_BYTES / 2)));
+        fs.writeFileSync(PROMPT_ENHANCER_LOG_PATH, keep);
+      }
+    } catch (_) { }
+    fs.appendFileSync(PROMPT_ENHANCER_LOG_PATH, row);
+  } catch (_) { }
+  // Always mirror into the Claude VSCode Output panel (log level channel).
+  writeClaudeOutput(level || 'info', `[prompt-enhancer] ${text}`);
+}
+
 function handleWebviewMessage(comm, state, message) {
   if (!message || message.__incipit !== true) return;
   if (isChangeReviewRuntimeMessage(message.type) && !CHANGE_REVIEW_RUNTIME_ENABLED) return;
   if (message.type === 'prompt_enhancer_request') {
+    // Entry log before any work — proves the webview→host bridge is alive.
+    try {
+      const rid = message.requestId != null ? message.requestId : '?';
+      const n = typeof message.text === 'string' ? message.text.length : 0;
+      const msg = `recv prompt_enhancer_request · requestId=${rid} chars=${n}`;
+      try { console.log(`[cceBadge] [prompt-enhancer] ${msg}`); } catch (_) { }
+      appendPromptEnhancerLog(msg, 'info');
+    } catch (_) { }
+    // Immediate ACK so the webview can distinguish "host silent" from "API slow".
+    try {
+      if (comm && comm.webview && typeof comm.webview.postMessage === 'function') {
+        comm.webview.postMessage({
+          __incipit: true,
+          type: 'prompt_enhancer_ack',
+          requestId: message.requestId != null ? message.requestId : null,
+        });
+      }
+    } catch (_) { }
     handlePromptEnhancerRequest(comm, state, message);
     return;
   }
@@ -197,6 +290,10 @@ function handleWebviewMessage(comm, state, message) {
   }
   if (message.type === 'models_list_request') {
     handleModelsListRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'models_set_request') {
+    handleModelsSetRequest(comm, state, message);
     return;
   }
   // Note insertion is no longer a host round-trip: the webview inserts snippets
@@ -257,6 +354,88 @@ function loadClaudeSettings(cwd) {
   return settings;
 }
 
+// Persist the model the user picked so UI selection and API request params stay
+// the same model.  Writes user-level ~/.claude/settings.json only (not project
+// overlays). Also aligns env.ANTHROPIC_MODEL — when it points at a *different*
+// model than settings.model, Claude Code / host helpers can send the wrong one
+// (e.g. UI hy3-free while ANTHROPIC_MODEL=grok-4.5).
+function writeClaudeUserSettingsModel(modelId) {
+  const id = typeof modelId === 'string' ? modelId.trim() : '';
+  if (!id) {
+    const err = new Error('Empty model id');
+    err.retryable = false;
+    throw err;
+  }
+  const filePath = path.join(claudeConfigDir(), 'settings.json');
+  const current = readJsonObjectSafe(filePath) || {};
+  const prevEnv = current.env && typeof current.env === 'object' && !Array.isArray(current.env)
+    ? current.env
+    : {};
+  const next = {
+    ...current,
+    model: id,
+    env: {
+      ...prevEnv,
+      ANTHROPIC_MODEL: id,
+    },
+  };
+  const text = JSON.stringify(next, null, 2) + '\n';
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, text, 'utf8');
+  // Host process may have already resolved env from the old value; keep in-process
+  // consistent so prompt-enhancer / models_list use the same id immediately.
+  try { process.env.ANTHROPIC_MODEL = id; } catch (_) { }
+  return { model: id, path: filePath };
+}
+
+function handleModelsSetRequest(comm, state, message) {
+  const requestId = message && message.requestId != null ? message.requestId : null;
+  const modelId = typeof message.modelId === 'string' ? message.modelId.trim() : '';
+  const log = (step) => {
+    try {
+      state.log(`[models-set] ${step}${requestId != null ? ` · requestId=${requestId}` : ''}`);
+    } catch (_) { }
+  };
+  const reply = (payload) => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'models_set_response',
+        requestId,
+        ...(payload || {}),
+      });
+    } catch (_) { }
+  };
+  if (!modelId) {
+    log('reject empty modelId');
+    reply({ ok: false, error: 'Empty model id', modelId: '' });
+    return;
+  }
+  try {
+    const result = writeClaudeUserSettingsModel(modelId);
+    log(`ok model=${result.model} path=${result.path}`);
+    // Drop models list cache so the next list reflects the new selection.
+    try {
+      modelsListCache.key = '';
+      modelsListCache.models = null;
+      modelsListCache.fetchedAt = 0;
+      modelsListCache.currentModel = modelId;
+    } catch (_) { }
+    reply({
+      ok: true,
+      error: null,
+      modelId: result.model,
+      selectedModel: result.model,
+      resolvedModel: result.model,
+      currentModel: result.model,
+    });
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error || 'Failed to write settings');
+    log(`error: ${msg}`);
+    reply({ ok: false, error: msg, modelId });
+  }
+}
+
 function claudeEnvGet(settings, name) {
   if (process.env[name]) return process.env[name];
   const env = settings && settings.env && typeof settings.env === 'object' ? settings.env : null;
@@ -292,12 +471,42 @@ function resolveClaudeModel(settings) {
     || 'claude-sonnet-4-20250514';
 }
 
+// Scan the tail of a transcript JSONL for the last assistant message's `model`
+// field — the ground truth for what the backend actually ran.  Reads at most
+// 64 KB from the end to avoid loading huge transcripts.
+const RESPONSE_MODEL_SCAN_BYTES = 64 * 1024;
+function extractLastResponseModel(filePath) {
+  if (!filePath || typeof filePath !== 'string') return '';
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat || !stat.size) return '';
+    const start = Math.max(0, stat.size - RESPONSE_MODEL_SCAN_BYTES);
+    const tail = readFileTextSlice(filePath, start, stat.size - start);
+    if (!tail) return '';
+    const lines = tail.split(/\r?\n/).filter(Boolean);
+    // Scan backwards for the last assistant message with a model field.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const entry = parseJsonLine(lines[i]);
+      if (!entry || typeof entry !== 'object') continue;
+      const msg = entry.message;
+      if (!msg || typeof msg !== 'object') continue;
+      if (msg.role !== 'assistant') continue;
+      const model = typeof msg.model === 'string' ? msg.model.trim() : '';
+      if (model) return model;
+    }
+  } catch (_) { }
+  return '';
+}
+
 // Prompt enhancer fallback chain: primary (current Claude model) → sonnet → haiku.
 // Dedupes case-insensitively so alias collapse / already-on-sonnet sessions don't
 // waste attempts on the same id. Missing DEFAULT_* env entries are skipped.
-function resolvePromptEnhancerModelChain(settings) {
+// preferredModel (optional): explicit UI/session selection takes priority over
+// settings.json so the enhancer uses the same model the user picked in the UI.
+function resolvePromptEnhancerModelChain(settings, preferredModel) {
   const get = name => claudeEnvGet(settings, name);
-  const primary = resolveClaudeModel(settings);
+  const preferred = typeof preferredModel === 'string' ? preferredModel.trim() : '';
+  const primary = preferred || resolveClaudeModel(settings);
   const candidates = [
     primary,
     get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
@@ -642,6 +851,10 @@ function handleModelsListRequest(comm, state, message) {
     const settings = loadClaudeSettings(cwd);
     const cacheKey = modelsListCacheKey(settings, cwd);
     const now = Date.now();
+    // Extract the actual model the backend used from the last assistant message.
+    const responseModel = identity && identity.target
+      ? extractLastResponseModel(identity.target)
+      : '';
     if (
       !forceRefresh &&
       modelsListCache.key === cacheKey &&
@@ -649,9 +862,17 @@ function handleModelsListRequest(comm, state, message) {
       now - modelsListCache.fetchedAt < MODELS_LIST_CACHE_TTL_MS
     ) {
       log(`cache hit models=${modelsListCache.models.length}`);
+      const resolved = resolveClaudeModel(settings);
+      const selected = (settings && typeof settings.model === 'string' && settings.model.trim())
+        ? settings.model.trim()
+        : 'default';
       reply({
         models: modelsListCache.models,
-        currentModel: modelsListCache.currentModel || resolveClaudeModel(settings),
+        // currentModel = what API requests will actually use (alias expanded).
+        currentModel: modelsListCache.currentModel || resolved,
+        selectedModel: selected,
+        resolvedModel: resolved,
+        responseModel,
         baseUrl: modelsListCache.baseUrl,
         authSource: modelsListCache.authSource,
         error: null,
@@ -682,9 +903,16 @@ function handleModelsListRequest(comm, state, message) {
         modelsListCache.currentModel = result.currentModel || '';
         modelsListCache.error = null;
         log(`fetch ok models=${models.length} path=${result.path || '?'} host=${result.baseUrl || '?'}`);
+        const selected = (settings && typeof settings.model === 'string' && settings.model.trim())
+          ? settings.model.trim()
+          : 'default';
+        const resolved = result.currentModel || resolveClaudeModel(settings);
         reply({
           models,
-          currentModel: result.currentModel || '',
+          currentModel: resolved,
+          selectedModel: selected,
+          resolvedModel: resolved,
+          responseModel,
           baseUrl: result.baseUrl || '',
           authSource: result.authSource || '',
           error: null,
@@ -698,9 +926,16 @@ function handleModelsListRequest(comm, state, message) {
         modelsListCache.fetchedAt = Date.now();
         modelsListCache.error = msg;
         log(`fetch error: ${msg}`);
+        const selected = (settings && typeof settings.model === 'string' && settings.model.trim())
+          ? settings.model.trim()
+          : 'default';
+        const resolved = resolveClaudeModel(settings);
         reply({
           models: [],
-          currentModel: resolveClaudeModel(settings),
+          currentModel: resolved,
+          selectedModel: selected,
+          resolvedModel: resolved,
+          responseModel,
           baseUrl: claudeEnvGet(settings, 'ANTHROPIC_BASE_URL') || '',
           authSource: null,
           error: msg,
@@ -948,8 +1183,8 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOver
   });
 }
 
-async function callClaudeMessagesAPIWithRetry({ settings, userText, log }) {
-  const chain = resolvePromptEnhancerModelChain(settings);
+async function callClaudeMessagesAPIWithRetry({ settings, userText, log, preferredModel }) {
+  const chain = resolvePromptEnhancerModelChain(settings, preferredModel);
   // Multi-model path: one attempt per distinct model. Single-model path: keep
   // the historical PROMPT_ENHANCER_MAX_ATTEMPTS same-model retries.
   const maxAttempts = chain.length > 1
@@ -1011,13 +1246,24 @@ async function callClaudeMessagesAPIWithRetry({ settings, userText, log }) {
 
 function handlePromptEnhancerRequest(comm, state, message) {
   const requestId = message && message.requestId != null ? message.requestId : null;
-  const log = step => {
-    try {
-      state.log(`[prompt-enhancer] ${step}${requestId != null ? ` · requestId=${requestId}` : ''}`);
-    } catch (_) { }
+  const log = (step, level) => {
+    const line = `${step}${requestId != null ? ` · requestId=${requestId}` : ''}`;
+    let lvl = level || 'info';
+    if (!level) {
+      const s = String(step || '');
+      if (/\berror\b|failed|reject|no auth|timeout/i.test(s)) lvl = 'error';
+      else if (/retry|warn|will try|no-ack/i.test(s)) lvl = 'warn';
+    }
+    try { console.log(`[cceBadge] [prompt-enhancer] ${line}`); } catch (_) { }
+    // File + Claude VSCode Output panel (single write path, level-aware).
+    appendPromptEnhancerLog(line, lvl);
   };
   const reply = (text, error) => {
     try {
+      if (!comm || !comm.webview || typeof comm.webview.postMessage !== 'function') {
+        log(`reply FAILED: no webview.postMessage (text=${text ? String(text).length : 0}, error=${error || ''})`);
+        return;
+      }
       comm.webview.postMessage({
         __incipit: true,
         type: 'prompt_enhancer_response',
@@ -1025,7 +1271,14 @@ function handlePromptEnhancerRequest(comm, state, message) {
         text: text || null,
         error: error || null,
       });
-    } catch (_) { }
+      log(
+        error
+          ? `reply sent error: ${error}`
+          : `reply sent ok chars=${text ? String(text).length : 0}`,
+      );
+    } catch (err) {
+      log(`reply postMessage threw: ${err && err.message ? err.message : err}`);
+    }
   };
   try {
     const text = typeof message.text === 'string' ? message.text : '';
@@ -1037,13 +1290,23 @@ function handlePromptEnhancerRequest(comm, state, message) {
     const identity = state.commIdentities && state.commIdentities.get(comm);
     const cwd = identity && identity.cwd ? identity.cwd : null;
     const settings = loadClaudeSettings(cwd);
-    const chain = resolvePromptEnhancerModelChain(settings);
+    // Prefer modelId from the webview (UI selection) over settings-only resolve,
+    // so enhancer and chat use the same model the user picked.
+    const preferredModel = typeof message.modelId === 'string' ? message.modelId.trim() : '';
+    const chain = resolvePromptEnhancerModelChain(settings, preferredModel);
     const endpoint = resolveClaudeBaseUrl(settings);
+    const auth = resolveClaudeAuth(settings);
     log(
       `start chars=${text.length} model=${chain[0] || '?'} chain=${chain.join('→')} ` +
-      `host=${endpoint.hostname} maxAttempts=${chain.length > 1 ? chain.length : PROMPT_ENHANCER_MAX_ATTEMPTS}`,
+      `host=${endpoint.hostname} auth=${auth ? auth.source : 'NONE'} ` +
+      `preferred=${preferredModel || '(settings)'} ` +
+      `maxAttempts=${chain.length > 1 ? chain.length : PROMPT_ENHANCER_MAX_ATTEMPTS}`,
     );
-    callClaudeMessagesAPIWithRetry({ settings, userText: text, log })
+    if (!auth) {
+      reply(null, 'No Claude auth found. Set env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY in ~/.claude/settings.json');
+      return;
+    }
+    callClaudeMessagesAPIWithRetry({ settings, userText: text, log, preferredModel })
       .then(enhanced => {
         log(`done chars=${enhanced ? String(enhanced).length : 0}`);
         reply(enhanced);

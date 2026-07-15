@@ -39,8 +39,8 @@ function withCleanEnv(fn) {
   }
 }
 
-function chain(settings) {
-  return withCleanEnv(() => T.resolvePromptEnhancerModelChain(settings));
+function chain(settings, preferredModel) {
+  return withCleanEnv(() => T.resolvePromptEnhancerModelChain(settings, preferredModel));
 }
 
 // --- chain construction ----------------------------------------------------
@@ -125,6 +125,20 @@ function chain(settings) {
   });
   assert.deepStrictEqual(c, ['grok-4.5', 'sonnet-x', 'haiku-x']);
   ok('default model uses ANTHROPIC_MODEL then DEFAULT_* fallbacks');
+}
+
+{
+  // UI selected a different model than settings — preferred wins as primary.
+  const c = chain({
+    model: 'default',
+    env: {
+      ANTHROPIC_MODEL: 'grok-4.5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'sonnet-x',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'haiku-x',
+    },
+  }, 'hy3-free');
+  assert.deepStrictEqual(c, ['hy3-free', 'sonnet-x', 'haiku-x']);
+  ok('preferred UI model overrides settings primary (two different models)');
 }
 
 {

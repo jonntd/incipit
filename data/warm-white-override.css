@@ -1837,3 +1837,19 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 .incipit-prompt-enhancer.incipit-prompt-enhancer-error {
   color: #b42318;
 }
+
+
+.incipit-prompt-enhancer-status {
+  background: rgba(154, 107, 47, 0.10);
+  color: rgba(13, 13, 13, 0.78);
+  border-color: rgba(154, 107, 47, 0.28);
+}
+.incipit-prompt-enhancer-status[data-kind="error"] {
+  background: rgba(180, 35, 24, 0.08);
+  border-color: rgba(180, 35, 24, 0.28);
+  color: #b42318;
+}
+.incipit-prompt-enhancer-status[data-kind="warn"] {
+  background: rgba(154, 107, 47, 0.12);
+  color: #7a541f;
+}

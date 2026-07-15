@@ -3,7 +3,6 @@ import { startHostProbe } from './host_probe.js';
 import {
   CFG,
   applyAppVarOverrides,
-  applyBodyBoldFlag,
   dbg,
   ensureDomFreeze,
   injectStyles,
@@ -208,7 +207,7 @@ import {
     try {
       document.documentElement.setAttribute('data-incipit-critical-ready', '1');
       reportHealth('bootstrap.critical', 'ok');
-    } catch (_) {}
+    } catch (_) { }
   }
 
   function initCritical() {
@@ -218,7 +217,6 @@ import {
     ensureDomFreeze();
     applyAppVarOverrides();
     setupAppVarObserver();
-    applyBodyBoldFlag();
     startHostProbe();
     injectStyles();
     installRenderTimeCodeHighlighter();

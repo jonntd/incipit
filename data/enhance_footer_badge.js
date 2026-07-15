@@ -2706,6 +2706,10 @@ export function setupPromptEnhancer() {
   // Host retries up to 3 × 20s + backoff (~2.8s). Keep the client latch a bit
   // above that so a late success after retries can still apply.
   var ENHANCE_TIMEOUT_MS = 70000;
+  // If host never ACKs, the webview→host bridge is dead (not just a slow API).
+  var ENHANCE_ACK_TIMEOUT_MS = 2500;
+  var enhanceAckTimeoutId = null;
+  var enhanceGotAck = false;
 
   function findComposerInput() {
     var nodes = document.querySelectorAll('[class*="messageInput"][contenteditable]');
@@ -2821,7 +2825,39 @@ export function setupPromptEnhancer() {
       var msg = '[incipit][prompt-enhancer] ' + step +
         (detail ? ' · ' + detail : '');
       console.log(msg);
+      // Also mirror into a durable ring so Webview DevTools isn't required.
+      if (!globalThis.__incipitPromptEnhancerLogs) globalThis.__incipitPromptEnhancerLogs = [];
+      globalThis.__incipitPromptEnhancerLogs.push({ t: Date.now(), step: step, detail: detail || '' });
+      if (globalThis.__incipitPromptEnhancerLogs.length > 80) {
+        globalThis.__incipitPromptEnhancerLogs.shift();
+      }
     } catch (_) {}
+  }
+
+  function ensureEnhancerStatusEl(btn) {
+    if (!btn || !btn.parentNode) return null;
+    var el = btn.parentNode.querySelector('.incipit-prompt-enhancer-status');
+    if (el) return el;
+    el = document.createElement('div');
+    el.className = 'incipit-prompt-enhancer-status';
+    el.setAttribute('aria-live', 'polite');
+    btn.parentNode.appendChild(el);
+    return el;
+  }
+
+  function setEnhancerStatus(text, kind) {
+    var btn = document.querySelector('.' + ENHANCER_BADGE_CLASS);
+    var el = ensureEnhancerStatusEl(btn);
+    if (!el) return;
+    if (!text) {
+      el.textContent = '';
+      el.removeAttribute('data-kind');
+      el.removeAttribute('data-visible');
+      return;
+    }
+    el.textContent = text;
+    el.setAttribute('data-kind', kind || 'info');
+    el.setAttribute('data-visible', '1');
   }
 
   function setEnhancingUi(active, errorMsg) {
@@ -2838,6 +2874,7 @@ export function setupPromptEnhancer() {
       btn.classList.remove('incipit-prompt-enhancer-error');
       btn.setAttribute('aria-busy', 'true');
       btn.title = 'Enhancing prompt…';
+      setEnhancerStatus('Enhancing…', 'running');
       return;
     }
     btn.classList.remove('incipit-prompt-enhancer-running');
@@ -2845,22 +2882,30 @@ export function setupPromptEnhancer() {
     if (errorMsg) {
       btn.classList.add('incipit-prompt-enhancer-error');
       btn.title = 'Error: ' + errorMsg;
+      setEnhancerStatus(String(errorMsg).slice(0, 120), 'error');
       setTimeout(function() {
         btn.classList.remove('incipit-prompt-enhancer-error');
         btn.title = 'Prompt Enhancer (Cmd + /) · undo with Cmd/Ctrl+Z';
-      }, 3000);
+        setEnhancerStatus('', null);
+      }, 5000);
     } else {
       btn.classList.remove('incipit-prompt-enhancer-error');
       btn.title = 'Prompt Enhancer (Cmd + /) · undo with Cmd/Ctrl+Z';
+      setEnhancerStatus('', null);
     }
   }
 
   function resetEnhancing(errorMsg) {
     isEnhancing = false;
     pendingOriginal = null;
+    enhanceGotAck = false;
     if (enhanceTimeoutId != null) {
       clearTimeout(enhanceTimeoutId);
       enhanceTimeoutId = null;
+    }
+    if (enhanceAckTimeoutId != null) {
+      clearTimeout(enhanceAckTimeoutId);
+      enhanceAckTimeoutId = null;
     }
     setEnhancingUi(false, errorMsg || null);
   }
@@ -2868,16 +2913,19 @@ export function setupPromptEnhancer() {
   function triggerPromptEnhancer() {
     if (isEnhancing) {
       logEnhancer('skip', 'already running');
+      setEnhancerStatus('Already running…', 'info');
       return;
     }
     var input = findComposerInput();
     if (!input) {
       logEnhancer('skip', 'composer input not found');
+      setEnhancingUi(false, 'Composer not found');
       return;
     }
     var currentText = readComposerText(input);
     if (!currentText.trim()) {
       logEnhancer('skip', 'empty prompt');
+      setEnhancingUi(false, 'Empty prompt');
       return;
     }
 
@@ -2895,26 +2943,47 @@ export function setupPromptEnhancer() {
     var requestId = ++enhanceRequestId;
     isEnhancing = true;
     pendingOriginal = currentText;
+    enhanceGotAck = false;
     setEnhancingUi(true);
     logEnhancer('start', 'requestId=' + requestId + ' chars=' + currentText.length);
     if (enhanceTimeoutId != null) clearTimeout(enhanceTimeoutId);
     enhanceTimeoutId = setTimeout(function() {
       // Only the still-current request may time out the latch.
       if (isEnhancing && requestId === enhanceRequestId) {
-        logEnhancer('timeout', 'requestId=' + requestId);
-        resetEnhancing('Prompt enhance timed out');
+        logEnhancer('timeout', 'requestId=' + requestId + ' gotAck=' + enhanceGotAck);
+        resetEnhancing(
+          enhanceGotAck
+            ? 'Prompt enhance timed out (API/gateway)'
+            : 'Host never answered — bridge dead? Reload Window / re-apply incipit'
+        );
       }
     }, ENHANCE_TIMEOUT_MS);
+    if (enhanceAckTimeoutId != null) clearTimeout(enhanceAckTimeoutId);
+    enhanceAckTimeoutId = setTimeout(function() {
+      if (isEnhancing && requestId === enhanceRequestId && !enhanceGotAck) {
+        logEnhancer('no-ack', 'requestId=' + requestId + ' after ' + ENHANCE_ACK_TIMEOUT_MS + 'ms');
+        setEnhancerStatus('Waiting for host…', 'warn');
+      }
+    }, ENHANCE_ACK_TIMEOUT_MS);
 
     try {
       logEnhancer('request', 'posting to host · requestId=' + requestId);
+      var modelId = '';
+      try {
+        if (typeof globalThis.__incipitSelectedModelId === 'string') {
+          modelId = String(globalThis.__incipitSelectedModelId).trim();
+        }
+      } catch (_) {}
       api.postMessage({
         __incipit: true,
         type: 'prompt_enhancer_request',
         requestId: requestId,
-        text: currentText
+        text: currentText,
+        // Same model the UI picker selected — do not fall back to a different
+        // settings default (e.g. ANTHROPIC_MODEL=grok-4.5 while UI is hy3-free).
+        modelId: modelId || undefined,
       });
-      logEnhancer('waiting', 'host API call in flight');
+      logEnhancer('waiting', 'host API call in flight' + (modelId ? (' · model=' + modelId) : ''));
     } catch (err) {
       if (requestId === enhanceRequestId) {
         logEnhancer('error', String(err && err.message ? err.message : err || 'postMessage failed'));
@@ -2954,6 +3023,17 @@ export function setupPromptEnhancer() {
 
   window.addEventListener('message', function(ev) {
     var d = ev && ev.data;
+    if (d && d.__incipit && d.type === 'prompt_enhancer_ack') {
+      if (d.requestId != null && d.requestId !== enhanceRequestId) return;
+      enhanceGotAck = true;
+      if (enhanceAckTimeoutId != null) {
+        clearTimeout(enhanceAckTimeoutId);
+        enhanceAckTimeoutId = null;
+      }
+      logEnhancer('ack', 'host received requestId=' + (d.requestId != null ? d.requestId : enhanceRequestId));
+      setEnhancerStatus('Host OK · calling model…', 'running');
+      return;
+    }
     if (d && d.__incipit && d.type === 'prompt_enhancer_response') {
       // Drop stale replies (user undid / re-ran while an older request was
       // still in flight). Missing requestId is treated as "current" for older hosts.
@@ -2972,6 +3052,11 @@ export function setupPromptEnhancer() {
         clearTimeout(enhanceTimeoutId);
         enhanceTimeoutId = null;
       }
+      if (enhanceAckTimeoutId != null) {
+        clearTimeout(enhanceAckTimeoutId);
+        enhanceAckTimeoutId = null;
+      }
+      enhanceGotAck = false;
       isEnhancing = false;
       setEnhancingUi(false, d.error || null);
       if (d.error) {

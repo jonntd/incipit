@@ -6552,3 +6552,40 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
     box-shadow: 0 0 0 1px rgba(201, 166, 87, 0.42), 0 0 10px rgba(201, 166, 87, 0.22);
   }
 }
+
+
+.incipit-prompt-enhancer-status {
+  position: absolute;
+  right: 40px;
+  top: 10px;
+  z-index: 100;
+  max-width: min(280px, 50vw);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  background: rgba(201, 166, 87, 0.14);
+  color: rgba(248, 248, 246, 0.88);
+  border: 1px solid rgba(201, 166, 87, 0.28);
+}
+.incipit-prompt-enhancer-status[data-visible="1"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+.incipit-prompt-enhancer-status[data-kind="error"] {
+  background: rgba(255, 107, 107, 0.14);
+  border-color: rgba(255, 107, 107, 0.32);
+  color: #ffb4b0;
+}
+.incipit-prompt-enhancer-status[data-kind="warn"] {
+  background: rgba(201, 166, 87, 0.18);
+  border-color: rgba(201, 166, 87, 0.4);
+  color: #f0d9a0;
+}
