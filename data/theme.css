@@ -184,6 +184,19 @@
                'Microsoft YaHei UI', 'Microsoft YaHei',
                Consolas, Monaco, 'Courier New', monospace;
   --incipit-conversation-column-width: 570px;
+
+  /* Icon / hit-target scale for footer chrome and message action rows.
+     Previously each control wrote its own px (12–20), so adjacent glyphs
+     (rerun 18 / fork 17 / copy 16; badge 14 / notes 18 / send 20) read as
+     uneven. Three glyph steps + one hit size keep density without 1px drift.
+       sm  — secondary marks (cache glyph, chevrons)
+       md  — default chrome + transcript actions
+       lg  — primary footer control (send / stop)
+       hit — standard 26×26 click target for icon buttons */
+  --incipit-icon-sm: 12px;
+  --incipit-icon-md: 16px;
+  --incipit-icon-lg: 18px;
+  --incipit-hit-md: 26px;
 }
 
 /* ============================================================
@@ -2977,12 +2990,13 @@ pre code {
   display: none !important;
 }
 
-/* Draw the replacement icon on `::before` and tint it with `currentColor`. */
+/* Draw the replacement icon on `::before` and tint it with `currentColor`.
+   lg (18) — primary control, one step above footer chrome md icons. */
 [data-incipit-send-button]::before {
   content: "" !important;
   display: block !important;
-  width: 20px !important;
-  height: 20px !important;
+  width: var(--incipit-icon-lg) !important;
+  height: var(--incipit-icon-lg) !important;
   background-color: currentColor !important;
   -webkit-mask-size: contain !important;
   mask-size: contain !important;
@@ -4600,8 +4614,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: var(--incipit-hit-md);
+  height: var(--incipit-hit-md);
   padding: 0;
   background: transparent;
   border: none;
@@ -4611,9 +4625,12 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   color: rgba(255,255,255,0.55);
   transition: color 0.15s, background 0.15s;
 }
-.claude-user-copy-btn svg {
-  width: 16px;
-  height: 16px;
+/* All transcript action glyphs share icon-md so copy / edit / rerun /
+   fork / more read as one optical weight (was 16 / 18 / 17 mixed). */
+.claude-user-copy-btn svg,
+.incipit-transcript-action-btn svg {
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   display: block;
 }
 .claude-user-copy-btn:hover {
@@ -4662,10 +4679,6 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   color: #d97757;
   background: rgba(217, 119, 87, 0.10);
 }
-.incipit-transcript-action-rerun svg {
-  width: 18px;
-  height: 18px;
-}
 /* Streaming-disabled state: edit (slash-overlay SVG) + rerun
    (colour-only). Copy / more never disable. CSS suppresses hover
    affordances so the disabled button reads as inert. */
@@ -4688,11 +4701,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 /* Fork (git-branch Y): same colour-only disabled treatment as rerun.
    Live state stays in body foreground (no terra accent — fork is
-   non-destructive and shouldn't compete with rerun's weight). */
-.incipit-transcript-action-fork svg {
-  width: 17px;
-  height: 17px;
-}
+   non-destructive and shouldn't compete with rerun's weight). Glyph
+   size is shared with every other action via .incipit-transcript-action-btn svg. */
 .incipit-transcript-action-fork[data-incipit-disabled="1"] {
   color: rgba(255, 255, 255, 0.45) !important;
 }
@@ -4801,15 +4811,15 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
+  flex: 0 0 var(--incipit-icon-lg);
+  width: var(--incipit-icon-lg);
+  height: var(--incipit-icon-lg);
   color: #F5F2E8;
 }
 [data-incipit-action-dropdown-icon] svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
 }
 [data-incipit-action-dropdown-label] {
   min-width: 0;
@@ -5214,13 +5224,15 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   opacity: 1;
   pointer-events: auto;
 }
+/* Tool-row copy reuses the shared action glyph scale so it matches the
+   message action row (was 22/14 — one step smaller and optically noisy). */
 [data-incipit-tool-local-actions] .claude-user-copy-btn {
-  width: 22px;
-  height: 22px;
+  width: var(--incipit-hit-md);
+  height: var(--incipit-hit-md);
 }
 [data-incipit-tool-local-actions] .claude-user-copy-btn svg {
-  width: 14px;
-  height: 14px;
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
 }
 
 [data-incipit-transcript-toast] {
@@ -5265,7 +5277,7 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
+  height: var(--incipit-hit-md);
   box-sizing: border-box;
   font-family: var(--incipit-mono-font, var(--incipit-body-font));
   font-size: 11.5px;
@@ -5299,8 +5311,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 .cceBadgeIcon {
   flex: 0 0 auto;
   display: block;
-  width: 14px;
-  height: 14px;
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   opacity: 0.72;
   color: inherit;
 }
@@ -5337,8 +5349,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 .cceBadgeGlyph {
   display: block;
-  width: 12px;
-  height: 12px;
+  width: var(--incipit-icon-sm);
+  height: var(--incipit-icon-sm);
   color: inherit;
 }
 .cceBadgeVal {
@@ -5824,8 +5836,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
+  width: var(--incipit-hit-md);
+  height: var(--incipit-hit-md);
   padding: 0;
   margin: 0;
   background: transparent;
@@ -5846,8 +5858,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 .cceNoteBtn.cceNoteBtnActive { background: #3a3b3a; }
 .cceNoteIcon {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   color: inherit;
 }
 @keyframes cceNoteNudge {
@@ -6099,7 +6111,7 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
    The source art was generated as a five-step concept sheet from the
    reference brain icon, then thresholded into black SVG line art. Production
    keeps the five icons as plain external SVGs rather than bitmap assets, so
-   they stay crisp at 20px.
+   they stay crisp at icon-md (16px) next to the effort label.
    ============================================================ */
 /* Two-set ink approach: ship a black-ink and a white-ink SVG per level.
    Warm-black (default) points the level vars at the white-ink files;
@@ -6150,9 +6162,9 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-effort-label]::before {
   content: "" !important;
   display: inline-block !important;
-  flex: 0 0 20px !important;
-  width: 20px !important;
-  height: 20px !important;
+  flex: 0 0 var(--incipit-icon-md) !important;
+  width: var(--incipit-icon-md) !important;
+  height: var(--incipit-icon-md) !important;
   background-color: transparent !important;
   background-image: var(--incipit-effort-icon-current) !important;
   background-size: contain !important;
@@ -6496,8 +6508,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--incipit-hit-md);
+  height: var(--incipit-hit-md);
   padding: 0;
   margin: 0;
   border: none;
@@ -6518,8 +6530,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 .incipit-prompt-enhancer svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   transform-origin: 50% 50%;
 }
 /* Running: soft breath + slow spin so the user can tell enhance is in flight. */

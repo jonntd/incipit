@@ -293,7 +293,9 @@ function setupCacheBadge() {
   var TEXT_CLASS = 'cceBadgeText';
   var POPUP_CLASS = 'cceStatPopup';
   // Outline icon with descending bars for a lightweight stats metaphor.
-  var ICON_SVG = '<svg class="cceBadgeIcon" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' +
+  // Display size is owned by theme.css (.cceBadgeIcon → --incipit-icon-md).
+  // width/height attrs are a pre-CSS fallback; keep them at 16 to match the token.
+  var ICON_SVG = '<svg class="cceBadgeIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">' +
     '<line x1="4" y1="6" x2="16" y2="6"/>' +
     '<line x1="4" y1="10" x2="13" y2="10"/>' +
     '<line x1="4" y1="14" x2="9" y2="14"/>' +
@@ -2006,8 +2008,9 @@ function setupNotes() {
   var NOTE_BTN_CLASS = 'cceNoteBtn';
   var CACHE_BADGE_CLASS = 'cceBadge'; // sibling we anchor immediately to the right of
   // Document-with-text-lines glyph: a "notes" metaphor distinct from the cache
-  // badge's borderless descending bars.
-  var NOTE_ICON_SVG = '<svg class="cceNoteIcon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  // badge's borderless descending bars. Display size is owned by theme.css
+  // (.cceNoteIcon → --incipit-icon-md); attrs are a pre-CSS fallback.
+  var NOTE_ICON_SVG = '<svg class="cceNoteIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<rect x="3.3" y="2.8" width="13.4" height="14.4" rx="2.2"/>' +
     '<line x1="6.4" y1="7" x2="13.6" y2="7"/>' +
     '<line x1="6.4" y1="10" x2="13.6" y2="10"/>' +
