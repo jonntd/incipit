@@ -62,12 +62,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yc-duan/incipit.git"
+    "url": "git+https://github.com/jonntd/incipit.git"
   },
   "bugs": {
-    "url": "https://github.com/yc-duan/incipit/issues"
+    "url": "https://github.com/jonntd/incipit/issues"
   },
-  "homepage": "https://github.com/yc-duan/incipit#readme",
-  "author": "",
+  "homepage": "https://github.com/jonntd/incipit#readme",
+  "author": "jonntd",
   "license": "AGPL-3.0-or-later"
 }

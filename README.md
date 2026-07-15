@@ -4,6 +4,8 @@
 
 [中文版 →](README.zh.md)
 
+> **Fork note:** This is [jonntd/incipit](https://github.com/jonntd/incipit), a maintained fork of the upstream [yc-duan/incipit](https://github.com/yc-duan/incipit). Install from this repository — `npm install -g incipit` still pulls the upstream npm package, not this fork.
+
 ---
 
 incipit redesigns Claude Code's entire VS Code frontend — body typography, math rendering, tool-call folding, diff, local history editing, context, and project activity views — in a literary style, with engineering surfaces folded into the same visual language. It does not touch model requests, authentication, tool schema, or the CLI spawn protocol; every byte sent to the server is identical before and after installation.
@@ -22,13 +24,15 @@ Remove it and the extension is back to its stock state.
 
 ## Install
 
-Requires Node.js 16 or later.
+Requires Node.js 16 or later, and the official Claude Code extension already installed.
+
+Install **this fork** from GitHub (not the upstream npm package):
 
 ```bash
-npm install -g incipit@latest
+npm install -g github:jonntd/incipit
 ```
 
-`incipit` is a terminal CLI; it must be installed globally. `npm install incipit` (without `-g`) is npm's syntax for installing a local dependency, which drops the package into the current directory's `node_modules/` — neither registered on your PATH nor runnable.
+`incipit` is a terminal CLI; it must be installed globally. `npm install github:jonntd/incipit` (without `-g`) is npm's syntax for installing a local dependency, which drops the package into the current directory's `node_modules/` — neither registered on your PATH nor runnable.
 
 Then:
 
@@ -57,7 +61,19 @@ incipit apply     # apply directly
 incipit restore   # restore the current target to official Claude Code files
 ```
 
-After every Claude Code update, the local patch is overwritten by the official files — run `incipit` again and re-apply. To upgrade incipit itself, use the same global install command.
+After every Claude Code update, the local patch is overwritten by the official files — run `incipit` again and re-apply. To upgrade this fork, re-run the same GitHub install command:
+
+```bash
+npm install -g github:jonntd/incipit
+```
+
+From a local clone (for development / offline install):
+
+```bash
+git clone https://github.com/jonntd/incipit.git
+cd incipit
+npm install -g .
+```
 
 To uninstall only the incipit CLI:
 
