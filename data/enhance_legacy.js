@@ -1649,10 +1649,6 @@ import {
   let gatewayModelPickerAnchor = null;
   let gatewayModelMenuEl = null;
   let gatewayModelListScrollTop = 0;
-  // After the user switches models, ignore transcript-derived responseModel
-  // until the next assistant turn finalizes.  Otherwise the host re-reads
-  // the *previous* turn's message.model and immediately undoes the clear.
-  let responseModelBlockedUntilTurn = false;
   let gatewayModelPickerState = {
     models: [],
     currentModel: '',
@@ -1660,11 +1656,6 @@ import {
     selectedModel: '',
     // Alias expanded via host resolveClaudeModel — what requests actually use
     resolvedModel: '',
-    // Actual model id from the API response (message.model in transcript).
-    // When this differs from resolvedModel/selectedModel, the gateway remapped
-    // the model id (e.g. "hy3-free" → "grok-4.5").  This is the ground truth
-    // for what the backend actually ran.
-    responseModel: '',
     baseUrl: '',
     status: '',
     loading: false,
@@ -1918,10 +1909,6 @@ import {
       if (result === false) throw new Error('Host rejected this model ID');
       gatewayModelPickerState.currentModel = raw;
       gatewayModelPickerState.selectedModel = raw;
-      // Selection is the request model. Do not let a different upstream model
-      // overwrite the footer label.
-      gatewayModelPickerState.responseModel = '';
-      responseModelBlockedUntilTurn = true;
       if (!isModelFamilyAlias(raw)) gatewayModelPickerState.resolvedModel = raw;
       try { globalThis.__incipitSelectedModelId = raw; } catch (_) {}
       gatewayModelPickerState.status = '';
@@ -2165,7 +2152,6 @@ import {
       }).filter((item) => item.id);
       const hostResolved = String(data.resolvedModel || data.currentModel || gatewayModelPickerState.resolvedModel || '').trim();
       const hostSelected = String(data.selectedModel || '').trim();
-      const responseModel = String(data.responseModel || '').trim();
       // Session is the single source of truth for what both UIs should show.
       // settings.model from the host is only a fallback when the session has no
       // selection yet — never override a live pick (including family aliases
@@ -2199,10 +2185,6 @@ import {
         const expose = currentSessionModelId() || gatewayModelPickerState.currentModel || '';
         if (expose) globalThis.__incipitSelectedModelId = expose;
       } catch (_) {}
-      // Keep responseModel for diagnostics only; never use it as the UI label.
-      if (responseModel && !responseModelBlockedUntilTurn) {
-        gatewayModelPickerState.responseModel = responseModel;
-      }
       gatewayModelPickerState.baseUrl = String(data.baseUrl || '').trim();
       gatewayModelPickerState.loading = false;
       gatewayModelPickerState.error = data.error ? String(data.error) : '';
@@ -2249,20 +2231,6 @@ import {
     requestGatewayModelsList(false);
     ensureGatewayModelPickerMounted();
     gatewayModelPickerTimer = setInterval(ensureGatewayModelPickerMounted, 1000);
-    // Refresh the response model (actual backend id) after each assistant turn.
-    // This catches gateway remapping that the initial models_list didn't see.
-    let responseRefreshPending = false;
-    subscribeRuntime('assistantTurnFinalized', () => {
-      // Unblock so the next models_list may apply the fresh response model.
-      responseModelBlockedUntilTurn = false;
-      if (responseRefreshPending) return;
-      responseRefreshPending = true;
-      // Small delay to let the transcript settle before the host reads it.
-      setTimeout(() => {
-        responseRefreshPending = false;
-        requestGatewayModelsList(true);
-      }, 500);
-    });
     reportHealth('legacy.gateway_model_picker', 'starting');
   }
 
