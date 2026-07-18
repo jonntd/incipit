@@ -23,20 +23,18 @@ const MAX_TOKENS = 512;
 const GENERATING_PLACEHOLDER = 'Incipit is generating…';
 
 const SYSTEM_PROMPT =
-  'You write git commit messages that accurately and faithfully describe the ' +
-  'actual code changes shown in the diff. Read the provided diff and status ' +
-  'carefully; never invent, guess, or generalize beyond what the changes ' +
-  'prove. Output ONLY the commit message text. ' +
-  'The entire commit message MUST be written in Simplified Chinese (简体中文), ' +
-  'including the subject line and any body. Type prefixes may stay English ' +
-  'when using Conventional Commits (feat/fix/refactor/docs/chore/style/test/perf), ' +
-  'but the description after the colon MUST be Chinese. ' +
-  'The subject line must state what the change does in imperative mood, ' +
-  'be at most 72 chars, and have no trailing period. ' +
-  'Add a short body only when the change genuinely needs explanation, ' +
-  'and only describe behavior the diff actually contains. ' +
-  'Use plain text with standard punctuation only: no emoji, no decorative ' +
-  'symbols, no markdown fences, no quotes, no preamble, no explanation.';
+  '你是一个软件项目的提交信息生成器。\n' +
+  '给定 git 状态与 diff，生成一条清晰、简洁、准确描述本次改动的提交信息。\n' +
+  '规则：\n' +
+  '  - 使用约定式提交：<type>(<可选 scope>): <描述>\n' +
+  '  - 允许的 type：feat, fix, refactor, docs, style, test, chore, perf, build, ci, revert\n' +
+  '  - 描述部分必须使用简体中文；type/scope 保持英文\n' +
+  '  - 祈使语气（用「新增」「修复」，不用「新增了」「修复了」）\n' +
+  '  - 第一行（subject）≤72 个字符，无句末句号\n' +
+  '  - 仅依据提供的 Status/Diff，不臆造未出现的改动、文件或行为\n' +
+  '  - 复杂改动可在空行后补充简短正文，正文也必须简体中文\n' +
+  '  - 只返回提交信息本身：无 markdown 代码块、无引号包裹、无前言、无解释\n' +
+  '  - 纯文本与常规标点：禁止 emoji、装饰符号、特殊图形字符';
 
 let activated = false;
 
@@ -101,9 +99,14 @@ async function generateCommitMessage(vscode, arg) {
       try { console.log(`[incipit][commit-message] ${step}`); } catch (_) { }
     };
 
+    // Append file-stats macro line to system (Augment changed_file_stats).
+    let system = SYSTEM_PROMPT;
+    const statsLine = formatStatsLine(promptData.stats);
+    if (statsLine) system = SYSTEM_PROMPT + '\n' + statsLine;
+
     const raw = await complete({
       userText,
-      system: SYSTEM_PROMPT,
+      system,
       maxTokens: MAX_TOKENS,
       cwd: root,
       log,
@@ -264,7 +267,41 @@ async function collectCommitPromptData(root) {
     status: (status || '').trim(),
     diff,
     examples,
+    stats: summarizeStatusStats(status),
   };
+}
+
+// Parse `git status --porcelain` into added/modified/deleted counts for the
+// system-prompt summary line (mirrors Augment changed_file_stats).
+function summarizeStatusStats(statusText) {
+  const stats = { added: 0, modified: 0, deleted: 0, renamed: 0, total: 0 };
+  const lines = String(statusText || '').split('\n');
+  for (const line of lines) {
+    if (!line || line.length < 2) continue;
+    // porcelain v1: XY PATH  (X=index, Y=worktree)
+    const xy = line.slice(0, 2);
+    const x = xy[0];
+    const y = xy[1];
+    // Prefer index status; fall back to worktree.
+    const code = x !== ' ' && x !== '?' ? x : y;
+    if (code === 'A' || code === '?') stats.added += 1;
+    else if (code === 'D') stats.deleted += 1;
+    else if (code === 'R' || code === 'C') stats.renamed += 1;
+    else if (code === 'M' || code === 'U' || code === 'T') stats.modified += 1;
+    else if (code !== ' ') stats.modified += 1;
+  }
+  stats.total = stats.added + stats.modified + stats.deleted + stats.renamed;
+  return stats;
+}
+
+function formatStatsLine(stats) {
+  if (!stats || !stats.total) return '';
+  const parts = [];
+  if (stats.added) parts.push(`新增 ${stats.added} 个`);
+  if (stats.modified) parts.push(`修改 ${stats.modified} 个`);
+  if (stats.deleted) parts.push(`删除 ${stats.deleted} 个`);
+  if (stats.renamed) parts.push(`重命名 ${stats.renamed} 个`);
+  return `改动文件共 ${stats.total} 个（${parts.join('，')}）`;
 }
 
 function truncateDiff(diff, budget) {
@@ -276,29 +313,26 @@ function truncateDiff(diff, budget) {
 
 function buildCommitUserPrompt(data) {
   const parts = [];
-  parts.push('Write a commit message that strictly reflects the git changes below.');
-  parts.push('Base it ONLY on the Status and Diff provided; describe what the code actually does.');
-  parts.push('Do not invent changes, files, or behavior not present in the diff.');
-  parts.push('The whole message MUST be Simplified Chinese (简体中文). Type prefix may be English.');
-  if (data.status) {
+  // Dynamic stats line (Augment-style macro context for the model).
+  const statsLine = formatStatsLine(data && data.stats);
+  if (statsLine) {
+    parts.push(statsLine);
     parts.push('');
-    parts.push('## Status');
-    parts.push('```');
+  }
+  parts.push('DIFF:');
+  parts.push(data && data.diff ? data.diff : '');
+  if (data && data.examples && data.examples.length) {
+    parts.push('');
+    parts.push('历史提交参考:');
+    for (const ex of data.examples.slice(0, 10)) parts.push(ex);
+  }
+  if (data && data.status) {
+    parts.push('');
+    parts.push('STATUS:');
     parts.push(data.status);
-    parts.push('```');
-  }
-  if (data.examples && data.examples.length) {
-    parts.push('');
-    parts.push('## Recent commit subjects (style reference)');
-    for (const ex of data.examples) parts.push(`- ${ex}`);
   }
   parts.push('');
-  parts.push('## Diff');
-  parts.push('```diff');
-  parts.push(data.diff);
-  parts.push('```');
-  parts.push('');
-  parts.push('Respond with the commit message only, in Simplified Chinese.');
+  parts.push('只返回提交信息本身（简体中文描述 + 英文 type 前缀）。');
   return parts.join('\n');
 }
 
@@ -362,6 +396,8 @@ module.exports = {
     buildCommitUserPrompt,
     truncateDiff,
     collectCommitPromptData,
+    summarizeStatusStats,
+    formatStatsLine,
     GENERATING_PLACEHOLDER,
   },
 };

@@ -89,12 +89,18 @@ function chain(settings, preferredModel) {
 }
 
 {
+  // Missing DEFAULT_* still keeps stock sonnet/haiku fallbacks so a flaky
+  // primary (e.g. empty fable body) can switch models.
   const c = chain({
     model: 'only-primary',
     env: {},
   });
-  assert.deepStrictEqual(c, ['only-primary']);
-  ok('missing DEFAULT_* leaves single-model chain');
+  assert.deepStrictEqual(c, [
+    'only-primary',
+    'claude-sonnet-4-20250514',
+    'claude-haiku-4-5-20251001',
+  ]);
+  ok('missing DEFAULT_* still keeps stock sonnet/haiku fallbacks');
 }
 
 {
@@ -213,17 +219,51 @@ function chain(settings, preferredModel) {
 }
 
 
-// --- prompt content + sanitizer (accuracy / plain text) --------------------
+
+// --- empty API text is switchable; multi-block extraction works ------------
+
+{
+  const emptyErr = new Error('No text in API response (model=claude-fable-5-dd-5.4-korg, status=200)');
+  emptyErr.statusCode = 200;
+  emptyErr.retryable = true;
+  assert.strictEqual(T.isPromptEnhancerModelSwitchableError(emptyErr), true);
+  ok('No text in API response is switchable to next model');
+}
+
+{
+  assert.strictEqual(
+    T.extractTextFromMessagesResponse({ content: [{ type: 'text', text: 'hello' }] }),
+    'hello',
+  );
+  assert.strictEqual(
+    T.extractTextFromMessagesResponse({
+      content: [
+        { type: 'thinking', thinking: '...' },
+        { type: 'text', text: 'feat: 修好提交信息' },
+      ],
+    }),
+    'feat: 修好提交信息',
+  );
+  assert.strictEqual(
+    T.extractTextFromMessagesResponse({ content: [] }),
+    '',
+  );
+  assert.strictEqual(
+    T.extractTextFromMessagesResponse({ text: 'alt-envelope' }),
+    'alt-envelope',
+  );
+  ok('extractTextFromMessagesResponse joins text blocks and alternate shapes');
+}
 
 {
   const content = T.buildPromptEnhancerUserContent('fix the bug');
   assert.ok(!content.includes('⚠️'), 'no emoji warning banner');
-  assert.ok(content.includes('NO TOOLS ALLOWED'));
-  assert.ok(content.includes('strictly faithful') || content.includes('faithful to the original'));
-  assert.ok(content.includes('Do not invent') || content.includes('do not invent'));
-  assert.ok(content.includes('no emoji') || content.includes('no decorative'));
-  assert.ok(content.includes('简体中文') || content.includes('Simplified Chinese'));
-  ok('buildPromptEnhancerUserContent is plain-text, Chinese, and accuracy-first');
+  assert.ok(content.includes('禁止使用任何工具') || content.includes('NO TOOLS'));
+  assert.ok(content.includes('只润色') || content.includes('不要执行'));
+  assert.ok(content.includes('简体中文'));
+  assert.ok(content.includes('原始 Prompt'));
+  assert.ok(content.includes('fix the bug'));
+  ok('buildPromptEnhancerUserContent is Chinese, rewrite-only, accuracy-first');
 }
 
 {

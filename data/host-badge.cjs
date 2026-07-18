@@ -518,7 +518,6 @@ function resolvePromptEnhancerModelChain(settings, preferredModel) {
     primary,
     get('ANTHROPIC_DEFAULT_SONNET_MODEL') || 'claude-sonnet-4-20250514',
     get('ANTHROPIC_DEFAULT_HAIKU_MODEL') || 'claude-haiku-4-5-20251001',
-    get('ANTHROPIC_DEFAULT_OPUS_MODEL') || null,
   ];
   const chain = [];
   const seen = new Set();
@@ -1018,27 +1017,25 @@ function sanitizeEnhancedPrompt(raw, original) {
 
 function buildPromptEnhancerUserContent(userText) {
   return [
-    'NO TOOLS ALLOWED.',
+    '禁止使用任何工具。只润色，不执行。',
     '',
-    "Here is an instruction that I'd like to give you, but it needs to be improved. " +
-    "Rewrite it so it is clearer, more specific, less ambiguous, and free of mistakes, " +
-    "while staying strictly faithful to the original intent and technical details. " +
-    "The rewritten instruction MUST be in Simplified Chinese (简体中文). " +
-    "Keep code samples, paths, identifiers, and URLs unchanged. " +
-    "Do not invent requirements, APIs, files, or constraints the user did not state. " +
-    "Do not add emoji or decorative symbols; use plain text and standard punctuation only. " +
-    "Do not use any tools: reply immediately with your answer, even if you're not sure. " +
-    "Consider the context of our conversation history when enhancing the prompt. " +
-    "If there is code in triple backticks (```) treat it as a code sample and leave it unchanged. " +
-    "Reply with the following format:",
+    '请把下面的原始 Prompt 改写成结构更清晰、指令更明确、歧义更少的增强版。',
+    '要求：',
+    '  - 输出必须是简体中文（代码块、路径、标识符、URL 原样保留）',
+    '  - 严格忠于原意，不添加用户未提出的目标、API、文件或约束',
+    '  - 不要执行任务、不要直接回答问题、不要输出实现代码',
+    '  - 纯文本与常规标点，禁止 emoji / 装饰符号',
+    '  - 若有 ``` 代码样例，保持其内容不变',
+    '',
+    '请严格按以下格式回复：',
     '',
     '### BEGIN RESPONSE ###',
     'Here is an enhanced version of the original instruction that is more specific and clear:',
-    '(put the enhanced instruction here in Simplified Chinese — only the rewritten prompt, no commentary, no emoji)',
+    '（此处只放增强后的 Prompt 正文，简体中文，无解说、无 emoji）',
     '',
     '### END RESPONSE ###',
     '',
-    'Here is my original instruction:',
+    '原始 Prompt:',
     '',
     userText,
   ].join('\n');
@@ -1174,14 +1171,14 @@ function callClaudeMessagesAPI({
     // can override system / user content and skip sanitize via postprocess=false.
     const system = (typeof systemOverride === 'string' && systemOverride.trim())
       ? systemOverride
-      : 'You rewrite user instructions to be clearer, more specific, and more accurate, '
-        + 'while preserving the original intent and technical details. '
-        + 'The rewritten instruction MUST be in Simplified Chinese (简体中文), '
-        + 'unless the original is almost entirely non-Chinese code identifiers; '
-        + 'even then, surrounding prose MUST be Simplified Chinese. '
-        + 'Do not invent requirements, files, APIs, or constraints the user did not state. '
-        + 'Use plain text with standard punctuation only: no emoji, no decorative symbols. '
-        + 'Follow the response format exactly. No tools.';
+      : '你是一个专业的 Prompt 工程师。'
+        + '请对用户提供的原始 Prompt 进行分析和拓展，输出一个结构清晰、指令明确、'
+        + '更易于被 AI 高质量执行的增强版 Prompt。'
+        + '必须使用简体中文撰写增强结果（代码、路径、标识符、URL 保持原样）。'
+        + '严格忠于原意，不臆造用户未提出的需求、API、文件或约束。'
+        + '只润色提示词本身，不要执行用户指令、不要直接回答问题、不要写代码实现。'
+        + '纯文本与常规标点：禁止 emoji、装饰符号。'
+        + '严格按响应格式输出。禁止使用任何工具。';
     const userContent = userContentOverride != null
       ? userContentOverride
       : buildPromptEnhancerUserContent(userText);

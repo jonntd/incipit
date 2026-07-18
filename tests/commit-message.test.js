@@ -55,12 +55,14 @@ function ok(name) {
 // --- SYSTEM_PROMPT contract -------------------------------------------------
 
 {
-  assert.ok(T.SYSTEM_PROMPT.includes('never invent'));
-  assert.ok(T.SYSTEM_PROMPT.includes('no emoji'));
-  assert.ok(T.SYSTEM_PROMPT.includes('diff'));
-  assert.ok(T.SYSTEM_PROMPT.includes('简体中文') || T.SYSTEM_PROMPT.includes('Simplified Chinese'));
+  assert.ok(T.SYSTEM_PROMPT.includes('提交信息生成器'));
+  assert.ok(T.SYSTEM_PROMPT.includes('约定式提交'));
+  assert.ok(T.SYSTEM_PROMPT.includes('简体中文'));
+  assert.ok(T.SYSTEM_PROMPT.includes('feat'));
+  assert.ok(T.SYSTEM_PROMPT.includes('禁止 emoji') || T.SYSTEM_PROMPT.includes('emoji'));
+  assert.ok(T.SYSTEM_PROMPT.includes('不臆造'));
   assert.ok(!T.SYSTEM_PROMPT.includes('⚠️'));
-  ok('SYSTEM_PROMPT demands accuracy, Chinese, and plain text');
+  ok('SYSTEM_PROMPT is Chinese conventional-commit style');
 }
 
 // --- buildCommitUserPrompt -------------------------------------------------
@@ -70,17 +72,28 @@ function ok(name) {
     status: ' M src/a.js\n?? src/b.js',
     diff: 'diff --git a/src/a.js b/src/a.js\n+hello',
     examples: ['feat: prior one', 'fix: prior two'],
+    stats: { added: 1, modified: 1, deleted: 0, renamed: 0, total: 2 },
   });
-  assert.ok(prompt.includes('## Status'));
-  assert.ok(prompt.includes('## Diff'));
-  assert.ok(prompt.includes('```diff'));
+  assert.ok(prompt.includes('DIFF:'));
   assert.ok(prompt.includes('+hello'));
+  assert.ok(prompt.includes('历史提交参考:'));
   assert.ok(prompt.includes('feat: prior one'));
-  assert.ok(prompt.includes('Respond with the commit message only'));
-  assert.ok(prompt.includes('strictly reflects') || prompt.includes('ONLY on the Status and Diff'));
-  assert.ok(prompt.includes('Do not invent'));
-  assert.ok(prompt.includes('简体中文') || prompt.includes('Simplified Chinese'));
-  ok('buildCommitUserPrompt includes status/diff/examples');
+  assert.ok(prompt.includes('STATUS:'));
+  assert.ok(prompt.includes('改动文件共 2 个'));
+  assert.ok(prompt.includes('简体中文'));
+  ok('buildCommitUserPrompt is DIFF/历史/STATUS shaped');
+}
+
+{
+  const stats = T.summarizeStatusStats(' M src/a.js\n?? src/b.js\nD  src/c.js\nR  old -> new');
+  assert.strictEqual(stats.modified, 1);
+  assert.strictEqual(stats.added, 1);
+  assert.strictEqual(stats.deleted, 1);
+  assert.strictEqual(stats.renamed, 1);
+  assert.strictEqual(stats.total, 4);
+  assert.ok(T.formatStatsLine(stats).includes('改动文件共 4 个'));
+  assert.strictEqual(T.formatStatsLine({ total: 0 }), '');
+  ok('summarizeStatusStats + formatStatsLine');
 }
 
 // --- truncateDiff ----------------------------------------------------------
