@@ -281,9 +281,9 @@ details[data-incipit-thinking] > summary[data-incipit-thinking-summary] svg[data
 details[data-incipit-thinking] > summary[data-incipit-thinking-summary]::after {
   content: "";
   display: inline-block;
-  flex: 0 0 16px;
-  width: 16px;
-  height: 16px;
+  flex: 0 0 var(--incipit-icon-md);
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   background-color: currentColor;
   opacity: 0.92;
   transform-origin: 50% 50%;
@@ -972,9 +972,9 @@ pre.incipit-mermaid-source {
    is `currentColor` so it follows the grey → hover-white fade above. */
 [data-incipit-tool-chevron] {
   display: inline-block;
-  flex: 0 0 16px;
-  width: 16px;
-  height: 16px;
+  flex: 0 0 var(--incipit-icon-md);
+  width: var(--incipit-icon-md);
+  height: var(--incipit-icon-md);
   background-color: currentColor;
   opacity: 0.92;
   transform-origin: 50% 50%;
@@ -3814,8 +3814,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 [data-incipit-deferred-next-guide-icon] svg,
 [data-incipit-deferred-next-icon-btn] svg {
-  width: 15px !important;
-  height: 15px !important;
+  width: var(--incipit-icon-md) !important;
+  height: var(--incipit-icon-md) !important;
   display: block !important;
 }
 [data-incipit-deferred-next-guide]:hover,
