@@ -19,7 +19,7 @@
     "start": "node bin/cli.js",
     "apply": "node bin/cli.js apply",
     "restore": "node bin/cli.js restore",
-    "test": "node tests/patch-contracts.test.js && node tests/markdown-preprocess.test.js && node tests/cache-history-buckets.test.js && node tests/session-identity.test.js && node tests/rerun-handoff.test.js && node tests/file-reveal.test.js && node tests/change-review.test.js && node tests/editor-overlay-insiders.test.js && node tests/host-detect-manual-add.test.js && node tests/deep-scan.test.js && node tests/deep-scan-results-screen.test.js && node tests/deferred-next.test.js && node tests/cjk-literary-no-faux-bold.test.js && node tests/mermaid-render.test.js && node tests/notes.test.js && node tests/prompt-enhancer-fallback.test.js && node tests/commit-message.test.js && node tests/folder-reference.test.js && node tests/selection-reference.test.js",
+    "test": "node tests/patch-contracts.test.js && node tests/markdown-preprocess.test.js && node tests/cache-history-buckets.test.js && node tests/session-identity.test.js && node tests/rerun-handoff.test.js && node tests/file-reveal.test.js && node tests/change-review.test.js && node tests/editor-overlay-insiders.test.js && node tests/host-detect-manual-add.test.js && node tests/deep-scan.test.js && node tests/deep-scan-results-screen.test.js && node tests/deferred-next.test.js && node tests/cjk-literary-no-faux-bold.test.js && node tests/mermaid-render.test.js && node tests/notes.test.js && node tests/prompt-enhancer-fallback.test.js && node tests/commit-message.test.js && node tests/folder-reference.test.js && node tests/selection-reference.test.js && node tests/drop-paths.test.js",
     "test:contracts": "node tests/patch-contracts.test.js",
     "test:markdown-preprocess": "node tests/markdown-preprocess.test.js",
     "test:cache-history": "node tests/cache-history-buckets.test.js",
@@ -38,7 +38,8 @@
     "test:prompt-enhancer": "node tests/prompt-enhancer-fallback.test.js",
     "test:commit-message": "node tests/commit-message.test.js",
     "test:folder-reference": "node tests/folder-reference.test.js",
-    "test:selection-reference": "node tests/selection-reference.test.js"
+    "test:selection-reference": "node tests/selection-reference.test.js",
+    "test:drop-paths": "node tests/drop-paths.test.js"
   },
   "engines": {
     "node": ">=16"

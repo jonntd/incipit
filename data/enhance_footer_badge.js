@@ -2686,6 +2686,214 @@ export function initFooterBadge() {
   setupKbdSymbols();
   setupNotes();
   setupPromptEnhancer();
+  setupComposerDrop();
+}
+
+// ============================================================
+// Composer drop: accept folders + files dragged from the explorer
+// ============================================================
+// Claude Code's stock composer only consumes dataTransfer items with
+// kind==="file" (and strips text/uri-list). Folders dragged from the
+// explorer arrive as uri-list and are silently ignored. We intercept
+// drop on the composer, ask host-badge to resolve paths (folders get a
+// trailing slash), and insert @path / @folder/ mentions via the host's
+// setInputText.
+function setupComposerDrop() {
+  if (globalThis.__incipitComposerDropInstalled) return;
+  globalThis.__incipitComposerDropInstalled = true;
+
+  var pending = {};
+  var seq = 0;
+
+  function dropApi() {
+    try {
+      if (typeof globalThis.__incipitGetVsCodeApi === 'function') return globalThis.__incipitGetVsCodeApi();
+      if (typeof acquireVsCodeApi === 'function') return acquireVsCodeApi();
+    } catch (_) {}
+    return null;
+  }
+
+  function findComposerInput() {
+    var nodes = document.querySelectorAll('[class*="messageInput"][contenteditable]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el && el.isConnected && el.closest('[class*="messageInputContainer"]')) return el;
+    }
+    return null;
+  }
+
+  function hostComposerSetText(input, text) {
+    try {
+      var key = null, keys = Object.keys(input);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0 ||
+            keys[i].indexOf('__reactInternalInstance$') === 0) { key = keys[i]; break; }
+      }
+      if (!key) return false;
+      var fiber = input[key], hops = 0;
+      while (fiber && hops++ < 40) {
+        var ref = fiber.ref;
+        if (ref && typeof ref === 'object' && ref.current &&
+            typeof ref.current.setInputText === 'function') {
+          ref.current.setInputText(text);
+          if (typeof ref.current.focus === 'function') ref.current.focus();
+          return true;
+        }
+        fiber = fiber.return;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function insertMentions(mentions) {
+    if (!mentions || !mentions.length) return;
+    var chunk = mentions.join(' ');
+    var input = findComposerInput();
+    if (!input) return;
+    var existing = (input.textContent || '').replace(/\s+$/, '');
+    var combined = existing
+      ? (existing + (existing.endsWith(' ') ? '' : ' ') + chunk)
+      : chunk;
+    if (hostComposerSetText(input, combined)) return;
+    // Fallback: fire the host insertAtMention bridge once per mention.
+    try {
+      for (var i = 0; i < mentions.length; i++) {
+        if (typeof window.__incipitInsertAtMention === 'function') {
+          window.__incipitInsertAtMention(mentions[i]);
+        }
+      }
+    } catch (_) {}
+  }
+
+  function extractPathsFromDataTransfer(dt) {
+    var paths = [];
+    var seen = {};
+    function push(p) {
+      if (!p) return;
+      var s = String(p).trim();
+      if (!s || seen[s]) return;
+      seen[s] = true;
+      paths.push(s);
+    }
+
+    try {
+      // VS Code explorer drag: application/vnd.code.uri-list or text/uri-list
+      var types = [];
+      try { types = Array.prototype.slice.call(dt.types || []); } catch (_) { types = []; }
+      var prefer = [
+        'application/vnd.code.uri-list',
+        'text/uri-list',
+        'text/plain',
+      ];
+      for (var t = 0; t < prefer.length; t++) {
+        if (types.indexOf(prefer[t]) < 0 && prefer[t] !== 'text/plain') continue;
+        var raw = '';
+        try { raw = dt.getData(prefer[t]) || ''; } catch (_) { raw = ''; }
+        if (!raw) continue;
+        var lines = raw.split(/\r?\n/);
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].trim();
+          if (!line || line.charAt(0) === '#') continue;
+          push(line);
+        }
+        if (paths.length) break;
+      }
+
+      // File list (files work already in stock; still collect for folders-as-files edge cases)
+      try {
+        if (dt.files && dt.files.length) {
+          for (var f = 0; f < dt.files.length; f++) {
+            var file = dt.files[f];
+            // Electron/Chromium may expose .path on File
+            if (file && file.path) push(file.path);
+          }
+        }
+      } catch (_) {}
+    } catch (_) {}
+    return paths;
+  }
+
+  function isOverComposer(target) {
+    if (!target || !target.closest) return false;
+    return !!(
+      target.closest('[class*="messageInput"]') ||
+      target.closest('[class*="messageInputContainer"]') ||
+      target.closest('[class*="chatComposer"]') ||
+      target.closest('[class*="composer"]')
+    );
+  }
+
+  function onDragOver(ev) {
+    if (!ev || !ev.dataTransfer) return;
+    if (!isOverComposer(ev.target)) return;
+    // Signal we can accept the drop so the host doesn't refuse folders.
+    try {
+      ev.dataTransfer.dropEffect = 'copy';
+    } catch (_) {}
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function onDrop(ev) {
+    if (!ev || !ev.dataTransfer) return;
+    if (!isOverComposer(ev.target)) return;
+    var paths = extractPathsFromDataTransfer(ev.dataTransfer);
+    if (!paths.length) return; // let stock handler try files-only path
+
+    // Always claim folder/mixed drops so stock code can't strip uri-list.
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    var api = dropApi();
+    if (!api || typeof api.postMessage !== 'function') {
+      // Best-effort offline: insert raw paths as @mentions without stat.
+      var mentions = [];
+      for (var i = 0; i < paths.length; i++) {
+        var p = paths[i];
+        if (/^file:/i.test(p)) {
+          try {
+            p = decodeURIComponent(p.replace(/^file:\/\//i, ''));
+          } catch (_) {}
+        }
+        p = String(p).replace(/\\/g, '/');
+        if (p && p.charAt(0) !== '@') p = '@' + p;
+        if (p) mentions.push(p);
+      }
+      insertMentions(mentions);
+      return;
+    }
+
+    var requestId = 'drop-' + (++seq).toString(36);
+    pending[requestId] = true;
+    try {
+      api.postMessage({
+        __incipit: true,
+        type: 'drop_paths_request',
+        requestId: requestId,
+        paths: paths,
+      });
+    } catch (_) {
+      delete pending[requestId];
+    }
+    // Safety: drop pending after 8s if host never replies.
+    setTimeout(function () { delete pending[requestId]; }, 8000);
+  }
+
+  window.addEventListener('message', function (ev) {
+    var d = ev && ev.data;
+    if (!d || d.__incipit !== true) return;
+    if (d.type !== 'drop_paths_response') return;
+    if (!d.requestId || !pending[d.requestId]) return;
+    delete pending[d.requestId];
+    var payload = d.payload || {};
+    if (payload.ok && Array.isArray(payload.mentions) && payload.mentions.length) {
+      insertMentions(payload.mentions);
+    }
+  });
+
+  // Capture phase so we run before the host's stock drop handler.
+  document.addEventListener('dragover', onDragOver, true);
+  document.addEventListener('drop', onDrop, true);
 }
 
 // ============================================================

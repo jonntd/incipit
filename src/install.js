@@ -44,21 +44,21 @@ const THEME_TARGET_NAME = 'theme.css';
 // backticks cannot terminate the template by accident.
 const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'claude_code_enhance.js'), ENHANCE_TARGET_NAME],
-  [path.join('data', 'enhance_shared.js'),      'enhance_shared.js'],
-  [path.join('data', 'runtime_kernel.js'),      'runtime_kernel.js'],
-  [path.join('data', 'capability.js'),          'capability.js'],
+  [path.join('data', 'enhance_shared.js'), 'enhance_shared.js'],
+  [path.join('data', 'runtime_kernel.js'), 'runtime_kernel.js'],
+  [path.join('data', 'capability.js'), 'capability.js'],
   [path.join('data', 'enhance_footer_badge.js'), 'enhance_footer_badge.js'],
-  [path.join('data', 'enhance_thinking.js'),    'enhance_thinking.js'],
-  [path.join('data', 'enhance_typography.js'),  'enhance_typography.js'],
-  [path.join('data', 'mermaid_render.js'),      'mermaid_render.js'],
-  [path.join('data', 'enhance_legacy.js'),      'enhance_legacy.js'],
-  [path.join('data', 'host_probe.js'),           'host_probe.js'],
-  [path.join('data', 'host-badge.cjs'),          'host-badge.cjs'],
-  [path.join('data', 'markdown_preprocess.js'),  'markdown_preprocess.js'],
-  [path.join('data', 'math_tokens.js'),         'math_tokens.js'],
-  [path.join('data', 'math_rewriter.js'),       'math_rewriter.js'],
-  [path.join('data', 'theme.css'),              THEME_TARGET_NAME],
-  [path.join('data', 'hunkwise_bundle.js'),     'hunkwise_bundle.js'],
+  [path.join('data', 'enhance_thinking.js'), 'enhance_thinking.js'],
+  [path.join('data', 'enhance_typography.js'), 'enhance_typography.js'],
+  [path.join('data', 'mermaid_render.js'), 'mermaid_render.js'],
+  [path.join('data', 'enhance_legacy.js'), 'enhance_legacy.js'],
+  [path.join('data', 'host_probe.js'), 'host_probe.js'],
+  [path.join('data', 'host-badge.cjs'), 'host-badge.cjs'],
+  [path.join('data', 'markdown_preprocess.js'), 'markdown_preprocess.js'],
+  [path.join('data', 'math_tokens.js'), 'math_tokens.js'],
+  [path.join('data', 'math_rewriter.js'), 'math_rewriter.js'],
+  [path.join('data', 'theme.css'), THEME_TARGET_NAME],
+  [path.join('data', 'hunkwise_bundle.js'), 'hunkwise_bundle.js'],
   [path.join('data', 'commit_message_bundle.js'), 'commit_message_bundle.js'],
   // Warm-white palette overrides. Always copied so users can flip the
   // setting without re-running apply just to ship the CSS file. enhance.js
@@ -82,7 +82,7 @@ const LEGACY_ASSET_TREES = ['mathjax'];
 // Files copied into the user font directory. Only the Latin serif family is
 // installed here. CJK faces are left to the system fallback stack.
 const SYSTEM_FONT_FILES = [
-  ['IBMPlexSerif-Regular.ttf',  'ibm-plex-serif', 'IBM Plex Serif Regular (TrueType)'],
+  ['IBMPlexSerif-Regular.ttf', 'ibm-plex-serif', 'IBM Plex Serif Regular (TrueType)'],
   ['IBMPlexSerif-SemiBold.ttf', 'ibm-plex-serif', 'IBM Plex Serif SemiBold (TrueType)'],
 ];
 
@@ -584,7 +584,7 @@ function findLatestClaudeCodeExtension(arg) {
     const p = path.join(root, n);
     try {
       if (fs.statSync(p).isDirectory()) candidates.push(p);
-    } catch (_) {}
+    } catch (_) { }
   }
   if (!candidates.length) {
     throw new Error('未检测到 Claude Code 扩展。');
@@ -631,7 +631,7 @@ function copyIfChanged(srcPath, dstPath) {
       // resolution but Node's `utimesSync` rounds through floating-point
       // milliseconds, and FAT32/exFAT only have 2-second granularity.
       if (dstStat.size === srcStat.size &&
-          Math.abs(dstStat.mtimeMs - srcStat.mtimeMs) < 1000) {
+        Math.abs(dstStat.mtimeMs - srcStat.mtimeMs) < 1000) {
         return false;
       }
     } catch { /* fall through to byte compare */ }
@@ -644,7 +644,7 @@ function copyIfChanged(srcPath, dstPath) {
         // Content identical but stat differs — refresh mtime so the fast
         // path catches it next run.
         if (srcStat) {
-          try { fs.utimesSync(dstPath, srcStat.atime, srcStat.mtime); } catch (_) {}
+          try { fs.utimesSync(dstPath, srcStat.atime, srcStat.mtime); } catch (_) { }
         }
         return false;
       }
@@ -652,7 +652,7 @@ function copyIfChanged(srcPath, dstPath) {
   }
   fs.writeFileSync(dstPath, srcBytes);
   if (srcStat) {
-    try { fs.utimesSync(dstPath, srcStat.atime, srcStat.mtime); } catch (_) {}
+    try { fs.utimesSync(dstPath, srcStat.atime, srcStat.mtime); } catch (_) { }
   }
   return true;
 }
@@ -695,7 +695,7 @@ function buildEnhancePreamble(features, theme, language) {
   // keeps a single read site in the webview.
   const json = buildIncipitConfigJSON(features, theme, language);
   return '// incipit user config (generated at apply; do not edit)\n' +
-         `globalThis.__incipitConfig = Object.freeze(${json});\n\n`;
+    `globalThis.__incipitConfig = Object.freeze(${json});\n\n`;
 }
 
 function buildHostStateBridgePreamble() {
@@ -736,13 +736,13 @@ function buildWebviewConfigPreamble(features, theme, language, installContracts 
   const json = buildIncipitConfigJSON(features, theme, language);
   const diffThemes = JSON.stringify(MONACO_DIFF_THEMES);
   return '// incipit webview config (generated at apply; do not edit)\n' +
-         `globalThis.__incipitConfig = Object.freeze(${json});\n` +
-         buildInstallManifestPreamble(installContracts) +
-         `globalThis.__incipitMonacoDiffThemes = Object.freeze(${diffThemes});\n` +
-         '(function(){try{var raw=globalThis.acquireVsCodeApi;if(typeof raw==="function"&&!globalThis.__incipitGetVsCodeApi){var cached=null;globalThis.__incipitGetVsCodeApi=function(){if(cached)return cached;cached=raw();return cached;};globalThis.acquireVsCodeApi=function(){return globalThis.__incipitGetVsCodeApi();};}}catch(_){}})();\n' +
-         buildHostStateBridgePreamble() +
-         'globalThis.__incipitEnsureMonacoDiffTheme = function(monaco){try{if(!monaco||typeof monaco.defineTheme!=="function")return false;if(globalThis.__incipitMonacoDiffThemesReady)return true;var themes=globalThis.__incipitMonacoDiffThemes||{};for(var name in themes)if(Object.prototype.hasOwnProperty.call(themes,name))monaco.defineTheme(name,themes[name]);globalThis.__incipitMonacoDiffThemesReady=true;if(!globalThis.__incipitMonacoDiffFontsReady&&typeof document!=="undefined"&&document.fonts&&document.fonts.ready){globalThis.__incipitMonacoDiffFontsReady=true;document.fonts.ready.then(function(){try{if(monaco&&typeof monaco.remeasureFonts==="function")monaco.remeasureFonts();}catch(_){}});}return true;}catch(e){try{console.warn("[incipit] Monaco diff theme setup failed",e);}catch(_){}return false;}};\n' +
-         `globalThis.__incipitPickMonacoDiffTheme = function(monaco){var light=globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette==="warm-white";var ok=globalThis.__incipitEnsureMonacoDiffTheme&&globalThis.__incipitEnsureMonacoDiffTheme(monaco);return ok?(light?"${MONACO_DIFF_LIGHT_THEME}":"${MONACO_DIFF_DARK_THEME}"):(light?"vs":"vs-dark");};\n\n`;
+    `globalThis.__incipitConfig = Object.freeze(${json});\n` +
+    buildInstallManifestPreamble(installContracts) +
+    `globalThis.__incipitMonacoDiffThemes = Object.freeze(${diffThemes});\n` +
+    '(function(){try{var raw=globalThis.acquireVsCodeApi;if(typeof raw==="function"&&!globalThis.__incipitGetVsCodeApi){var cached=null;globalThis.__incipitGetVsCodeApi=function(){if(cached)return cached;cached=raw();return cached;};globalThis.acquireVsCodeApi=function(){return globalThis.__incipitGetVsCodeApi();};}}catch(_){}})();\n' +
+    buildHostStateBridgePreamble() +
+    'globalThis.__incipitEnsureMonacoDiffTheme = function(monaco){try{if(!monaco||typeof monaco.defineTheme!=="function")return false;if(globalThis.__incipitMonacoDiffThemesReady)return true;var themes=globalThis.__incipitMonacoDiffThemes||{};for(var name in themes)if(Object.prototype.hasOwnProperty.call(themes,name))monaco.defineTheme(name,themes[name]);globalThis.__incipitMonacoDiffThemesReady=true;if(!globalThis.__incipitMonacoDiffFontsReady&&typeof document!=="undefined"&&document.fonts&&document.fonts.ready){globalThis.__incipitMonacoDiffFontsReady=true;document.fonts.ready.then(function(){try{if(monaco&&typeof monaco.remeasureFonts==="function")monaco.remeasureFonts();}catch(_){}});}return true;}catch(e){try{console.warn("[incipit] Monaco diff theme setup failed",e);}catch(_){}return false;}};\n' +
+    `globalThis.__incipitPickMonacoDiffTheme = function(monaco){var light=globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette==="warm-white";var ok=globalThis.__incipitEnsureMonacoDiffTheme&&globalThis.__incipitEnsureMonacoDiffTheme(monaco);return ok?(light?"${MONACO_DIFF_LIGHT_THEME}":"${MONACO_DIFF_DARK_THEME}"):(light?"vs":"vs-dark");};\n\n`;
 }
 
 function buildThemeOverrideBlock(theme) {
@@ -762,13 +762,13 @@ function buildThemeOverrideBlock(theme) {
   const paperFace = sanitizeFontFamilyValue(
     theme.bodyFontFamily && theme.bodyFontFamily.paperFace);
   return '\n\n/* incipit user theme overrides (generated at apply; do not edit) */\n' +
-         ':root {\n' +
-         `  --incipit-body-size: ${theme.bodyFontSize}px;\n` +
-         `  --incipit-body-font: ${bodyFont};\n` +
-         (emphasisFont ? `  --incipit-emphasis-font: ${emphasisFont};\n` : '') +
-         (paperFace ? `  --incipit-paper-reading-font: ${paperFace};\n` : '') +
-         `  --incipit-code-font: ${codeFont};\n` +
-         '}\n';
+    ':root {\n' +
+    `  --incipit-body-size: ${theme.bodyFontSize}px;\n` +
+    `  --incipit-body-font: ${bodyFont};\n` +
+    (emphasisFont ? `  --incipit-emphasis-font: ${emphasisFont};\n` : '') +
+    (paperFace ? `  --incipit-paper-reading-font: ${paperFace};\n` : '') +
+    `  --incipit-code-font: ${codeFont};\n` +
+    '}\n';
 }
 
 // Recursively list all files relative to `root`.
@@ -878,7 +878,7 @@ function installSerifSystemFonts(resourceRoot) {
     if (fs.existsSync(dst)) {
       try {
         same = fs.readFileSync(dst).equals(srcBytes);
-      } catch (_) {}
+      } catch (_) { }
     }
     if (!same) {
       fs.writeFileSync(dst, srcBytes);
@@ -901,7 +901,7 @@ function installSerifSystemFonts(resourceRoot) {
           ],
           { stdio: 'ignore' },
         );
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
@@ -924,6 +924,16 @@ function installSerifSystemFonts(resourceRoot) {
 // and register it in `extensions.json` so it loads on next window open.
 // Idempotent: a companion whose source and registered entry already match
 // is left untouched. Returns a list of status-line strings.
+function hashString(str) {
+  let h = 0;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i += 1) {
+    h = ((h << 5) - h) + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
 function installCompanions(resourceRoot, extensionDir) {
   const COMPANION_DIR = path.join(resourceRoot, 'companion');
   const statusLines = [];
@@ -972,7 +982,7 @@ function installCompanions(resourceRoot, extensionDir) {
           const srcBytes = fs.readFileSync(srcEntry);
           let same = false;
           if (fs.existsSync(dstEntry)) {
-            try { same = fs.readFileSync(dstEntry).equals(srcBytes); } catch (_) {}
+            try { same = fs.readFileSync(dstEntry).equals(srcBytes); } catch (_) { }
           }
           if (!same) { fs.writeFileSync(dstEntry, srcBytes); written = true; }
         }
@@ -982,36 +992,60 @@ function installCompanions(resourceRoot, extensionDir) {
       continue;
     }
 
-    const alreadyRegistered = registry.some(
+    // Always upsert the registry entry so a host that rewrote
+    // extensions.json (or dropped side-loaded companions) still gets them
+    // back on the next apply. Match by id; refresh path/version if needed.
+    const absDst = path.resolve(dstDir);
+    let regIdx = registry.findIndex(
       (e) => e && e.identifier && e.identifier.id === id,
     );
-    if (!alreadyRegistered) {
-      registry.push({
-        identifier: { id, uuid: `00000000-0000-0000-0000-00000000000${name.length % 10}` },
-        version,
-        location: { $mid: 1, path: dstDir, scheme: 'file' },
-        relativeLocation: `${id}-${version}`,
-        metadata: {
-          isApplicationScoped: false,
-          isMachineScoped: false,
-          isBuiltin: false,
-          installedTimestamp: Date.now(),
-          pinned: false,
-          source: 'git',
-          id: `00000000-0000-0000-0000-00000000000${name.length % 10}`,
-          publisherId: pkg.publisher || 'incipit',
-          publisherDisplayName: pkg.publisher || 'incipit',
-          targetPlatform: 'universal',
-          updated: false,
-          private: false,
-          isPreReleaseVersion: false,
-          hasPreReleaseVersion: false,
-          preRelease: false,
-        },
-      });
+    const entry = {
+      identifier: {
+        id,
+        uuid:
+          (regIdx >= 0 && registry[regIdx].identifier && registry[regIdx].identifier.uuid)
+          || (`00000000-0000-4000-8000-${String(Math.abs(hashString(id))).padStart(12, '0').slice(0, 12)}`),
+      },
+      version,
+      location: { $mid: 1, path: absDst, scheme: 'file' },
+      relativeLocation: `${id}-${version}`,
+      metadata: {
+        isApplicationScoped: false,
+        isMachineScoped: false,
+        isBuiltin: false,
+        installedTimestamp:
+          (regIdx >= 0 && registry[regIdx].metadata && registry[regIdx].metadata.installedTimestamp)
+          || Date.now(),
+        pinned: false,
+        source: 'vsix',
+        id,
+        publisherId: pkg.publisher || 'incipit',
+        publisherDisplayName: pkg.publisher || 'incipit',
+        targetPlatform: 'undefined',
+        updated: false,
+        private: false,
+        isPreReleaseVersion: false,
+        hasPreReleaseVersion: false,
+        preRelease: false,
+      },
+    };
+    let regChanged = false;
+    if (regIdx < 0) {
+      registry.push(entry);
+      regChanged = true;
+    } else {
+      const prev = registry[regIdx];
+      const prevPath = prev && prev.location && prev.location.path;
+      const prevVer = prev && prev.version;
+      if (prevPath !== absDst || prevVer !== version) {
+        registry[regIdx] = entry;
+        regChanged = true;
+      }
+    }
+    if (regChanged) {
       try {
         fs.writeFileSync(extensionsJsonPath, JSON.stringify(registry, null, 2));
-      } catch (_) {}
+      } catch (_) { }
     }
 
     statusLines.push(
@@ -2163,9 +2197,9 @@ function patchStreamUnhandledCase(content) {
   const matches = content.match(STREAM_UNHANDLED_CASE_PATTERN) || [];
   if (matches.length === 1) {
     const updated = content.replace(
-        STREAM_UNHANDLED_CASE_PATTERN,
-        (_match, name, value, reason) =>
-          `function ${name}(${value},${reason}){try{var __incipitCase=${value}&&typeof ${value}==="object"?{type:${value}.type||null,deltaType:${value}.delta&&${value}.delta.type||null,keys:Object.keys(${value}).slice(0,12),deltaKeys:${value}.delta&&typeof ${value}.delta==="object"?Object.keys(${value}.delta).slice(0,12):[]}:${value};console.warn("[incipit] ignored unknown Claude stream case",__incipitCase,${reason})}catch(_){}}`,
+      STREAM_UNHANDLED_CASE_PATTERN,
+      (_match, name, value, reason) =>
+        `function ${name}(${value},${reason}){try{var __incipitCase=${value}&&typeof ${value}==="object"?{type:${value}.type||null,deltaType:${value}.delta&&${value}.delta.type||null,keys:Object.keys(${value}).slice(0,12),deltaKeys:${value}.delta&&typeof ${value}.delta==="object"?Object.keys(${value}.delta).slice(0,12):[]}:${value};console.warn("[incipit] ignored unknown Claude stream case",__incipitCase,${reason})}catch(_){}}`,
     );
     const assessment = assessStreamUnhandledCaseContact(updated);
     requireHighRiskContract(
@@ -2216,9 +2250,9 @@ function patchHostStateSemanticBridge(content) {
     return [content, `${padLabel('宿主语义桥')}: 降级 (将使用 fiber/DOM fallback)`, assessment];
   }
   const updated = content.replace(
-      HOST_STATE_BRIDGE_PATTERN,
-      (_match, anchor, effectName) =>
-        `${anchor},${hostStateBridgeSignalEffect(effectName)}`,
+    HOST_STATE_BRIDGE_PATTERN,
+    (_match, anchor, effectName) =>
+      `${anchor},${hostStateBridgeSignalEffect(effectName)}`,
   );
   const assessment = assessHostStateBridgeContact(updated);
   requireHighRiskContract(

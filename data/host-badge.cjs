@@ -288,6 +288,10 @@ function handleWebviewMessage(comm, state, message) {
     handleNotesSaveRequest(comm, state, message);
     return;
   }
+  if (message.type === 'drop_paths_request') {
+    handleDropPathsRequest(comm, state, message);
+    return;
+  }
   if (message.type === 'models_list_request') {
     handleModelsListRequest(comm, state, message);
     return;
@@ -507,10 +511,14 @@ function resolvePromptEnhancerModelChain(settings, preferredModel) {
   const get = name => claudeEnvGet(settings, name);
   const preferred = typeof preferredModel === 'string' ? preferredModel.trim() : '';
   const primary = preferred || resolveClaudeModel(settings);
+  // Always keep at least one non-primary fallback so flaky primary models
+  // (empty body / unknown content shape) can switch. Env DEFAULT_* wins
+  // when set; otherwise use well-known stock Anthropic ids.
   const candidates = [
     primary,
-    get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
-    get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
+    get('ANTHROPIC_DEFAULT_SONNET_MODEL') || 'claude-sonnet-4-20250514',
+    get('ANTHROPIC_DEFAULT_HAIKU_MODEL') || 'claude-haiku-4-5-20251001',
+    get('ANTHROPIC_DEFAULT_OPUS_MODEL') || null,
   ];
   const chain = [];
   const seen = new Set();
@@ -1078,6 +1086,11 @@ function isPromptEnhancerModelSwitchableError(error) {
   if (/No Claude auth|invalid.?api.?key|authentication|unauthorized|forbidden|empty prompt|credit|billing/i.test(msg)) {
     return false;
   }
+  // Empty body / no text block on 200: often a model-specific gateway flake
+  // (seen with fable). Try the next chain model.
+  if (/No text in API response|empty content|no content block/i.test(msg)) {
+    return true;
+  }
   if (/model[_ ]?(not[_ ]found|unavailable|disabled|does not exist|invalid|unknown)|not[_ ]supported|no such model|does not have access|unknown model/i.test(msg)) {
     return true;
   }
@@ -1087,6 +1100,51 @@ function isPromptEnhancerModelSwitchableError(error) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// Pull plain text out of a Messages API response. Fable and some gateways
+// put thinking / tool / redacted blocks first, so content[0].text alone is
+// not enough — join every text block (and fall back to common alternate shapes).
+function extractTextFromMessagesResponse(response) {
+  if (!response || typeof response !== 'object') return '';
+  const parts = [];
+  const content = response.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block) continue;
+      if (typeof block === 'string') {
+        if (block.trim()) parts.push(block);
+        continue;
+      }
+      const type = typeof block.type === 'string' ? block.type : '';
+      if (type === 'text' && typeof block.text === 'string' && block.text) {
+        parts.push(block.text);
+        continue;
+      }
+      // Some proxies use { type: 'output_text', text } or nested content.
+      if ((type === 'output_text' || type === 'input_text') && typeof block.text === 'string' && block.text) {
+        parts.push(block.text);
+        continue;
+      }
+      if (typeof block.text === 'string' && block.text && !type) {
+        parts.push(block.text);
+      }
+    }
+  } else if (typeof content === 'string' && content.trim()) {
+    parts.push(content);
+  }
+  // Alternate envelope shapes seen on some BYOK proxies.
+  if (!parts.length && response.message && Array.isArray(response.message.content)) {
+    return extractTextFromMessagesResponse(response.message);
+  }
+  if (!parts.length && typeof response.text === 'string' && response.text.trim()) {
+    parts.push(response.text);
+  }
+  if (!parts.length && typeof response.completion === 'string' && response.completion.trim()) {
+    parts.push(response.completion);
+  }
+  return parts.join('\n').trim();
+}
+
 
 function callClaudeMessagesAPI({
   settings,
@@ -1177,9 +1235,7 @@ function callClaudeMessagesAPI({
             reject(err);
             return;
           }
-          const text = response.content
-            && response.content[0]
-            && response.content[0].text;
+          const text = extractTextFromMessagesResponse(response);
           if (text) {
             let out = text;
             if (postprocess === false) {
@@ -1191,10 +1247,23 @@ function callClaudeMessagesAPI({
             }
             resolve(out);
           } else {
-            const err = new Error(`No text in API response (model=${model}, status=${statusCode})`);
+            // Include a short shape hint so logs show why extraction failed.
+            let shape = 'empty';
+            try {
+              if (response && Array.isArray(response.content)) {
+                shape = 'content[' + response.content.map(b => (b && b.type) || typeof b).join(',') + ']';
+              } else if (response && response.content != null) {
+                shape = 'content:' + typeof response.content;
+              } else if (response && response.type) {
+                shape = 'type:' + response.type;
+              }
+            } catch (_) { }
+            const err = new Error(
+              `No text in API response (model=${model}, status=${statusCode}, shape=${shape})`,
+            );
             err.statusCode = statusCode;
-            // Empty content is occasionally a flaky gateway — allow one retry path.
-            err.retryable = statusCode >= 500 || statusCode === 0;
+            // Empty body on 200: switchable to next model in the chain.
+            err.retryable = true;
             err.model = model;
             reject(err);
           }
@@ -6046,6 +6115,78 @@ function handleNotesSaveRequest(comm, state, message) {
   }
 }
 
+// Resolve explorer/OS paths dropped into the Claude Code composer so the
+// webview can insert @file / @folder/ mentions. Folders get a trailing
+// slash so Claude Code treats them as directory references.
+function buildDropMention(rawPath) {
+  if (rawPath == null) return null;
+  let s = String(rawPath).trim();
+  if (!s) return null;
+  // file:// URI → fsPath
+  if (/^file:/i.test(s)) {
+    try {
+      if (typeof URL === 'function') {
+        const u = new URL(s);
+        s = decodeURIComponent(u.pathname || '');
+        // Windows file:///C:/... leaves a leading slash before drive letter.
+        if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(s)) s = s.slice(1);
+      } else {
+        s = decodeURIComponent(s.replace(/^file:\/\//i, ''));
+      }
+    } catch (_) {
+      s = s.replace(/^file:\/\//i, '');
+    }
+  }
+  // Normalize separators.
+  s = s.replace(/\\/g, '/');
+  // Drop trailing separators before re-adding for directories.
+  while (s.length > 1 && s.endsWith('/')) s = s.slice(0, -1);
+  if (!s) return null;
+  let isDir = false;
+  try {
+    isDir = fs.statSync(s).isDirectory();
+  } catch (_) {
+    // Path may not be reachable from the extension host (remote / deleted).
+    // Still allow a mention using the raw path; treat trailing slash as folder.
+    isDir = /\/$/.test(String(rawPath));
+  }
+  if (isDir && !s.endsWith('/')) s = s + '/';
+  return '@' + s;
+}
+
+function handleDropPathsRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = (payload) => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'drop_paths_response',
+        requestId,
+        payload,
+      });
+    } catch (_) { }
+  };
+  try {
+    const paths = Array.isArray(message.paths) ? message.paths : [];
+    const mentions = [];
+    const seen = new Set();
+    for (const p of paths) {
+      const m = buildDropMention(p);
+      if (!m || seen.has(m)) continue;
+      seen.add(m);
+      mentions.push(m);
+    }
+    reply({ ok: true, mentions });
+  } catch (error) {
+    try { state.log(`drop paths error: ${error && error.message ? error.message : error}`); } catch (_) { }
+    reply({
+      ok: false,
+      error: String(error && error.message ? error.message : error),
+      mentions: [],
+    });
+  }
+}
+
 function upsertProjectIndexSession(index, payload, filePath, stat, editVersion) {
   if (!index || !payload || !payload.sessionId) return false;
   const sessionId = payload.sessionId;
@@ -6636,4 +6777,7 @@ module.exports.__test = {
   resolvePromptEnhancerModelChain,
   isRetryablePromptEnhancerError,
   isPromptEnhancerModelSwitchableError,
+  extractTextFromMessagesResponse,
+  // Drop-path mentions (tests/drop-paths.test.js)
+  buildDropMention,
 };

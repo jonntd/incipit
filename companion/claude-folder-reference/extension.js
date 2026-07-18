@@ -5,8 +5,8 @@
 // Claude Code's composer drop handler only accepts items whose dataTransfer
 // kind is "file", so dragging a *folder* into the chat is silently
 // ignored (and folder URIs carried in text/uri-list are stripped). This
-// companion fills that gap for BOTH files and folders via the explorer
-// context menu and a picker. It inserts the selection as an `@<path>`
+// companion fills that gap for BOTH files and folders via one explorer
+// context menu entry and a picker. It inserts the selection as an `@<path>`
 // mention through the same `incipit.claudeCode.insertAtMention` bridge
 // the selection-reference companion uses. Folders get a trailing slash to
 // match Claude Code's own directory-reference shape (added by the `@`
@@ -16,8 +16,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 
 const CONFIG_SECTION = 'incipitClaudeFolderReference';
-const COMMAND_ADD_FOLDER = 'incipitClaudeFolderReference.addFolder';
-const COMMAND_ADD_FILE = 'incipitClaudeFolderReference.addFile';
+const COMMAND_ADD = 'incipitClaudeFolderReference.add';
 const COMMAND_ADD_FROM_PICKER = 'incipitClaudeFolderReference.addFromPicker';
 const CLAUDE_EXTENSION_ID = 'anthropic.claude-code';
 const CLAUDE_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention';
@@ -75,11 +74,48 @@ async function insertMention(resource, isFolder) {
   }
 }
 
-// Explorer context menu passes the selected resource (a Uri-like object).
-function resourceFromArg(arg) {
-  if (!arg) return null;
-  if (arg.fsPath || arg.path || arg.toString) return arg;
-  return null;
+// Explorer context menu passes the clicked resource, and (when multi-
+// selecting) the full selected-resource array as the second argument.
+function collectResources(arg, selected) {
+  const out = [];
+  const seen = new Set();
+  const push = (item) => {
+    if (!item) return;
+    let key = null;
+    if (typeof item === 'string') key = item;
+    else if (item.fsPath) key = item.fsPath;
+    else if (item.path) key = item.path;
+    else if (typeof item.toString === 'function') key = item.toString();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(item);
+  };
+
+  if (Array.isArray(selected) && selected.length) {
+    for (const item of selected) push(item);
+  } else {
+    push(arg);
+  }
+  return out;
+}
+
+function resourceIsFolder(resource) {
+  const fsPath = resource && resource.fsPath
+    ? resource.fsPath
+    : (typeof resource === 'string' ? resource : null);
+  if (!fsPath) return false;
+  try { return fs.statSync(fsPath).isDirectory(); } catch (_) { return false; }
+}
+
+async function addResources(arg, selected) {
+  const resources = collectResources(arg, selected);
+  if (!resources.length) {
+    vscode.window.showWarningMessage('Incipit: invoke this action on a file or folder in the explorer.');
+    return;
+  }
+  for (const resource of resources) {
+    await insertMention(resource, resourceIsFolder(resource));
+  }
 }
 
 async function addFromPicker() {
@@ -87,14 +123,12 @@ async function addFromPicker() {
     canSelectFiles: true,
     canSelectFolders: true,
     canSelectMany: true,
-    openLabel: 'Reference in Claude Code',
-    title: 'Incipit: Add File or Folder to Claude Code',
+    openLabel: 'Add to Claude Code',
+    title: 'Incipit: Add to Claude Code',
   });
   if (!uris || uris.length === 0) return;
   for (const uri of uris) {
-    let isFolder = null;
-    try { isFolder = fs.statSync(uri.fsPath).isDirectory(); } catch (_) { isFolder = false; }
-    await insertMention(uri, isFolder);
+    await insertMention(uri, resourceIsFolder(uri));
   }
 }
 
@@ -102,23 +136,10 @@ function activate(context) {
   if (!getConfig().enabled) return;
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(COMMAND_ADD_FOLDER, async (resource) => {
+    // Unified entry: works for both files and folders (and multi-select).
+    vscode.commands.registerCommand(COMMAND_ADD, async (resource, selected) => {
       if (!getConfig().enabled) return;
-      const target = resourceFromArg(resource);
-      if (!target) {
-        vscode.window.showWarningMessage('Incipit: invoke this action on a folder in the explorer.');
-        return;
-      }
-      await insertMention(target, true);
-    }),
-    vscode.commands.registerCommand(COMMAND_ADD_FILE, async (resource) => {
-      if (!getConfig().enabled) return;
-      const target = resourceFromArg(resource);
-      if (!target) {
-        vscode.window.showWarningMessage('Incipit: invoke this action on a file in the explorer.');
-        return;
-      }
-      await insertMention(target, false);
+      await addResources(resource, selected);
     }),
     vscode.commands.registerCommand(COMMAND_ADD_FROM_PICKER, async () => {
       if (!getConfig().enabled) return;

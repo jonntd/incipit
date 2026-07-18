@@ -71,7 +71,7 @@ function ok(name) {
   ok('mentionFor: folder slash, file no-slash, null safety');
 }
 
-// Package contributes file + folder commands + explorer context menus.
+// Package contributes one unified explorer/context command for both.
 {
   const pkg = require(path.join(
     ROOT,
@@ -80,26 +80,28 @@ function ok(name) {
     'package.json',
   ));
   const cmds = pkg.contributes.commands.map((c) => c.command);
-  assert.ok(cmds.includes('incipitClaudeFolderReference.addFolder'));
-  assert.ok(cmds.includes('incipitClaudeFolderReference.addFile'));
+  assert.ok(cmds.includes('incipitClaudeFolderReference.add'));
   assert.ok(cmds.includes('incipitClaudeFolderReference.addFromPicker'));
+  assert.ok(!cmds.includes('incipitClaudeFolderReference.addFile'));
+  assert.ok(!cmds.includes('incipitClaudeFolderReference.addFolder'));
 
   const explorer = pkg.contributes.menus['explorer/context'];
-  const folderMenu = explorer.find(
-    (m) => m.command === 'incipitClaudeFolderReference.addFolder',
+  assert.strictEqual(explorer.length, 1, 'one unified explorer/context entry');
+  const entry = explorer[0];
+  assert.strictEqual(entry.command, 'incipitClaudeFolderReference.add');
+  assert.strictEqual(
+    entry.when,
+    'explorerResourceIsFolder || explorerResourceIsFile',
   );
-  const fileMenu = explorer.find(
-    (m) => m.command === 'incipitClaudeFolderReference.addFile',
+  const addCmd = pkg.contributes.commands.find(
+    (c) => c.command === 'incipitClaudeFolderReference.add',
   );
-  assert.ok(folderMenu, 'explorer/context has addFolder entry');
-  assert.ok(fileMenu, 'explorer/context has addFile entry');
-  assert.strictEqual(folderMenu.when, 'explorerResourceIsFolder');
-  assert.strictEqual(fileMenu.when, 'explorerResourceIsFile');
+  assert.strictEqual(addCmd.title, 'Incipit: Add to Claude Code');
   assert.ok(
     pkg.activationEvents.includes('onStartupFinished'),
     'keeps onStartupFinished',
   );
-  ok('package.json contributes file + folder commands + menus');
+  ok('package.json contributes unified Add to Claude Code menu');
 }
 
 // installCompanions copies each companion into a fake host extension
@@ -120,7 +122,7 @@ function ok(name) {
   assert.ok(lines1.length >= 1, 'produces status lines');
   assert.ok(
     fs.existsSync(
-      path.join(tmp, 'incipit.claude-folder-reference-0.0.2', 'extension.js'),
+      path.join(tmp, 'incipit.claude-folder-reference-0.0.3', 'extension.js'),
     ),
     'folder companion copied',
   );
