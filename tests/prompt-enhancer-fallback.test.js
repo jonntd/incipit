@@ -222,7 +222,8 @@ function chain(settings, preferredModel) {
   assert.ok(content.includes('strictly faithful') || content.includes('faithful to the original'));
   assert.ok(content.includes('Do not invent') || content.includes('do not invent'));
   assert.ok(content.includes('no emoji') || content.includes('no decorative'));
-  ok('buildPromptEnhancerUserContent is plain-text and accuracy-first');
+  assert.ok(content.includes('简体中文') || content.includes('Simplified Chinese'));
+  ok('buildPromptEnhancerUserContent is plain-text, Chinese, and accuracy-first');
 }
 
 {

@@ -58,8 +58,9 @@ function ok(name) {
   assert.ok(T.SYSTEM_PROMPT.includes('never invent'));
   assert.ok(T.SYSTEM_PROMPT.includes('no emoji'));
   assert.ok(T.SYSTEM_PROMPT.includes('diff'));
+  assert.ok(T.SYSTEM_PROMPT.includes('简体中文') || T.SYSTEM_PROMPT.includes('Simplified Chinese'));
   assert.ok(!T.SYSTEM_PROMPT.includes('⚠️'));
-  ok('SYSTEM_PROMPT demands accuracy and plain text');
+  ok('SYSTEM_PROMPT demands accuracy, Chinese, and plain text');
 }
 
 // --- buildCommitUserPrompt -------------------------------------------------
@@ -75,9 +76,10 @@ function ok(name) {
   assert.ok(prompt.includes('```diff'));
   assert.ok(prompt.includes('+hello'));
   assert.ok(prompt.includes('feat: prior one'));
-  assert.ok(prompt.includes('Respond with the commit message only.'));
+  assert.ok(prompt.includes('Respond with the commit message only'));
   assert.ok(prompt.includes('strictly reflects') || prompt.includes('ONLY on the Status and Diff'));
   assert.ok(prompt.includes('Do not invent'));
+  assert.ok(prompt.includes('简体中文') || prompt.includes('Simplified Chinese'));
   ok('buildCommitUserPrompt includes status/diff/examples');
 }
 

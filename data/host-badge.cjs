@@ -1015,6 +1015,8 @@ function buildPromptEnhancerUserContent(userText) {
     "Here is an instruction that I'd like to give you, but it needs to be improved. " +
     "Rewrite it so it is clearer, more specific, less ambiguous, and free of mistakes, " +
     "while staying strictly faithful to the original intent and technical details. " +
+    "The rewritten instruction MUST be in Simplified Chinese (简体中文). " +
+    "Keep code samples, paths, identifiers, and URLs unchanged. " +
     "Do not invent requirements, APIs, files, or constraints the user did not state. " +
     "Do not add emoji or decorative symbols; use plain text and standard punctuation only. " +
     "Do not use any tools: reply immediately with your answer, even if you're not sure. " +
@@ -1024,7 +1026,7 @@ function buildPromptEnhancerUserContent(userText) {
     '',
     '### BEGIN RESPONSE ###',
     'Here is an enhanced version of the original instruction that is more specific and clear:',
-    '(put the enhanced instruction here — only the rewritten prompt, no commentary, no emoji)',
+    '(put the enhanced instruction here in Simplified Chinese — only the rewritten prompt, no commentary, no emoji)',
     '',
     '### END RESPONSE ###',
     '',
@@ -1115,7 +1117,10 @@ function callClaudeMessagesAPI({
     const system = (typeof systemOverride === 'string' && systemOverride.trim())
       ? systemOverride
       : 'You rewrite user instructions to be clearer, more specific, and more accurate, '
-        + 'while preserving the original intent, language, and technical details. '
+        + 'while preserving the original intent and technical details. '
+        + 'The rewritten instruction MUST be in Simplified Chinese (简体中文), '
+        + 'unless the original is almost entirely non-Chinese code identifiers; '
+        + 'even then, surrounding prose MUST be Simplified Chinese. '
         + 'Do not invent requirements, files, APIs, or constraints the user did not state. '
         + 'Use plain text with standard punctuation only: no emoji, no decorative symbols. '
         + 'Follow the response format exactly. No tools.';

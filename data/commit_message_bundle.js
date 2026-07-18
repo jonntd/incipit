@@ -27,7 +27,10 @@ const SYSTEM_PROMPT =
   'actual code changes shown in the diff. Read the provided diff and status ' +
   'carefully; never invent, guess, or generalize beyond what the changes ' +
   'prove. Output ONLY the commit message text. ' +
-  'Use Conventional Commits when it fits (feat/fix/refactor/docs/chore/style/test/perf). ' +
+  'The entire commit message MUST be written in Simplified Chinese (简体中文), ' +
+  'including the subject line and any body. Type prefixes may stay English ' +
+  'when using Conventional Commits (feat/fix/refactor/docs/chore/style/test/perf), ' +
+  'but the description after the colon MUST be Chinese. ' +
   'The subject line must state what the change does in imperative mood, ' +
   'be at most 72 chars, and have no trailing period. ' +
   'Add a short body only when the change genuinely needs explanation, ' +
@@ -276,6 +279,7 @@ function buildCommitUserPrompt(data) {
   parts.push('Write a commit message that strictly reflects the git changes below.');
   parts.push('Base it ONLY on the Status and Diff provided; describe what the code actually does.');
   parts.push('Do not invent changes, files, or behavior not present in the diff.');
+  parts.push('The whole message MUST be Simplified Chinese (简体中文). Type prefix may be English.');
   if (data.status) {
     parts.push('');
     parts.push('## Status');
@@ -294,7 +298,7 @@ function buildCommitUserPrompt(data) {
   parts.push(data.diff);
   parts.push('```');
   parts.push('');
-  parts.push('Respond with the commit message only.');
+  parts.push('Respond with the commit message only, in Simplified Chinese.');
   return parts.join('\n');
 }
 
