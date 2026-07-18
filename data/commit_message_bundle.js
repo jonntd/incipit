@@ -23,11 +23,17 @@ const MAX_TOKENS = 512;
 const GENERATING_PLACEHOLDER = 'Incipit is generating…';
 
 const SYSTEM_PROMPT =
-  'You write git commit messages. Output ONLY the commit message text. ' +
+  'You write git commit messages that accurately and faithfully describe the ' +
+  'actual code changes shown in the diff. Read the provided diff and status ' +
+  'carefully; never invent, guess, or generalize beyond what the changes ' +
+  'prove. Output ONLY the commit message text. ' +
   'Use Conventional Commits when it fits (feat/fix/refactor/docs/chore/style/test/perf). ' +
-  'Subject line ≤72 chars, imperative mood, no trailing period. ' +
-  'Add a short body only when the change needs it. ' +
-  'No markdown fences, no quotes, no preamble, no explanation.';
+  'The subject line must state what the change does in imperative mood, ' +
+  'be at most 72 chars, and have no trailing period. ' +
+  'Add a short body only when the change genuinely needs explanation, ' +
+  'and only describe behavior the diff actually contains. ' +
+  'Use plain text with standard punctuation only: no emoji, no decorative ' +
+  'symbols, no markdown fences, no quotes, no preamble, no explanation.';
 
 let activated = false;
 
@@ -267,7 +273,9 @@ function truncateDiff(diff, budget) {
 
 function buildCommitUserPrompt(data) {
   const parts = [];
-  parts.push('Write a commit message for the following git changes.');
+  parts.push('Write a commit message that strictly reflects the git changes below.');
+  parts.push('Base it ONLY on the Status and Diff provided; describe what the code actually does.');
+  parts.push('Do not invent changes, files, or behavior not present in the diff.');
   if (data.status) {
     parts.push('');
     parts.push('## Status');
@@ -298,6 +306,11 @@ function sanitizeCommitMessage(raw) {
   text = text.replace(/^["'`]|["'`]$/g, '').trim();
   // Drop a leading "Commit message:" label if the model adds one.
   text = text.replace(/^(?:commit\s*message\s*[:：-]\s*)/i, '').trim();
+  // Strip emoji / dingbats / other decorative symbols. Keep letters (any
+  // script), digits, whitespace, and common punctuation.
+  text = text.replace(/\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{So}|\p{Sk}/gu, '').trim();
+  // Collapse spaces left by stripped symbols.
+  text = text.replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n');
   // Normalize line endings; cap runaway length.
   text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   if (text.length > 2000) text = text.slice(0, 2000).trim();

@@ -212,4 +212,30 @@ function chain(settings, preferredModel) {
   ok('529 overloaded is retryable and switchable');
 }
 
+
+// --- prompt content + sanitizer (accuracy / plain text) --------------------
+
+{
+  const content = T.buildPromptEnhancerUserContent('fix the bug');
+  assert.ok(!content.includes('⚠️'), 'no emoji warning banner');
+  assert.ok(content.includes('NO TOOLS ALLOWED'));
+  assert.ok(content.includes('strictly faithful') || content.includes('faithful to the original'));
+  assert.ok(content.includes('Do not invent') || content.includes('do not invent'));
+  assert.ok(content.includes('no emoji') || content.includes('no decorative'));
+  ok('buildPromptEnhancerUserContent is plain-text and accuracy-first');
+}
+
+{
+  assert.strictEqual(
+    T.sanitizeEnhancedPrompt('Please fix the ✨ bug 🐛 now', 'orig'),
+    'Please fix the bug now',
+  );
+  assert.ok(!/\p{Extended_Pictographic}/u.test(
+    T.sanitizeEnhancedPrompt('Add 🚀 rocket support', 'x'),
+  ));
+  // Empty-after-strip falls back to original
+  assert.strictEqual(T.sanitizeEnhancedPrompt('✨✨✨', 'keep me'), 'keep me');
+  ok('sanitizeEnhancedPrompt strips emoji and falls back to original');
+}
+
 console.log(`\n${passed} passed`);

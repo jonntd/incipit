@@ -920,6 +920,118 @@ function installSerifSystemFonts(resourceRoot) {
   return written;
 }
 
+// Copy every `companion/<name>` folder into the host's extension directory
+// and register it in `extensions.json` so it loads on next window open.
+// Idempotent: a companion whose source and registered entry already match
+// is left untouched. Returns a list of status-line strings.
+function installCompanions(resourceRoot, extensionDir) {
+  const COMPANION_DIR = path.join(resourceRoot, 'companion');
+  const statusLines = [];
+  const hostExtensionsDir = path.dirname(extensionDir);
+  const extensionsJsonPath = path.join(hostExtensionsDir, 'extensions.json');
+  let registry = [];
+  try {
+    registry = JSON.parse(fs.readFileSync(extensionsJsonPath, 'utf8'));
+    if (!Array.isArray(registry)) registry = [];
+  } catch (_) {
+    registry = [];
+  }
+
+  if (!fs.existsSync(COMPANION_DIR)) return statusLines;
+
+  const names = fs.readdirSync(COMPANION_DIR).filter((n) => {
+    const p = path.join(COMPANION_DIR, n);
+    try { return fs.statSync(p).isDirectory(); } catch (_) { return false; }
+  });
+
+  for (const name of names) {
+    const srcDir = path.join(COMPANION_DIR, name);
+    const pkgPath = path.join(srcDir, 'package.json');
+    if (!fs.existsSync(pkgPath)) continue;
+    let pkg;
+    try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch (_) { continue; }
+    const id = pkg.name;
+    if (!id) continue;
+    const version = pkg.version || '0.0.0';
+
+    const dstDir = path.join(hostExtensionsDir, `${id}-${version}`);
+    let written = false;
+    try {
+      if (!fs.existsSync(dstDir)) {
+        fs.mkdirSync(dstDir, { recursive: true });
+        written = true;
+      }
+      for (const entry of fs.readdirSync(srcDir)) {
+        if (entry === 'node_modules' || entry === 'tests' || entry === '.git') continue;
+        const srcEntry = path.join(srcDir, entry);
+        const dstEntry = path.join(dstDir, entry);
+        const srcStat = fs.statSync(srcEntry);
+        if (srcStat.isDirectory()) {
+          copyDir(srcEntry, dstEntry);
+        } else {
+          const srcBytes = fs.readFileSync(srcEntry);
+          let same = false;
+          if (fs.existsSync(dstEntry)) {
+            try { same = fs.readFileSync(dstEntry).equals(srcBytes); } catch (_) {}
+          }
+          if (!same) { fs.writeFileSync(dstEntry, srcBytes); written = true; }
+        }
+      }
+    } catch (exc) {
+      statusLines.push(`${padLabel('companion ' + name)}: 降级 (${exc.message || exc})`);
+      continue;
+    }
+
+    const alreadyRegistered = registry.some(
+      (e) => e && e.identifier && e.identifier.id === id,
+    );
+    if (!alreadyRegistered) {
+      registry.push({
+        identifier: { id, uuid: `00000000-0000-0000-0000-00000000000${name.length % 10}` },
+        version,
+        location: { $mid: 1, path: dstDir, scheme: 'file' },
+        relativeLocation: `${id}-${version}`,
+        metadata: {
+          isApplicationScoped: false,
+          isMachineScoped: false,
+          isBuiltin: false,
+          installedTimestamp: Date.now(),
+          pinned: false,
+          source: 'git',
+          id: `00000000-0000-0000-0000-00000000000${name.length % 10}`,
+          publisherId: pkg.publisher || 'incipit',
+          publisherDisplayName: pkg.publisher || 'incipit',
+          targetPlatform: 'universal',
+          updated: false,
+          private: false,
+          isPreReleaseVersion: false,
+          hasPreReleaseVersion: false,
+          preRelease: false,
+        },
+      });
+      try {
+        fs.writeFileSync(extensionsJsonPath, JSON.stringify(registry, null, 2));
+      } catch (_) {}
+    }
+
+    statusLines.push(
+      `${padLabel('companion ' + name)}: ${written ? '已写入' : '已存在'}`,
+    );
+  }
+
+  return statusLines;
+}
+
+function copyDir(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    const s = path.join(src, entry);
+    const d = path.join(dst, entry);
+    if (fs.statSync(s).isDirectory()) copyDir(s, d);
+    else fs.writeFileSync(d, fs.readFileSync(s));
+  }
+}
+
 // ============================================================
 // `extension.js` / `webview/index.js` patching
 // ============================================================
@@ -2822,6 +2934,12 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     ? `已写入 ${serifWritten}/${SYSTEM_FONT_FILES.length}`
     : `已存在 (${SYSTEM_FONT_FILES.length} 个)`;
 
+  // --- Companion extensions: copy each `companion/<name>` folder into the
+  // host's extension root and register it in `extensions.json` so it loads
+  // on next window open. Keeps the patch self-contained — no manual
+  // copy step. Idempotent: already-installed companions are left alone.
+  const companionStatusLines = installCompanions(resourceRoot, target.extensionDir);
+
   // The editor overlay is opt-in + experimental. Per the 2026-05-16 design
   // override, NO overlay failure mode may abort the user's whole apply:
   //   - preflight unconfirmable target  -> degrade (effective=false)
@@ -2866,6 +2984,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     ...webviewStatusLines,
     `${padLabel('编辑器浮层')}: ${workbenchOverlay.status}`,
     `${padLabel('serif 系统字体')}: ${serifStatus}`,
+    ...companionStatusLines,
   ];
 
   return {
@@ -2915,6 +3034,7 @@ module.exports = {
   userFontDir,
   findLatestClaudeCodeExtension,
   installClaudeCodeVSCodeEnhance,
+  installCompanions,
   padLabel,
   __test: {
     patchExtensionJs,

@@ -44,7 +44,22 @@ function ok(name) {
   assert.strictEqual(T.sanitizeCommitMessage(null), '');
   const long = 'a'.repeat(5000);
   assert.ok(T.sanitizeCommitMessage(long).length <= 2000);
-  ok('sanitizeCommitMessage strips wrappers and caps length');
+  assert.strictEqual(
+    T.sanitizeCommitMessage('feat: add ✨ sparkle 🚀 rocket'),
+    'feat: add sparkle rocket',
+  );
+  assert.ok(!/\p{Extended_Pictographic}/u.test(T.sanitizeCommitMessage('fix: 🐛 bug')));
+  ok('sanitizeCommitMessage strips wrappers, emoji, and caps length');
+}
+
+// --- SYSTEM_PROMPT contract -------------------------------------------------
+
+{
+  assert.ok(T.SYSTEM_PROMPT.includes('never invent'));
+  assert.ok(T.SYSTEM_PROMPT.includes('no emoji'));
+  assert.ok(T.SYSTEM_PROMPT.includes('diff'));
+  assert.ok(!T.SYSTEM_PROMPT.includes('⚠️'));
+  ok('SYSTEM_PROMPT demands accuracy and plain text');
 }
 
 // --- buildCommitUserPrompt -------------------------------------------------
@@ -61,6 +76,8 @@ function ok(name) {
   assert.ok(prompt.includes('+hello'));
   assert.ok(prompt.includes('feat: prior one'));
   assert.ok(prompt.includes('Respond with the commit message only.'));
+  assert.ok(prompt.includes('strictly reflects') || prompt.includes('ONLY on the Status and Diff'));
+  assert.ok(prompt.includes('Do not invent'));
   ok('buildCommitUserPrompt includes status/diff/examples');
 }
 
@@ -85,12 +102,12 @@ function ok(name) {
   assert.ok(Array.isArray(pkg.contributes.commands));
   const cmd = pkg.contributes.commands.find(c => c.command === T.COMMAND_ID);
   assert.ok(cmd, 'command contributed');
-  assert.strictEqual(cmd.icon, '$(sparkle)');
+  assert.strictEqual(cmd.icon, 'resources/commit_message_icon.svg');
   assert.ok(pkg.contributes.menus['scm/title']);
   const scm = pkg.contributes.menus['scm/title'].find(m => m.command === T.COMMAND_ID);
   assert.ok(scm, 'scm/title menu entry');
-  assert.strictEqual(scm.group, 'navigation');
-  ok('commit_message_package.json contributes scm/title sparkle command');
+  assert.strictEqual(scm.group, 'navigation@0');
+  ok('commit_message_package.json contributes scm/title gold-sparkle command');
 }
 
 // --- ROOT_WEBVIEW_FILES includes bundle ------------------------------------

@@ -995,6 +995,14 @@ function sanitizeEnhancedPrompt(raw, original) {
     text = text.slice(1, -1).trim();
   }
 
+  // Strip emoji / dingbats / other decorative symbols. Keep letters (any
+  // script), digits, whitespace, and common punctuation.
+  text = text
+    .replace(/\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{So}|\p{Sk}/gu, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .trim();
+
   // If sanitizing wiped everything, fall back to original so the composer
   // never goes blank on a bad model response.
   return text || String(original || '').trim();
@@ -1002,13 +1010,21 @@ function sanitizeEnhancedPrompt(raw, original) {
 
 function buildPromptEnhancerUserContent(userText) {
   return [
-    '⚠️ NO TOOLS ALLOWED ⚠️',
+    'NO TOOLS ALLOWED.',
     '',
-    "Here is an instruction that I'd like to give you, but it needs to be improved. Rewrite and enhance this instruction to make it clearer, more specific, less ambiguous, and correct any mistakes. Do not use any tools: reply immediately with your answer, even if you're not sure. Consider the context of our conversation history when enhancing the prompt. If there is code in triple backticks (```) consider whether it is a code sample and should remain unchanged. Reply with the following format:",
+    "Here is an instruction that I'd like to give you, but it needs to be improved. " +
+    "Rewrite it so it is clearer, more specific, less ambiguous, and free of mistakes, " +
+    "while staying strictly faithful to the original intent and technical details. " +
+    "Do not invent requirements, APIs, files, or constraints the user did not state. " +
+    "Do not add emoji or decorative symbols; use plain text and standard punctuation only. " +
+    "Do not use any tools: reply immediately with your answer, even if you're not sure. " +
+    "Consider the context of our conversation history when enhancing the prompt. " +
+    "If there is code in triple backticks (```) treat it as a code sample and leave it unchanged. " +
+    "Reply with the following format:",
     '',
     '### BEGIN RESPONSE ###',
     'Here is an enhanced version of the original instruction that is more specific and clear:',
-    '(put the enhanced instruction here — only the rewritten prompt, no commentary)',
+    '(put the enhanced instruction here — only the rewritten prompt, no commentary, no emoji)',
     '',
     '### END RESPONSE ###',
     '',
@@ -1098,7 +1114,11 @@ function callClaudeMessagesAPI({
     // can override system / user content and skip sanitize via postprocess=false.
     const system = (typeof systemOverride === 'string' && systemOverride.trim())
       ? systemOverride
-      : 'You enhance user instructions. Follow the response format exactly. No tools.';
+      : 'You rewrite user instructions to be clearer, more specific, and more accurate, '
+        + 'while preserving the original intent, language, and technical details. '
+        + 'Do not invent requirements, files, APIs, or constraints the user did not state. '
+        + 'Use plain text with standard punctuation only: no emoji, no decorative symbols. '
+        + 'Follow the response format exactly. No tools.';
     const userContent = userContentOverride != null
       ? userContentOverride
       : buildPromptEnhancerUserContent(userText);
@@ -6548,6 +6568,8 @@ module.exports = { attachComm, completeClaudeText };
 // (tests/cache-history-buckets.test.js). No runtime behaviour change:
 // these are referenced, not invoked, by the published code path.
 module.exports.__test = {
+  sanitizeEnhancedPrompt,
+  buildPromptEnhancerUserContent,
   createParser,
   processUsageEntry,
   resolveTargetFromIdentity,

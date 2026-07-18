@@ -1,0 +1,64 @@
+{
+  "name": "incipit.claude-folder-reference",
+  "displayName": "Incipit: Claude Folder Reference",
+  "description": "Add a file or folder as an @reference in Claude Code from the explorer context menu.",
+  "version": "0.0.2",
+  "publisher": "incipit",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "incipitClaudeFolderReference.addFolder",
+        "title": "Incipit: Add Folder to Claude Code",
+        "icon": "$(folder)",
+        "category": "Incipit"
+      },
+      {
+        "command": "incipitClaudeFolderReference.addFile",
+        "title": "Incipit: Add File to Claude Code",
+        "icon": "$(file)",
+        "category": "Incipit"
+      },
+      {
+        "command": "incipitClaudeFolderReference.addFromPicker",
+        "title": "Incipit: Add File or Folder to Claude Code…",
+        "icon": "$(folder-opened)",
+        "category": "Incipit"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "incipitClaudeFolderReference.addFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "inc-ipit@1"
+        },
+        {
+          "command": "incipitClaudeFolderReference.addFile",
+          "when": "explorerResourceIsFile",
+          "group": "inc-ipit@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Incipit Claude Folder Reference",
+      "properties": {
+        "incipitClaudeFolderReference.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the 'Add to Claude Code' actions on explorer context menus."
+        }
+      }
+    }
+  }
+}
