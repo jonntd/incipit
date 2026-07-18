@@ -1,0 +1,37 @@
+{
+  "contributes": {
+    "commands": [
+      {
+        "command": "incipit.generateCommitMessage",
+        "title": "Incipit: Generate Commit Message",
+        "icon": "resources/commit_message_icon.svg",
+        "category": "Incipit"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "incipit.generateCommitMessage",
+          "args": [
+            "${resourceUri}"
+          ],
+          "group": "navigation@0",
+          "when": "gitOpenRepositoryCount != 0"
+        }
+      ],
+      "scm/sourceControl": [
+        {
+          "command": "incipit.generateCommitMessage",
+          "group": "inline@0",
+          "when": "scmProvider == git || gitOpenRepositoryCount != 0"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "incipit.generateCommitMessage",
+          "when": "gitOpenRepositoryCount != 0"
+        }
+      ]
+    }
+  }
+}

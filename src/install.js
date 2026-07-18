@@ -59,6 +59,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'math_rewriter.js'),       'math_rewriter.js'],
   [path.join('data', 'theme.css'),              THEME_TARGET_NAME],
   [path.join('data', 'hunkwise_bundle.js'),     'hunkwise_bundle.js'],
+  [path.join('data', 'commit_message_bundle.js'), 'commit_message_bundle.js'],
   // Warm-white palette overrides. Always copied so users can flip the
   // setting without re-running apply just to ship the CSS file. enhance.js
   // only loads this stylesheet when `theme.palette === 'warm-white'`.
@@ -1709,6 +1710,76 @@ function patchExtensionJs(content) {
     }
   }
 
+  // --- Commit message: inject into activate (after hunkwise) ---
+  // Trae/Cursor often ship `module.exports = { activate:()=>fn }` which
+  // hunkwise wraps as:
+  //   module.exports = (function(__incipit_orig){ return Object.assign({}, __incipit_orig, {
+  //     activate: function(__hunkwiseCtx) {
+  //       try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) {...}
+  //       return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined;
+  //     }
+  //   }); })(...);
+  // so there is no bare `exports.activate =`. Prefer piggy-backing on the
+  // hunkwise try/catch (all hosts that got hunkwise), then fall back to
+  // wrapping exports.activate / module.exports the same way hunkwise does.
+  if (updated.includes("require('./webview/commit_message_bundle.js').activate(")) {
+    statusLines.push(`${padLabel('CommitMsg 注入')}: 已存在`);
+  } else {
+    let injected = false;
+    const HUNKWISE_TRY = /try \{ require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\); \} catch\(e\) \{ console\.error\('\[[\w]+\] Hunkwise init failed', e\); \}/;
+    // Broader: tolerate any console.error message that mentions Hunkwise.
+    const HUNKWISE_TRY_LOOSE =
+      /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
+
+    if (HUNKWISE_TRY_LOOSE.test(updated)) {
+      updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) => {
+        injected = true;
+        return `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`;
+      });
+    }
+
+    if (!injected && /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/.test(updated)) {
+      updated = updated.replace(
+        /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/,
+        (match, paramName) => {
+          injected = true;
+          return `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } `;
+        },
+      );
+    }
+
+    if (!injected) {
+      const ACTIVATE_PATTERN = /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/;
+      if (ACTIVATE_PATTERN.test(updated)) {
+        updated = updated.replace(ACTIVATE_PATTERN, (match, funcName) => {
+          injected = true;
+          return `exports.activate = function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return ${funcName}(__incipitCommitCtx); };`;
+        });
+      }
+    }
+
+    if (!injected) {
+      // Last resort: wrap module.exports the same way hunkwise does when
+      // hunkwise itself was missing (shouldn't happen after the block above).
+      const MODULE_EXPORTS_PATTERN = /module\.exports\s*=\s*([^;]+);/;
+      if (
+        MODULE_EXPORTS_PATTERN.test(updated) &&
+        !updated.includes("require('./webview/hunkwise_bundle.js').activate(")
+      ) {
+        updated = updated.replace(MODULE_EXPORTS_PATTERN, (match, exportedVal) => {
+          injected = true;
+          return `module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__incipitCommitCtx) : undefined; } }); })(${exportedVal});`;
+        });
+      }
+    }
+
+    statusLines.push(
+      injected
+        ? `${padLabel('CommitMsg 注入')}: 已写入`
+        : `${padLabel('CommitMsg 注入')}: 降级 (未找到 activate)`,
+    );
+  }
+
   assertExtensionPatchContracts(updated);
   statusLines.push(record('install.extensionContract', `${padLabel('extension 契约')}: ok`));
 
@@ -2532,6 +2603,23 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     );
   }
 
+  // Commit-message button icon lives in `resources/` (icon paths in this
+  // extension resolve from the extension root, not `webview/`), mirroring how
+  // `resources/claude-logo.svg` is referenced by other commands.
+  {
+    const iconSrc = resourceFilePath(resourceRoot, path.join('data', 'commit_message_icon.svg'));
+    const iconDst = path.join(target.extensionDir, 'resources', 'commit_message_icon.svg');
+    if (fs.existsSync(iconSrc)) {
+      fs.mkdirSync(path.dirname(iconDst), { recursive: true });
+      const written = copyIfChanged(iconSrc, iconDst);
+      rootResourceStatuses.push(
+        written
+          ? `${padLabel('commit_message_icon.svg 复制')}: 已写入`
+          : `${padLabel('commit_message_icon.svg 复制')}: 已存在`,
+      );
+    }
+  }
+
   // Prune any legacy asset subtrees that earlier versions used to ship.
   let legacyAssetTreesPruned = 0;
   for (const legacy of LEGACY_ASSET_TREES) {
@@ -2567,7 +2655,7 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     );
   }
 
-  // --- Hunkwise: patch package.json ---
+  // --- Hunkwise + Commit message: patch package.json ---
   const packageJsonPath = path.join(target.extensionDir, 'package.json');
   if (fs.existsSync(packageJsonPath)) {
     const pkgText = fs.readFileSync(packageJsonPath, 'utf8');
@@ -2579,48 +2667,116 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
         pkg.enabledApiProposals.push("editorInsets");
         pkgModified = true;
       }
-      const hunkwisePkgPath = resourceFilePath(resourceRoot, path.join('data', 'hunkwise_package.json'));
-      if (fs.existsSync(hunkwisePkgPath)) {
-        const hunkwisePkg = JSON.parse(fs.readFileSync(hunkwisePkgPath, 'utf8'));
-        if (hunkwisePkg.contributes) {
-          if (!pkg.contributes) pkg.contributes = {};
-          for (const key of Object.keys(hunkwisePkg.contributes)) {
-            if (!pkg.contributes[key]) pkg.contributes[key] = Array.isArray(hunkwisePkg.contributes[key]) ? [] : {};
-            if (Array.isArray(hunkwisePkg.contributes[key])) {
-              const existingIds = pkg.contributes[key].map(item => item.command || item.id);
-              for (const item of hunkwisePkg.contributes[key]) {
-                const id = item.command || item.id;
-                if (!existingIds.includes(id)) {
-                  if (item.icon && typeof item.icon === 'string' && item.icon.startsWith('media/')) {
-                    item.icon = item.icon.replace('media/', 'webview/hunkwise_media/');
-                  }
-                  pkg.contributes[key].push(item);
+
+      const contribSources = [
+        {
+          label: 'hunkwise',
+          rel: path.join('data', 'hunkwise_package.json'),
+          rewriteIcon: (icon) => (
+            typeof icon === 'string' && icon.startsWith('media/')
+              ? icon.replace('media/', 'webview/hunkwise_media/')
+              : icon
+          ),
+        },
+        {
+          label: 'commit-message',
+          rel: path.join('data', 'commit_message_package.json'),
+          rewriteIcon: null,
+        },
+      ];
+      const mergedLabels = [];
+
+      for (const source of contribSources) {
+        const contribPath = resourceFilePath(resourceRoot, source.rel);
+        if (!fs.existsSync(contribPath)) continue;
+        let contribPkg;
+        try {
+          contribPkg = JSON.parse(fs.readFileSync(contribPath, 'utf8'));
+        } catch (_) {
+          rootResourceStatuses.push(`${padLabel('package.json')}: 降级 (${source.label} 解析失败)`);
+          continue;
+        }
+        if (!contribPkg.contributes) continue;
+        if (!pkg.contributes) pkg.contributes = {};
+        let sourceTouched = false;
+        for (const key of Object.keys(contribPkg.contributes)) {
+          if (!pkg.contributes[key]) {
+            pkg.contributes[key] = Array.isArray(contribPkg.contributes[key]) ? [] : {};
+          }
+          if (Array.isArray(contribPkg.contributes[key])) {
+            // Upsert by command/id so re-apply refreshes title/icon/when, not
+            // only first-time inserts (commit-message when-clauses change).
+            for (const item of contribPkg.contributes[key]) {
+              const id = item.command || item.id;
+              const clone = Object.assign({}, item);
+              if (source.rewriteIcon && clone.icon) {
+                clone.icon = source.rewriteIcon(clone.icon);
+              }
+              const idx = pkg.contributes[key].findIndex(
+                existing => (existing.command || existing.id) === id,
+              );
+              if (idx < 0) {
+                pkg.contributes[key].push(clone);
+                pkgModified = true;
+                sourceTouched = true;
+              } else {
+                const prev = pkg.contributes[key][idx];
+                const next = Object.assign({}, prev, clone);
+                if (JSON.stringify(prev) !== JSON.stringify(next)) {
+                  pkg.contributes[key][idx] = next;
                   pkgModified = true;
+                  sourceTouched = true;
                 }
               }
-            } else if (typeof hunkwisePkg.contributes[key] === 'object') {
-               for (const menuKey of Object.keys(hunkwisePkg.contributes[key])) {
-                  if (!pkg.contributes[key][menuKey]) pkg.contributes[key][menuKey] = [];
-                  const existingMenu = pkg.contributes[key][menuKey].map(i => i.command);
-                  for (const item of hunkwisePkg.contributes[key][menuKey]) {
-                    if (!existingMenu.includes(item.command)) {
-                      pkg.contributes[key][menuKey].push(item);
-                      pkgModified = true;
-                    }
+            }
+          } else if (typeof contribPkg.contributes[key] === 'object') {
+            for (const menuKey of Object.keys(contribPkg.contributes[key])) {
+              if (!pkg.contributes[key][menuKey]) pkg.contributes[key][menuKey] = [];
+              for (const item of contribPkg.contributes[key][menuKey]) {
+                const idx = pkg.contributes[key][menuKey].findIndex(
+                  existing => existing.command === item.command,
+                );
+                const clone = Object.assign({}, item);
+                if (idx < 0) {
+                  pkg.contributes[key][menuKey].push(clone);
+                  pkgModified = true;
+                  sourceTouched = true;
+                } else {
+                  const prev = pkg.contributes[key][menuKey][idx];
+                  const next = Object.assign({}, prev, clone);
+                  if (JSON.stringify(prev) !== JSON.stringify(next)) {
+                    pkg.contributes[key][menuKey][idx] = next;
+                    pkgModified = true;
+                    sourceTouched = true;
                   }
-               }
+                }
+              }
             }
           }
         }
+        if (sourceTouched) mergedLabels.push(source.label);
       }
+
+      // Ensure commit-message command can activate Claude Code even when the
+      // host skipped onStartupFinished (or activate() failed early).
+      const commitCmdActivation = 'onCommand:incipit.generateCommitMessage';
+      if (!Array.isArray(pkg.activationEvents)) pkg.activationEvents = [];
+      if (!pkg.activationEvents.includes(commitCmdActivation)) {
+        pkg.activationEvents.push(commitCmdActivation);
+        pkgModified = true;
+        if (!mergedLabels.includes('commit-message')) mergedLabels.push('commit-message');
+      }
+
       if (pkgModified) {
         fs.writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2), 'utf8');
-        rootResourceStatuses.push(`${padLabel('package.json')}: 已合并 hunkwise`);
+        rootResourceStatuses.push(
+          `${padLabel('package.json')}: 已合并 ${mergedLabels.length ? mergedLabels.join('+') : 'contrib'}`,
+        );
       } else {
-        rootResourceStatuses.push(`${padLabel('package.json')}: hunkwise 已存在`);
+        rootResourceStatuses.push(`${padLabel('package.json')}: contrib 已存在`);
       }
     } catch (e) {
-      rootResourceStatuses.push(`${padLabel('package.json')}: 降级 (hunkwise 合并失败)`);
+      rootResourceStatuses.push(`${padLabel('package.json')}: 降级 (contrib 合并失败)`);
     }
   }
 

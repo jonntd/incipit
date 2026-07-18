@@ -1,0 +1,215 @@
+'use strict';
+
+// Offline tests for the SCM commit-message patch module.
+// Does not call the network; exercises sanitize / prompt / package merge /
+// activate injection anchors only.
+
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const ROOT = path.join(__dirname, '..');
+const bundle = require(path.join(ROOT, 'data', 'commit_message_bundle.js'));
+const T = bundle.__test;
+const install = require(path.join(ROOT, 'src', 'install.js'));
+
+let passed = 0;
+function ok(name) {
+  console.log('  ok  ' + name);
+  passed++;
+}
+
+// --- sanitizeCommitMessage -------------------------------------------------
+
+{
+  assert.strictEqual(T.sanitizeCommitMessage('feat: add x'), 'feat: add x');
+  assert.strictEqual(
+    T.sanitizeCommitMessage('```\nfix: y\n```'),
+    'fix: y',
+  );
+  assert.strictEqual(
+    T.sanitizeCommitMessage('```text\nchore: z\n```'),
+    'chore: z',
+  );
+  assert.strictEqual(
+    T.sanitizeCommitMessage('Commit message: feat: a'),
+    'feat: a',
+  );
+  assert.strictEqual(
+    T.sanitizeCommitMessage('"feat: quoted"'),
+    'feat: quoted',
+  );
+  assert.strictEqual(T.sanitizeCommitMessage('   \n  '), '');
+  assert.strictEqual(T.sanitizeCommitMessage(null), '');
+  const long = 'a'.repeat(5000);
+  assert.ok(T.sanitizeCommitMessage(long).length <= 2000);
+  ok('sanitizeCommitMessage strips wrappers and caps length');
+}
+
+// --- buildCommitUserPrompt -------------------------------------------------
+
+{
+  const prompt = T.buildCommitUserPrompt({
+    status: ' M src/a.js\n?? src/b.js',
+    diff: 'diff --git a/src/a.js b/src/a.js\n+hello',
+    examples: ['feat: prior one', 'fix: prior two'],
+  });
+  assert.ok(prompt.includes('## Status'));
+  assert.ok(prompt.includes('## Diff'));
+  assert.ok(prompt.includes('```diff'));
+  assert.ok(prompt.includes('+hello'));
+  assert.ok(prompt.includes('feat: prior one'));
+  assert.ok(prompt.includes('Respond with the commit message only.'));
+  ok('buildCommitUserPrompt includes status/diff/examples');
+}
+
+// --- truncateDiff ----------------------------------------------------------
+
+{
+  assert.strictEqual(T.truncateDiff('short', 100), 'short');
+  const big = 'x'.repeat(100);
+  const out = T.truncateDiff(big, 40);
+  assert.ok(out.length < big.length);
+  assert.ok(out.includes('truncated'));
+  assert.ok(out.startsWith('xxxx'));
+  ok('truncateDiff keeps head and marks truncation');
+}
+
+// --- package contribution shape --------------------------------------------
+
+{
+  const pkgPath = path.join(ROOT, 'data', 'commit_message_package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  assert.ok(pkg.contributes);
+  assert.ok(Array.isArray(pkg.contributes.commands));
+  const cmd = pkg.contributes.commands.find(c => c.command === T.COMMAND_ID);
+  assert.ok(cmd, 'command contributed');
+  assert.strictEqual(cmd.icon, '$(sparkle)');
+  assert.ok(pkg.contributes.menus['scm/title']);
+  const scm = pkg.contributes.menus['scm/title'].find(m => m.command === T.COMMAND_ID);
+  assert.ok(scm, 'scm/title menu entry');
+  assert.strictEqual(scm.group, 'navigation');
+  ok('commit_message_package.json contributes scm/title sparkle command');
+}
+
+// --- ROOT_WEBVIEW_FILES includes bundle ------------------------------------
+
+{
+  const names = install.ROOT_WEBVIEW_FILES.map(([, name]) => name);
+  assert.ok(names.includes('commit_message_bundle.js'));
+  assert.ok(names.includes('host-badge.cjs'));
+  ok('ROOT_WEBVIEW_FILES ships commit_message_bundle.js');
+}
+
+// --- activate injection (synthetic extension.js) ---------------------------
+
+{
+  // Shape A: exports.activate = someFn;  (classic)
+  let updated = [
+    'exports.activate = activateFn;',
+    'function activateFn(ctx) { return 1; }',
+  ].join('\n');
+  updated = updated.replace(
+    /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/,
+    (match, funcName) =>
+      `exports.activate = function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return ${funcName}(__hunkwiseCtx); };`,
+  );
+  // commit message — piggy-back on hunkwise try/catch (matches install.js)
+  const HUNKWISE_TRY_LOOSE =
+    /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
+  updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) =>
+    `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`,
+  );
+  assert.ok(updated.includes("require('./webview/hunkwise_bundle.js').activate("));
+  assert.ok(updated.includes("require('./webview/commit_message_bundle.js').activate("));
+  assert.ok(updated.includes('return activateFn(__hunkwiseCtx)'));
+  ok('activate injection wraps hunkwise then commit-message (exports.activate)');
+}
+
+{
+  // Shape B: module.exports IIFE wrapper (Trae CN / modern Claude Code)
+  let updated =
+    "module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined; } }); })(zve(kut));";
+  const HUNKWISE_TRY_LOOSE =
+    /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
+  assert.ok(HUNKWISE_TRY_LOOSE.test(updated), 'loose hunkwise regex matches Trae shape');
+  updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) =>
+    `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`,
+  );
+  assert.ok(updated.includes("require('./webview/commit_message_bundle.js').activate(__hunkwiseCtx)"));
+  // still returns original activate
+  assert.ok(updated.includes('__incipit_orig.activate(__hunkwiseCtx)'));
+  ok('activate injection piggy-backs hunkwise on module.exports Trae shape');
+}
+
+// --- package.json merge is idempotent --------------------------------------
+
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'incipit-cm-'));
+  const pkgPath = path.join(tmp, 'package.json');
+  const base = {
+    name: 'claude-code',
+    contributes: {
+      commands: [{ command: 'claude-vscode.focus', title: 'Focus' }],
+      menus: {
+        'editor/title': [{ command: 'claude-vscode.focus', group: 'navigation' }],
+      },
+    },
+  };
+  fs.writeFileSync(pkgPath, JSON.stringify(base, null, 2));
+
+  function mergeOnce() {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const contrib = JSON.parse(
+      fs.readFileSync(path.join(ROOT, 'data', 'commit_message_package.json'), 'utf8'),
+    );
+    if (!pkg.contributes) pkg.contributes = {};
+    for (const key of Object.keys(contrib.contributes)) {
+      if (!pkg.contributes[key]) {
+        pkg.contributes[key] = Array.isArray(contrib.contributes[key]) ? [] : {};
+      }
+      if (Array.isArray(contrib.contributes[key])) {
+        const existing = pkg.contributes[key].map(i => i.command || i.id);
+        for (const item of contrib.contributes[key]) {
+          const id = item.command || item.id;
+          if (!existing.includes(id)) pkg.contributes[key].push(Object.assign({}, item));
+        }
+      } else if (typeof contrib.contributes[key] === 'object') {
+        for (const menuKey of Object.keys(contrib.contributes[key])) {
+          if (!pkg.contributes[key][menuKey]) pkg.contributes[key][menuKey] = [];
+          const existingMenu = pkg.contributes[key][menuKey].map(i => i.command);
+          for (const item of contrib.contributes[key][menuKey]) {
+            if (!existingMenu.includes(item.command)) {
+              pkg.contributes[key][menuKey].push(Object.assign({}, item));
+            }
+          }
+        }
+      }
+    }
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    return pkg;
+  }
+
+  const once = mergeOnce();
+  const twice = mergeOnce();
+  const cmds = twice.contributes.commands.filter(c => c.command === T.COMMAND_ID);
+  assert.strictEqual(cmds.length, 1, 'command not duplicated');
+  const scm = twice.contributes.menus['scm/title'].filter(m => m.command === T.COMMAND_ID);
+  assert.strictEqual(scm.length, 1, 'scm menu not duplicated');
+  assert.ok(once.contributes.commands.some(c => c.command === 'claude-vscode.focus'));
+  ok('package.json merge is idempotent and preserves stock commands');
+
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { }
+}
+
+// --- host-badge exports completeClaudeText ---------------------------------
+
+{
+  const host = require(path.join(ROOT, 'data', 'host-badge.cjs'));
+  assert.strictEqual(typeof host.attachComm, 'function');
+  assert.strictEqual(typeof host.completeClaudeText, 'function');
+  ok('host-badge exports completeClaudeText');
+}
+
+console.log('\n' + passed + ' passed');

@@ -1070,7 +1070,16 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOverride }) {
+function callClaudeMessagesAPI({
+  settings,
+  userText,
+  timeoutMs,
+  model: modelOverride,
+  system: systemOverride,
+  maxTokens,
+  userContent: userContentOverride,
+  postprocess,
+} = {}) {
   return new Promise((resolve, reject) => {
     const auth = resolveClaudeAuth(settings);
     if (!auth) {
@@ -1085,15 +1094,19 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOver
       ? modelOverride.trim()
       : resolveClaudeModel(settings);
     const endpoint = resolveClaudeBaseUrl(settings);
-    // Single-turn rewrite contract. Instructions live in the user turn so they
-    // survive providers that ignore/override `system`. Response body is cleaned
-    // by sanitizeEnhancedPrompt (BEGIN/END wrappers + boilerplate stripped).
-    const system = 'You enhance user instructions. Follow the response format exactly. No tools.';
-    const userContent = buildPromptEnhancerUserContent(userText);
+    // Default path: prompt-enhancer single-turn rewrite. Callers (commit message)
+    // can override system / user content and skip sanitize via postprocess=false.
+    const system = (typeof systemOverride === 'string' && systemOverride.trim())
+      ? systemOverride
+      : 'You enhance user instructions. Follow the response format exactly. No tools.';
+    const userContent = userContentOverride != null
+      ? userContentOverride
+      : buildPromptEnhancerUserContent(userText);
+    const tokens = (typeof maxTokens === 'number' && maxTokens > 0) ? maxTokens : 2048;
 
     const requestBody = JSON.stringify({
       model,
-      max_tokens: 2048,
+      max_tokens: tokens,
       system,
       messages: [{ role: 'user', content: userContent }],
     });
@@ -1143,7 +1156,15 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOver
             && response.content[0]
             && response.content[0].text;
           if (text) {
-            resolve(sanitizeEnhancedPrompt(text, userText));
+            let out = text;
+            if (postprocess === false) {
+              // raw completion — caller cleans
+            } else if (typeof postprocess === 'function') {
+              out = postprocess(text, userText);
+            } else {
+              out = sanitizeEnhancedPrompt(text, userText);
+            }
+            resolve(out);
           } else {
             const err = new Error(`No text in API response (model=${model}, status=${statusCode})`);
             err.statusCode = statusCode;
@@ -1183,7 +1204,17 @@ function callClaudeMessagesAPI({ settings, userText, timeoutMs, model: modelOver
   });
 }
 
-async function callClaudeMessagesAPIWithRetry({ settings, userText, log, preferredModel }) {
+async function callClaudeMessagesAPIWithRetry({
+  settings,
+  userText,
+  log,
+  preferredModel,
+  system,
+  maxTokens,
+  userContent,
+  postprocess,
+  timeoutMs,
+} = {}) {
   const chain = resolvePromptEnhancerModelChain(settings, preferredModel);
   // Multi-model path: one attempt per distinct model. Single-model path: keep
   // the historical PROMPT_ENHANCER_MAX_ATTEMPTS same-model retries.
@@ -1191,6 +1222,9 @@ async function callClaudeMessagesAPIWithRetry({ settings, userText, log, preferr
     ? chain.length
     : PROMPT_ENHANCER_MAX_ATTEMPTS;
   let lastError = null;
+  const attemptTimeout = (typeof timeoutMs === 'number' && timeoutMs > 0)
+    ? timeoutMs
+    : PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS;
 
   if (typeof log === 'function') {
     log(`model chain: ${chain.join(' → ')}`);
@@ -1213,7 +1247,11 @@ async function callClaudeMessagesAPIWithRetry({ settings, userText, log, preferr
         settings,
         userText,
         model,
-        timeoutMs: PROMPT_ENHANCER_ATTEMPT_TIMEOUT_MS,
+        timeoutMs: attemptTimeout,
+        system,
+        maxTokens,
+        userContent,
+        postprocess,
       });
     } catch (error) {
       lastError = error;
@@ -1242,6 +1280,37 @@ async function callClaudeMessagesAPIWithRetry({ settings, userText, log, preferr
     }
   }
   throw lastError || new Error('Prompt enhance failed');
+}
+
+// Generic host-side completion for non-webview callers (commit message, etc.).
+// Reuses Claude Code settings/auth + enhancer model fallback chain.
+async function completeClaudeText({
+  userText,
+  system,
+  maxTokens,
+  preferredModel,
+  cwd,
+  settings: settingsOverride,
+  log,
+  postprocess = false,
+  timeoutMs,
+} = {}) {
+  const text = typeof userText === 'string' ? userText : '';
+  if (!text.trim()) {
+    throw new Error('empty prompt');
+  }
+  const settings = settingsOverride || loadClaudeSettings(cwd || null);
+  return callClaudeMessagesAPIWithRetry({
+    settings,
+    userText: text,
+    log,
+    preferredModel: typeof preferredModel === 'string' ? preferredModel : '',
+    system,
+    maxTokens,
+    userContent: text,
+    postprocess,
+    timeoutMs,
+  });
 }
 
 function handlePromptEnhancerRequest(comm, state, message) {
@@ -6473,7 +6542,7 @@ function projectsRoot() {
   return path.join(os.homedir(), '.claude', 'projects');
 }
 
-module.exports = { attachComm };
+module.exports = { attachComm, completeClaudeText };
 
 // Pure helpers exposed only for the offline equivalence test
 // (tests/cache-history-buckets.test.js). No runtime behaviour change:
