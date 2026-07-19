@@ -208,6 +208,23 @@
   --incipit-tool-status-success: #3dd68c;
   --incipit-tool-status-pending: #8b9098;
   --incipit-tool-status-error: #f2555a;
+  /* Trae-style per-tool icon hues. Icons inherit `currentColor`; these
+     tokens color the left glyph by tool kind so the chat stops reading as
+     a single grey ink. Tuned for warm-black (slightly bright). */
+  --incipit-tool-icon-shell: #e5a54b;
+  --incipit-tool-icon-kill: #ff6b6b;
+  --incipit-tool-icon-read: #61afef;
+  --incipit-tool-icon-write: #c678dd;
+  --incipit-tool-icon-search: #56b6c2;
+  --incipit-tool-icon-folder: #e5c07b;
+  --incipit-tool-icon-web: #4fc1ff;
+  --incipit-tool-icon-agent: #b98cff;
+  --incipit-tool-icon-todo: #2fb287;
+  --incipit-tool-icon-skill: #ff7eb6;
+  --incipit-tool-icon-ask: #f0a020;
+  --incipit-tool-icon-default: #8ab4f8;
+  --incipit-icon-accent: #b98cff;
+  --incipit-icon-accent-soft: rgba(185, 140, 255, 0.18);
   /* User bubble matches agent-panel accent chip:
      soft translucent blue wash + light-blue ink (not solid bright blue).
      Values mirror common dark-theme accent-a3 / accent-a11 scales. */
@@ -997,7 +1014,10 @@ pre.incipit-mermaid-source {
   order: 1;
 }
 
-/* Left tool glyph — always first, never shrink. */
+/* Left tool glyph — always first, never shrink.
+   Color by tool kind (Trae-style semantic icons). SVG uses fill=currentColor
+   so the wrapper `color` is the whole story. Hover only brightens; never
+   collapse kind color back to body ink (warm-white has a separate exception). */
 [data-incipit-tool-icon] {
   display: inline-flex !important;
   flex: 0 0 16px !important;
@@ -1007,19 +1027,74 @@ pre.incipit-mermaid-source {
   width: 16px !important;
   min-width: 16px !important;
   height: 16px !important;
-  color: #b0b4ba !important;
+  color: var(--incipit-tool-icon-default) !important;
   opacity: 1 !important;
   pointer-events: none;
+  transition: filter 0.12s ease;
 }
 [data-incipit-tool-icon] svg {
   display: block !important;
   width: 14px !important;
   height: 14px !important;
   fill: currentColor !important;
+  color: inherit !important;
 }
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-icon] {
-  color: #e8e8e6 !important;
+  filter: brightness(1.18);
 }
+
+/* Shell / terminal */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Bash"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="PowerShell"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="BashOutput"] {
+  color: var(--incipit-tool-icon-shell) !important;
+}
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="KillShell"] {
+  color: var(--incipit-tool-icon-kill) !important;
+}
+/* Read */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Read"] {
+  color: var(--incipit-tool-icon-read) !important;
+}
+/* Write / edit */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Write"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Edit"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="MultiEdit"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="NotebookEdit"] {
+  color: var(--incipit-tool-icon-write) !important;
+}
+/* Search */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Grep"] {
+  color: var(--incipit-tool-icon-search) !important;
+}
+/* Folder / list */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Glob"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="LS"] {
+  color: var(--incipit-tool-icon-folder) !important;
+}
+/* Web */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="WebFetch"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="WebSearch"] {
+  color: var(--incipit-tool-icon-web) !important;
+}
+/* Agent / task */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Task"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Agent"] {
+  color: var(--incipit-tool-icon-agent) !important;
+}
+/* Todo */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="TodoWrite"] {
+  color: var(--incipit-tool-icon-todo) !important;
+}
+/* Skill */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="Skill"] {
+  color: var(--incipit-tool-icon-skill) !important;
+}
+/* Ask user */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="AskUserQuestion"] {
+  color: var(--incipit-tool-icon-ask) !important;
+}
+/* default / MCP / unknown already uses --incipit-tool-icon-default */
 
 /* Stats sit after the title, before the status dot. */
 [data-incipit-tool-stats] {
@@ -6797,4 +6872,92 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   background: rgba(201, 166, 87, 0.18);
   border-color: rgba(201, 166, 87, 0.4);
   color: #f0d9a0;
+}
+
+/* ===================================================================
+   Trae-style icon coloring.
+   The host Claude Code webview draws almost every glyph from VS Code's
+   monochrome `codicon` font at `currentColor`, so the UI reads flat/dull
+   ("呆"). Trae's `@byted-icube/ai-modules-chat` instead colors each
+   icon *by meaning* (success=green, warning=amber, error=red, accent=
+   violet/pink, secondary=gray) and brightens on hover/active. We mirror
+   that: saturate the host's muted status/section colors toward Trae's
+   values, and add an accent-violet interactive layer.
+   Selectors use `:where([class*="..."])` substring matches because the
+   host hash-suffixes every class (e.g. `dotSuccess_07S1Yg`) — this is
+   incipit's existing contract for surviving those hash changes.
+   =================================================================== */
+
+/* Accent token Trae uses for interactive affordances (vote / inline ref /
+   permission). Trae's `--icd-vote-accent` + `--accent-accent-slate`. */
+:root {
+  --incipit-icon-accent: #b98cff;
+  --incipit-icon-accent-soft: rgba(185, 140, 255, 0.18);
+}
+
+/* --- Timeline / section status dots: saturate the host's muted tones --- */
+:where([class*="dotSuccess_"])::before {
+  background-color: #2fb287 !important; /* Trae status-success */
+}
+:where([class*="dotWarning_"])::before {
+  background-color: #f0a020 !important; /* Trae status-warning (amber) */
+}
+:where([class*="dotFailure_"])::before {
+  background-color: #ff6b6b !important; /* Trae status-error (red) */
+}
+
+/* --- Connection status dot: enabled=green --- */
+:where([class*="statusDotEnabled_"]) {
+  background-color: #2fb287 !important;
+}
+
+/* --- Diff glyphs in chat file-refs + diff review (codicon font) --- */
+:where([class*="codicon-diff-insert"]) {
+  color: #3fb950 !important; /* Trae/Bright green */
+}
+:where([class*="codicon-diff-remove"]) {
+  color: #ff6b6b !important; /* Trae/Bright red */
+}
+
+/* --- Warning / error / info codicons get their semantic color --- */
+:where([class*="codicon-warning"]),
+:where([class*="codicon-error"]) {
+  color: #f0a020 !important;
+}
+:where([class*="codicon-error"]) {
+  color: #ff6b6b !important;
+}
+
+/* --- Auto-fix / suggestion lightbulb → interactive accent --- */
+:where([class*="codicon-gutter-lightbulb"]),
+:where([class*="codicon-light-bulb"]) {
+  color: var(--incipit-icon-accent) !important;
+}
+
+/* --- Inline file / reference icons (symbol-file, symbol-reference) --- */
+:where([class*="codicon-symbol-file"]),
+:where([class*="codicon-symbol-reference"]) {
+  color: #8ab4f8 !important; /* Trae accent-slate, softened */
+}
+
+/* --- Feedback (vote) buttons: accent violet on hover/active --- */
+:where([class*="feedbackButton_"]):hover,
+:where([class*="feedbackButton_"]):focus,
+:where([class*="feedbackButton_"])[data-active="1"] {
+  color: var(--incipit-icon-accent) !important;
+  border-color: var(--incipit-icon-accent) !important;
+  background-color: var(--incipit-icon-accent-soft) !important;
+}
+
+/* --- File-reference / attachment icons inside message rows --- */
+:where([class*="fileIcon_"]) {
+  color: #8ab4f8 !important;
+  opacity: 0.9 !important;
+}
+
+/* --- Permission requests: accent the affordances on hover/focus --- */
+:where([class*="permissionRequestContainer_"]) :where([class*="option_"]):hover,
+:where([class*="permissionRequestContainer_"]) :where([class*="button_"]):hover {
+  color: var(--incipit-icon-accent) !important;
+  border-color: var(--incipit-icon-accent) !important;
 }

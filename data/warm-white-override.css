@@ -112,6 +112,22 @@
   --incipit-tool-status-success: #1c9c1c;
   --incipit-tool-status-pending: #a39f8e;
   --incipit-tool-status-error: #c92626;
+  /* Per-tool icon hues for cream paper — slightly darker than warm-black so
+     they stay legible on #fff card surfaces. */
+  --incipit-tool-icon-shell: #c4841a;
+  --incipit-tool-icon-kill: #c92626;
+  --incipit-tool-icon-read: #1a6fc4;
+  --incipit-tool-icon-write: #8a3eb0;
+  --incipit-tool-icon-search: #0e8a8a;
+  --incipit-tool-icon-folder: #b08920;
+  --incipit-tool-icon-web: #0a7ec2;
+  --incipit-tool-icon-agent: #7a4fd6;
+  --incipit-tool-icon-todo: #1c9c1c;
+  --incipit-tool-icon-skill: #d13a7a;
+  --incipit-tool-icon-ask: #c4841a;
+  --incipit-tool-icon-default: #3b6db3;
+  --incipit-icon-accent: #7a4fd6;
+  --incipit-icon-accent-soft: rgba(122, 79, 214, 0.12);
   /* Light-theme accent chip: very soft blue wash + deep blue ink. */
   --incipit-user-bubble-bg: rgba(0, 143, 245, 0.10);
   --incipit-user-bubble-fg: #0d74ce;
@@ -285,11 +301,10 @@
    `!important` above pinned the resting color so hard that
    `theme.css`'s `:hover { color: inherit }` lost the cascade fight —
    the user's expected "hovered tool row reads as body text" affordance
-   went silent. Mirror the dark-palette behaviour by force-lifting both
-   the row and every descendant span (tool-name, fingerprint, stats,
-   chevron — anything riding `currentColor`) to ink on hover. Thinking
-   summary intentionally stays at the resting tone because it's not a
-   click target. */
+   went silent. Force-lift the row and descendants to ink on hover, then
+   re-pin Trae-style tool-icon kind colors + status/stats accents so the
+   universal sweep cannot wipe them. Thinking summary intentionally stays
+   at the resting tone because it's not a click target. */
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover,
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover * {
   color: var(--incipit-tool-card-fg) !important;
@@ -298,11 +313,67 @@
 [data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-name] {
   color: var(--incipit-tool-card-fg) !important;
 }
-[data-incipit-tool-icon] {
-  color: var(--incipit-tool-card-fg-secondary) !important;
+
+/* Re-pin per-tool kind colors after the universal `:hover *` wipe.
+   Specificity of these (0,4,0 + !important) beats the universal (0,3,0). */
+/* SVG children of the tool icon must not keep body-ink from `:hover *`.
+   Make them inherit the wrapper's kind color. Do NOT set color:inherit on
+   the wrapper itself — that would wipe the kind rules below. */
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon] * {
+  color: inherit !important;
+  fill: currentColor !important;
+  opacity: 1 !important;
 }
-[data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-icon] {
-  color: var(--incipit-tool-card-fg) !important;
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon] {
+  /* Base: unknown / MCP kinds fall back to default. Kind rules below override. */
+  color: var(--incipit-tool-icon-default) !important;
+  filter: brightness(0.92);
+  opacity: 1 !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Bash"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="PowerShell"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="BashOutput"] {
+  color: var(--incipit-tool-icon-shell) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="KillShell"] {
+  color: var(--incipit-tool-icon-kill) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Read"] {
+  color: var(--incipit-tool-icon-read) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Write"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Edit"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="MultiEdit"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="NotebookEdit"] {
+  color: var(--incipit-tool-icon-write) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Grep"] {
+  color: var(--incipit-tool-icon-search) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Glob"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="LS"] {
+  color: var(--incipit-tool-icon-folder) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="WebFetch"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="WebSearch"] {
+  color: var(--incipit-tool-icon-web) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Task"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Agent"] {
+  color: var(--incipit-tool-icon-agent) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="TodoWrite"] {
+  color: var(--incipit-tool-icon-todo) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="Skill"] {
+  color: var(--incipit-tool-icon-skill) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="AskUserQuestion"] {
+  color: var(--incipit-tool-icon-ask) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon][data-incipit-tool-icon-kind="default"],
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover > [data-incipit-tool-icon]:not([data-incipit-tool-icon-kind]) {
+  color: var(--incipit-tool-icon-default) !important;
 }
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-status-dot] {
   /* Keep status-dot color; do not let the universal hover sweep recolor it. */
@@ -320,10 +391,8 @@
 /* Hover-state exception: the `:hover *` universal above (specificity 0,3,0
    + !important) beats the plain `[data-incipit-tool-added]` accent rule
    (0,1,0 + !important), so without these the green/red/terra signals
-   collapse to body ink the moment the row is hovered. Warm-black has no
-   such bug because its hover rule is non-!important, letting our accent
-   !important win the cascade. Re-assert each accent inside `:hover` with
-   a 4-attr selector (0,4,0) so it outranks the universal sweep. */
+   collapse to body ink the moment the row is hovered. Re-assert each
+   accent inside `:hover` with a 4-attr selector (0,4,0). */
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-added] {
   color: #1c9c1c !important;
 }
