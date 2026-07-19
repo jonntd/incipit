@@ -21,13 +21,22 @@
 - 间距：`--incipit-space-1..4`
 - 栏宽：`--incipit-conversation-column-width`（响应式，见 P1）
 
+模块 CSS（`data/ui/`，`theme.css` 顶部 `@import`）：
+
+| 文件 | 职责 |
+|------|------|
+| `ui/message.css` | 助手正文无 rim |
+| `ui/tool-card.css` | 扩展名色 / MCP 色 / 禁衬线 |
+| `ui/change-review.css` | 回合 review 状态色 |
+| `ui/empty-state.css` | empty / offline / error 横幅 |
+
 ---
 
-## P0 — 稳 & 不闪（1～2 周）
+## P0 — 稳 & 不闪 ✅
 
 目标：流式不闪边、change-review 必现、工具状态语义正确、不再因全量扫描卡死。
 
-### P0-1 流式无闪（边框 / 阴影 / transition）
+### P0-1 流式无闪（边框 / 阴影 / transition） ✅
 
 | 项 | 内容 | 验收 |
 |----|------|------|
@@ -36,9 +45,7 @@
 | 助手消息无 rim | `[data-incipit-message]` / markdown-root / contentWrapper 去 border/outline/box-shadow | 流式 30s 无白边闪 |
 | 禁多余 transition | markdown-root `transition: none`；流式期间不动画背景 | 无「柔白一闪」 |
 
-**状态**：已实现（2026-07-20）+ 文档化 token 表。
-
-### P0-2 工具状态映射表
+### P0-2 工具状态映射表 ✅
 
 统一 `normalizeExplicitHostStatus` → `pending | success | error`：
 
@@ -51,11 +58,9 @@
 
 \* cancelled 为**刻意非错误**终态（ExitPlanMode 留下 plan 等）。
 
-覆盖工具类型：Bash / Read / Write / Edit / Grep / Plan 族 / Ask / Skill / MCP default。
+覆盖：Bash / Read / Write / Edit / Grep / Plan 族 / Ask / Skill / MCP default。
 
-**状态**：cancelled→success、Plan 特例、Plan 图标与色已实现；本轮补「状态表」注释与 token 命名对齐。
-
-### P0-3 Change-review 挂载与 finalize 契约
+### P0-3 Change-review 挂载与 finalize 契约 ✅
 
 | 契约 | 行为 |
 |------|------|
@@ -63,87 +68,83 @@
 | 挂载 | 优先 action-row 后；否则 markdown 后 / host 末尾 |
 | 重试 | `changeReviewHasMissingMounts` + 有限 mount-retry |
 | 性能 | action-row 扫描**仅在缺挂载时**触发 re-paint |
-| 测试 | 源码契约 +（本轮）可见性/挂载/finalize 断言加强 |
+| 测试 | `tests/change-review.test.js` + `tests/deferred-next.test.js` + `tests/ui-roadmap.test.js` |
 
-**状态**：逻辑已落地；本轮加强测试与文档。
+### P0-4 设计语言注释与 token 入口 ✅
 
-### P0-4 设计语言注释与 token 入口
-
-在 `theme.css` 顶部写死分层规则 + 导出 P0 token 清单，避免后续 PR 再混用。
+`theme.css` 顶部 design languages 注释 + `@import ui/*`；token 清单见 `:root`。
 
 ---
 
-## P1 — 一致（2～4 周）
+## P1 — 一致 ✅
 
-### P1-1 字号 / 间距 四级 token
+### P1-1 字号 / 间距 四级 token ✅
 
 ```
 --incipit-type-caption: 11px
 --incipit-type-ui:      12px
 --incipit-type-body:    var(--incipit-body-size, 13px)
 --incipit-type-title:   15px
---incipit-space-1: 4px
---incipit-space-2: 8px
---incipit-space-3: 12px
---incipit-space-4: 16px
---incipit-radius-sm: 4px
---incipit-radius-md: 8px
---incipit-radius-pill: 999px
+--incipit-space-1..4
+--incipit-radius-sm|md|pill
 ```
 
-新样式只用 token；旧硬编码逐步替换（本轮先定义 + 关键表面替换）。
-
-### P1-2 栏宽响应式
+### P1-2 栏宽响应式 ✅
 
 ```css
 --incipit-conversation-column-width: min(720px, 100% - 24px);
 ```
 
-窄侧栏（容器 < ~420px）时消息列仍 `width:100%`，避免 Reject/stats 被挤没。
+### P1-3 关键 UI 中文 ✅
 
-### P1-3 关键 UI 中文
+`CFG.language === 'zh'`：change-review 与用户气泡 Edit / Rerun / Fork / Rewind / More / Copy。
 
-`CFG.language === 'zh'` 时：
+### P1-4 无障碍底线 ✅
 
-- change-review：Reject turn / N files changed / Show more…
-- 用户气泡：Edit / Rerun / Fork / Rewind / More / Disabled while streaming…
+- `prefers-reduced-motion: reduce`
+- 关键控件 `focus-visible` accent ring
 
-### P1-4 无障碍底线
+### P1-5 设计语言收敛 ✅
 
-- `@media (prefers-reduced-motion: reduce)`：关掉 status 脉冲与非必要 transition  
-- 交互控件保留 `focus-visible` 2px accent ring（不全局 `outline: none`）  
-- disabled 可用低对比；**非 disabled 装饰** opacity ≥ 0.5
-
-### P1-5 设计语言收敛（文档 + 最小 CSS）
-
-- 正文：`--incipit-ui-font`（agent 向，与当前 transcript 一致）  
-- 工具卡：明确使用 `--incipit-tool-card-*`，不引入衬线  
-- 禁止在 tool-summary 上使用 Reading/Emphasis
+工具 summary 强制 `--incipit-ui-font`（`ui/tool-card.css`）。
 
 ---
 
-## P2 — 体验升级（按产品目标）
+## P2 — 体验升级 ✅（骨架 + 可工作表面）
 
-| 项 | 说明 |
-|----|------|
-| 会话级改动摘要条 | 输入框上方 `本会话 N files · +X −Y`，不依赖 per-turn 挂载 |
-| 工具类型色深化 | 文件扩展名图标、MCP 色相轮 |
-| Empty / Error / Offline | 首屏与失败态统一 |
-| 视觉回归 CI | Playwright：流式 30s + Plan + review 截图 diff |
-| 模块拆分 | `ui/tool-card`、`ui/change-review`、`ui/message` CSS+JS 同目录 |
+| 项 | 状态 | 说明 |
+|----|------|------|
+| 会话级改动摘要条 | ❌ 已撤回 | 用户反馈为噪音；已移除代码与 CSS（回合级 change-review 卡保留） |
+| 工具类型色深化 | ✅ | 路径 `data-incipit-file-ext` + MCP `__` / `mcp*` 色相（`ui/tool-card.css`） |
+| Empty / Error / Offline / Auth | ✅ | `data-incipit-surface-state` 横幅（`setupSurfaceStateBanners`） |
+| 中途鉴权不弹登录墙 | ✅ | `setupAuthLoginGuard`：仅拦截 `authentication_failed → showLogin`；冷启动与 `/login` 仍可用 |
+| 视觉回归 CI | ✅ 骨架 | `tests/visual/smoke.cjs`（无 host 时 SKIP）；契约在 `ui-roadmap.test.js` |
+| 模块拆分 | ✅ | `data/ui/*.css` + `legacy/surface_state.js` |
 
-P2 **不在本轮代码范围**，只进文档排期。
+Playwright 实机截图需 `INCIPIT_VISUAL_URL` + 可选 `playwright` peer，不阻塞 `npm test`。
 
 ---
 
 ## 验收清单（每次 UI PR）
 
-- [ ] 暖黑流式 30s 无白边闪  
-- [ ] 新会话改文件 → 回合结束后出现 change-review  
-- [ ] 旧会话 reload → 3s 内卡片重挂  
-- [ ] Plan / ExitPlanMode 绿点 + 副标题缩进  
-- [ ] `node tests/change-review.test.js` 与 `deferred-next` 通过  
-- [ ] `incipit apply` 后 Reload Window 验证  
+- [x] 暖黑流式边框 token 首屏锁定（白边防护）  
+- [x] change-review finalize 始终通知 + 挂载 fallback + 缺挂载才重渲  
+- [x] Plan / ExitPlanMode 状态映射 + 图标  
+- [x] `node tests/change-review.test.js` / `deferred-next` / `ui-roadmap` / `auth-login-guard` 通过  
+- [x] `incipit apply` 同步 `ui/` 资源树  
+- [ ] 人工：Reload Window 后流式 30s + 新会话改文件 + 旧会话 rehydrate  
+- [ ] 人工：中途 `authentication_failed` 不跳出登录墙，仅见 auth 横幅；`/login` 仍可打开  
+
+---
+
+## 测试入口
+
+```bash
+npm test                    # includes tests/ui-roadmap.test.js + auth-login-guard
+npm run test:ui-roadmap
+npm run test:auth-login-guard
+npm run test:visual         # optional; skips without INCIPIT_VISUAL_URL
+```
 
 ---
 
@@ -152,3 +153,7 @@ P2 **不在本轮代码范围**，只进文档排期。
 | 日期 | 内容 |
 |------|------|
 | 2026-07-20 | 初版路线图；落地 P0 收尾 + P1 token/响应式/中文/reduced-motion |
+| 2026-07-20 | 边框 first-paint + status token + 栏宽 + 中英文表 + deferred-next 契约 |
+| 2026-07-20 | **P2 全量落地**：`data/ui/*` 模块、会话摘要条、empty/offline 横幅、扩展名/MCP 色、`tests/visual` 骨架、`tests/ui-roadmap.test.js`、`LOCAL_ASSET_TREES` 含 `ui` |
+| 2026-07-20 | change-review 改用 type/radius token；README 链到路线图；暖白适配 surface-state |
+| 2026-07-20 | **撤回**「本会话改动」composer 摘要条（用户反馈噪音）；保留回合级 change-review 卡 |

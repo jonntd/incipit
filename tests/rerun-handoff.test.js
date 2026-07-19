@@ -238,13 +238,19 @@ function makeEntry(obj) { return JSON.stringify(obj); }
       '<local-command-stdout>Set model to claude-opus-4-8</local-command-stdout>' } }),
     false, 'host must refuse to edit a local-command stdout record');
   assert.strictEqual(
+    T.canEditUserEntry({ type: 'user', message: { content:
+      '<task-notification>\n<status>failed</status>\n<summary>Monitor failed</summary>\n</task-notification>' } }),
+    false, 'host must refuse to edit a task-notification protocol row');
+  assert.strictEqual(
     T.canEditUserEntry({ type: 'user', message: { content: 'just normal prose' } }),
     true, 'host must still allow editing ordinary user prose');
   assert.ok(
     src.includes('function isSlashCommandRecord') &&
-      src.includes('!isSlashCommandRecord(record)'),
-    'webview must exclude slash-command records from the editable real-user set');
-  ok('guard: slash-command / local-command records are non-editable (host + webview)');
+      src.includes('!isSlashCommandRecord(record)') &&
+      src.includes('function isProtocolLeakRecord') &&
+      src.includes('!isProtocolLeakRecord(record)'),
+    'webview must exclude slash-command and protocol-leak records from the editable real-user set');
+  ok('guard: slash-command / local-command / protocol-leak records are non-editable (host + webview)');
 })();
 
 console.log('\nrerun-handoff: ' + passed + ' checks PASSED');

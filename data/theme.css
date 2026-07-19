@@ -1,3 +1,17 @@
+/* Modular UI surfaces — @import must precede @font-face / other rules. */
+@import url('ui/message.css');
+@import url('ui/tool-card.css');
+@import url('ui/change-review.css');
+@import url('ui/empty-state.css');
+@import url('ui/protocol-card.css');
+
+/* ============================================================
+   Design languages (do not mix inside one component)
+   - Transcript prose: reading face + narrow column
+   - Agent chrome: UI sans + tool cards / review / composer
+   See docs/ui-roadmap.md for P0/P1/P2 tokens and acceptance.
+   ============================================================ */
+
 /* ============================================================
    Typography-led webview theme.
 
@@ -1000,7 +1014,11 @@ pre.incipit-mermaid-source {
 
 /* Full-width tool card: one dark surface per tool row, stacked with a
    small gap. Matches the common agent-panel card rhythm without pulling
-   in third-party assets. */
+   in third-party assets.
+   Border is intentionally a near-zero alpha hairline (or none): host
+   toolBody uses 0.5px `var(--app-input-border)` and our previous
+   `rgba(255,255,255,0.08–0.16)` rims stacked during streaming re-paints,
+   which users read as a white edge flash on Bash/Read cards. */
 [data-incipit-tool-use][data-incipit-tool-card="1"],
 [data-incipit-tool-use] {
   box-sizing: border-box !important;
@@ -1008,17 +1026,43 @@ pre.incipit-mermaid-source {
   max-width: 100% !important;
   margin: 2px 0 !important;
   padding: 0 !important;
-  border: 1px solid var(--incipit-tool-card-border) !important;
+  border: 1px solid transparent !important;
   border-radius: var(--incipit-tool-card-radius) !important;
   background: var(--incipit-tool-card-bg) !important;
   background-color: var(--incipit-tool-card-bg) !important;
+  box-shadow: none !important;
+  outline: none !important;
   overflow: hidden;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
+  /* Background only — animating border-color flashes the rim every
+     status/decorate pass while the tool is streaming. */
+  transition: background-color 0.12s ease;
 }
 [data-incipit-tool-use]:hover {
   background: var(--incipit-tool-card-bg-hover) !important;
   background-color: var(--incipit-tool-card-bg-hover) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+/* Host toolBody / toolBodyRow draw their own 0.5px borders with
+   --app-input-border. Neutralize them inside our card so they never
+   double up as a white rim during streaming. */
+[data-incipit-tool-use] [class*="toolBody_"],
+[data-incipit-tool-use] [class*="toolBodyRow_"],
+[data-incipit-tool-use] [class*="toolBodyGrid"],
+[data-incipit-tool-use] [data-incipit-tool-body],
+[data-incipit-tool-use] [data-incipit-tool-summary],
+[data-incipit-tool-use] details,
+[data-incipit-tool-use] summary {
+  box-shadow: none !important;
+  outline: none !important;
+}
+[data-incipit-tool-use] [class*="toolBody_"] {
+  border-color: rgba(248, 248, 246, 0.06) !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+[data-incipit-tool-use] [class*="toolBodyRow_"] {
+  border-top-color: rgba(248, 248, 246, 0.06) !important;
 }
 
 /* Summary row is a flex header:
@@ -1506,9 +1550,10 @@ pre.incipit-mermaid-source {
   overflow: hidden;
   display: block;
   margin-top: 0.4em;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 6px;
+  border: 1px solid rgba(248, 248, 246, 0.06);
+  border-radius: var(--incipit-radius-sm, 4px);
   padding: 0;
+  box-shadow: none !important;
   transition: max-height 0.22s ease,
               margin-top 0.22s ease,
               margin-bottom 0.22s ease,
@@ -1620,16 +1665,17 @@ pre.incipit-mermaid-source {
   margin: 0 !important;
 }
 [data-incipit-tool-use] [class*="toolBodyGrid"] {
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 6px;
+  border: 1px solid rgba(248, 248, 246, 0.06);
+  border-radius: var(--incipit-radius-sm, 4px);
   margin-top: 0.4em;
   overflow: hidden;
+  box-shadow: none !important;
 }
 [data-incipit-tool-use] [class*="toolResult_"] {
   background: transparent !important;
 }
 [data-incipit-tool-use] [class*="toolBodyRow"] {
-  border-top: 1px solid rgba(255, 255, 255, 0.10);
+  border-top: 1px solid rgba(248, 248, 246, 0.06);
   padding: 0;
 }
 [data-incipit-tool-use] [class*="toolBodyRow"]:first-child {
@@ -3402,6 +3448,74 @@ pre code {
   mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect x='5' y='5' width='10' height='10' rx='1.5' ry='1.5' fill='%23000'/%3E%3C/svg%3E") !important;
 }
 
+/* Continue — icon-only ghost control left of send/stop.
+   Click: interrupt live turn (if any) → send fixed text "继续". */
+[data-incipit-continue-btn] {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  width: var(--incipit-hit-md, 26px) !important;
+  height: var(--incipit-hit-md, 26px) !important;
+  min-width: var(--incipit-hit-md, 26px) !important;
+  min-height: var(--incipit-hit-md, 26px) !important;
+  margin: 0 2px 0 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  color: rgba(248, 248, 246, 0.72) !important;
+  font-size: 0 !important; /* hide any residual text */
+  line-height: 0 !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease !important;
+}
+[data-incipit-continue-btn]::before {
+  content: "" !important;
+  display: block !important;
+  width: var(--incipit-icon-md, 16px) !important;
+  height: var(--incipit-icon-md, 16px) !important;
+  background-color: currentColor !important;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5 L11 10 L4 15 Z' fill='%23000' stroke='none'/%3E%3Cpath d='M12 5 L19 10 L12 15 Z' fill='%23000' stroke='none'/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5 L11 10 L4 15 Z' fill='%23000' stroke='none'/%3E%3Cpath d='M12 5 L19 10 L12 15 Z' fill='%23000' stroke='none'/%3E%3C/svg%3E") !important;
+  -webkit-mask-size: contain !important;
+  mask-size: contain !important;
+  -webkit-mask-position: center !important;
+  mask-position: center !important;
+  -webkit-mask-repeat: no-repeat !important;
+  mask-repeat: no-repeat !important;
+}
+[data-incipit-continue-btn]:hover {
+  background: rgba(248, 248, 246, 0.08) !important;
+  background-color: rgba(248, 248, 246, 0.08) !important;
+  color: #f8f8f6 !important;
+  border: none !important;
+}
+[data-incipit-continue-btn]:focus-visible {
+  outline: 1px solid var(--incipit-status-accent, #d97757) !important;
+  outline-offset: 1px !important;
+}
+[data-incipit-continue-btn][data-incipit-inflight="1"] {
+  opacity: 0.45 !important;
+  pointer-events: none !important;
+}
+
+/* Keep send/stop row horizontal when continue icon is injected. */
+*:has(> [data-incipit-continue-btn]):has(> [data-incipit-send-button]),
+*:has(> [data-incipit-continue-btn]):has(> [class*="sendButton"]) {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 0 !important;
+}
+
 /* Composer shell.
 
    IMPORTANT: do not take over the host input container's box model. The
@@ -3530,12 +3644,12 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-change-review-turn] {
   box-sizing: border-box !important;
   width: 100% !important;
-  border-radius: 6px !important;
+  border-radius: var(--incipit-radius-md, 8px) !important;
   background: rgba(248, 248, 246, 0.022) !important;
   border: 1px solid rgba(248, 248, 246, 0.08) !important;
   color: rgba(248, 248, 246, 0.82) !important;
-  font-family: var(--incipit-body-font) !important;
-  font-size: calc(var(--incipit-body-size, 13px) - 1px) !important;
+  font-family: var(--incipit-ui-font, var(--incipit-body-font)) !important;
+  font-size: var(--incipit-type-ui, 12px) !important;
   line-height: 1.35 !important;
 }
 [data-incipit-change-review-turn-header],
@@ -3577,7 +3691,7 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   background: transparent !important;
   color: #d97757 !important;
   font-family: var(--incipit-body-font) !important;
-  font-size: 12px !important;
+  font-size: var(--incipit-type-ui, 12px) !important;
   line-height: 1.4 !important;
   padding: 2px 0 !important;
   cursor: pointer !important;
@@ -3603,8 +3717,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-change-review-error] {
   margin: 5px 0 0 !important;
   padding: 3px 8px !important;
-  border-radius: 6px !important;
-  font-size: 11px !important;
+  border-radius: var(--incipit-radius-sm, 4px) !important;
+  font-size: var(--incipit-type-caption, 11px) !important;
   line-height: 1.35 !important;
   color: #e6a08c !important;
   background: rgba(217, 119, 87, 0.12) !important;
@@ -3628,8 +3742,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   border: none !important;
   background: transparent !important;
   color: rgba(248, 248, 246, 0.5) !important;
-  font-family: var(--incipit-body-font) !important;
-  font-size: 12px !important;
+  font-family: var(--incipit-ui-font, var(--incipit-body-font)) !important;
+  font-size: var(--incipit-type-ui, 12px) !important;
   line-height: 1.4 !important;
   text-align: left !important;
   padding: 2px 0 !important;
@@ -3659,7 +3773,7 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-change-review-status] {
   flex: 0 0 auto !important;
   color: rgba(248, 248, 246, 0.52) !important;
-  font-size: 11px !important;
+  font-size: var(--incipit-type-caption, 11px) !important;
 }
 [data-incipit-change-review-source="subagent"] [data-incipit-change-review-file-name] {
   color: rgba(248, 248, 246, 0.58) !important;
@@ -3676,10 +3790,10 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   height: 18px !important;
   padding: 0 5px !important;
   border: 1px solid rgba(248, 248, 246, 0.14) !important;
-  border-radius: 5px !important;
+  border-radius: var(--incipit-radius-sm, 4px) !important;
   color: rgba(248, 248, 246, 0.52) !important;
   background: rgba(248, 248, 246, 0.045) !important;
-  font-family: var(--incipit-code-font) !important;
+  font-family: var(--incipit-ui-mono, var(--incipit-code-font)) !important;
   font-size: 10px !important;
   line-height: 1 !important;
   letter-spacing: 0 !important;
@@ -3726,8 +3840,8 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-change-review-modal-message] {
   padding: 18px !important;
   color: rgba(248, 248, 246, 0.78) !important;
-  font-family: var(--incipit-body-font) !important;
-  font-size: 13px !important;
+  font-family: var(--incipit-ui-font, var(--incipit-body-font)) !important;
+  font-size: var(--incipit-type-body, 13px) !important;
 }
 
 /* Custom model dialog.
@@ -7098,4 +7212,35 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 :where([class*="permissionRequestContainer_"]) :where([class*="button_"]):hover {
   color: var(--incipit-icon-accent) !important;
   border-color: var(--incipit-icon-accent) !important;
+}
+
+/* ============================================================
+   P1 a11y: reduced motion + focus ring baseline.
+   See docs/ui-roadmap.md.
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  [data-incipit-tool-status-dot],
+  [data-incipit-tool-status-dot][data-incipit-tool-status-value="pending"] {
+    animation: none !important;
+  }
+}
+
+/* Keyboard focus: keep a visible accent ring on incipit-owned controls
+   that are not using a more specific focus-visible rule. */
+[data-incipit-change-review-reject-turn]:focus-visible,
+[data-incipit-change-review-reject-file]:focus-visible,
+[data-incipit-change-review-file-name]:focus-visible,
+[data-incipit-change-review-more]:focus-visible,
+.incipit-transcript-action-btn:focus-visible,
+.claude-user-copy-btn:focus-visible {
+  outline: 2px solid var(--incipit-status-accent, #d97757) !important;
+  outline-offset: 2px !important;
 }

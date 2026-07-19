@@ -2,6 +2,13 @@ import { ATTR, SEL, closestByAttr } from './host_probe.js';
 import { CFG, assetURL, getActiveClaudeSessionId, locateClaudeConnection, log, reportHealth, warn, whenDOMReady } from './enhance_shared.js';
 import { defineCapability } from './capability.js';
 import { reactFiberForElement, reactFiberKeyForElement } from './capability/fingerprints/fiber.js';
+import {
+  isProtocolLeakText,
+  parseProtocolText,
+  protocolCardHeadline,
+  protocolCardTitle,
+  protocolStatusLabel,
+} from './protocol_tags.js';
 import { initLegacyIdentity } from './legacy/identity.js';
 import { initLegacyTranscriptActionDebug, initLegacyTranscriptActions } from './legacy/transcript_actions.js';
 import { initLegacyToolFold } from './legacy/tool_fold.js';
@@ -10,6 +17,7 @@ import { initLegacyForkRewind } from './legacy/fork_rewind.js';
 import { initLegacyUserBubble } from './legacy/user_bubble.js';
 import { initLegacyDeferredNext } from './legacy/deferred_next.js';
 import { initLegacyAskRefinement } from './legacy/ask_refinement.js';
+import { initLegacySurfaceState } from './legacy/surface_state.js';
 import {
   conversationIsBusy as kernelConversationIsBusy,
   getHostState as kernelGetHostState,
@@ -824,6 +832,10 @@ import {
   // (see 2026-06-07 memo: dialog-entered slash commands are unavailable).
   // incipit has no slash-command send path, so the only honest treatment
   // is to drop edit/rerun and keep copy, exactly like compact summaries.
+  //
+  // The same gate also covers host-injected task-notification /
+  // system-reminder / local-command-caveat rows, which are protocol XML
+  // rather than user prose (shared helper: `isProtocolLeakText`).
   const COMMAND_RECORD_PREFIX_RE = /^\s*<\/?(?:local-)?command-[a-z]+\b/i;
 
   function isSlashCommandRecord(record) {
@@ -831,6 +843,13 @@ import {
     const firstText = firstTextOfRecord(record);
     if (typeof firstText !== 'string') return false;
     return COMMAND_RECORD_PREFIX_RE.test(firstText);
+  }
+
+  function isProtocolLeakRecord(record) {
+    if (!record || record.type !== 'user') return false;
+    const firstText = firstTextOfRecord(record);
+    if (typeof firstText !== 'string') return false;
+    return isProtocolLeakText(firstText);
   }
 
   function isTranscriptRecord(value) {
@@ -2991,7 +3010,7 @@ import {
   let deferredDragId = null;         // id of the row being pointer-dragged
   let composerRailEl = null;
 
-  const CHANGE_REVIEW_TEXT = Object.freeze({
+  const CHANGE_REVIEW_TEXT_EN = Object.freeze({
     rejectTurn: 'Reject turn',
     rejectFile: 'Reject',
     subagentLabel: 'Sub-agent',
@@ -3010,6 +3029,60 @@ import {
     rejectFail: 'Reject failed: {msg}',
     diffFail: 'Could not open review diff: {msg}',
   });
+  const CHANGE_REVIEW_TEXT_ZH = Object.freeze({
+    rejectTurn: '拒绝本轮',
+    rejectFile: '拒绝',
+    subagentLabel: '子代理',
+    filesChanged: '{n} 个文件已更改',
+    oneFileChanged: '1 个文件已更改',
+    showMoreFiles: '再显示 {n} 个文件',
+    showMoreFile: '再显示 1 个文件',
+    showFewerFiles: '收起文件列表',
+    noFiles: '无文件变更',
+    stale: '已过期',
+    rejected: '已拒绝',
+    unavailable: '不可用',
+    close: '关闭',
+    openDiff: '打开 diff',
+    loading: '正在加载 diff…',
+    rejectFail: '拒绝失败：{msg}',
+    diffFail: '无法打开 diff：{msg}',
+  });
+  const CHANGE_REVIEW_TEXT = Object.freeze(
+    (CFG.language === 'zh' ? CHANGE_REVIEW_TEXT_ZH : CHANGE_REVIEW_TEXT_EN),
+  );
+
+  const TRANSCRIPT_ACTION_TEXT_EN = Object.freeze({
+    editUser: 'Edit user message (local history only)',
+    rerunTurn: 'Rerun this turn',
+    forkHere: 'Fork conversation from here',
+    moreActions: 'More actions',
+    rerunWithRewind: 'Rerun with code rewind',
+    forkWithRewind: 'Fork with code rewind',
+    rewindOnly: 'Rewind code only',
+    disabledStreaming: 'Disabled while streaming',
+    cannotForkFirst: 'Cannot fork from the first message',
+    copyAsText: 'Copy as text',
+    copyAsMarkdown: 'Copy as markdown',
+  });
+  const TRANSCRIPT_ACTION_TEXT_ZH = Object.freeze({
+    editUser: '编辑用户消息（仅本地历史）',
+    rerunTurn: '重跑本轮',
+    forkHere: '从此处分叉会话',
+    moreActions: '更多操作',
+    rerunWithRewind: '回退代码并重跑',
+    forkWithRewind: '回退代码并分叉',
+    rewindOnly: '仅回退代码',
+    disabledStreaming: '生成中不可用',
+    cannotForkFirst: '无法从首条消息分叉',
+    copyAsText: '复制为文本',
+    copyAsMarkdown: '复制为 Markdown',
+  });
+  function transcriptActionText(key) {
+    const table = CFG.language === 'zh' ? TRANSCRIPT_ACTION_TEXT_ZH : TRANSCRIPT_ACTION_TEXT_EN;
+    return table[key] || TRANSCRIPT_ACTION_TEXT_EN[key] || key;
+  }
+
   let changeReviewPayload = null;
   let changeReviewTurnBlockRenderScheduled = false;
   let changeReviewListenerBound = false;
@@ -4967,6 +5040,469 @@ import {
     reportHealth('legacy.deferred_next', 'ok');
   }
 
+  function surfaceStateText(kind) {
+    const en = {
+      emptyTitle: 'Start a conversation',
+      emptyBody: 'Send a message to begin. File changes will appear here after each turn.',
+      offlineTitle: 'You appear offline',
+      offlineBody: 'Reconnect to continue. Local history stays on disk.',
+      errorTitle: 'Something went wrong',
+      errorBody: 'Check the developer console or reload the window.',
+      // Mid-turn auth blip: keep the transcript, never eject to the full login wall.
+      authTitle: 'Model auth failed',
+      authBody: 'Conversation stays open. Retry the turn, or run /login only if you need to switch accounts.',
+    };
+    const zh = {
+      emptyTitle: '开始对话',
+      emptyBody: '发送消息即可开始。每轮结束后，文件改动会显示在这里。',
+      offlineTitle: '网络似乎已断开',
+      offlineBody: '重新连接后可继续。本地历史仍保存在磁盘上。',
+      errorTitle: '出了点问题',
+      errorBody: '可打开开发者工具查看，或重载窗口。',
+      authTitle: '模型鉴权失败',
+      authBody: '会话保留在当前面板。可重试本轮；仅在需要切换账号时使用 /login。',
+    };
+    const table = CFG.language === 'zh' ? zh : en;
+    return table[kind] || en[kind] || kind;
+  }
+
+  // Sticky mid-session auth failure. Offline still wins; empty is suppressed
+  // while this is set so a failed turn does not look like a cold start.
+  let surfaceAuthFailedSticky = false;
+  let surfaceAuthFailedAt = 0;
+
+  function markSurfaceAuthFailed() {
+    surfaceAuthFailedSticky = true;
+    surfaceAuthFailedAt = Date.now();
+    try { renderSurfaceStateBanner(); } catch (_) {}
+  }
+
+  function clearSurfaceAuthFailed() {
+    if (!surfaceAuthFailedSticky) return;
+    surfaceAuthFailedSticky = false;
+    surfaceAuthFailedAt = 0;
+    try { renderSurfaceStateBanner(); } catch (_) {}
+  }
+
+  function ensureSurfaceStateEl() {
+    const container = document.querySelector(SEL.messagesContainer) ||
+      document.querySelector('[class*="messagesContainer_"]');
+    if (!container) return null;
+    let el = container.querySelector(':scope > [data-incipit-surface-state]');
+    if (!el) {
+      el = document.createElement('div');
+      el.setAttribute('data-incipit-surface-state', 'empty');
+      el.setAttribute('data-incipit-surface-state-hidden', '');
+      const title = document.createElement('div');
+      title.setAttribute('data-incipit-surface-state-title', '');
+      const body = document.createElement('div');
+      body.setAttribute('data-incipit-surface-state-body', '');
+      el.appendChild(title);
+      el.appendChild(body);
+      container.appendChild(el);
+    }
+    return el;
+  }
+
+  function renderSurfaceStateBanner() {
+    const el = ensureSurfaceStateEl();
+    if (!el) return;
+    const title = el.querySelector('[data-incipit-surface-state-title]');
+    const body = el.querySelector('[data-incipit-surface-state-body]');
+    if (!title || !body) return;
+
+    let kind = null;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) kind = 'offline';
+    } catch (_) {}
+
+    if (!kind && surfaceAuthFailedSticky) kind = 'auth';
+
+    if (!kind) {
+      const container = document.querySelector(SEL.messagesContainer) ||
+        document.querySelector('[class*="messagesContainer_"]');
+      const hasMessage = !!(container && (
+        container.querySelector('[data-incipit-message]') ||
+        container.querySelector('[class*="timelineMessage"]') ||
+        container.querySelector('[class*="userMessage"]')
+      ));
+      if (!hasMessage) kind = 'empty';
+    }
+
+    if (!kind) {
+      el.setAttribute('data-incipit-surface-state-hidden', '');
+      return;
+    }
+    el.setAttribute('data-incipit-surface-state', kind);
+    el.removeAttribute('data-incipit-surface-state-hidden');
+    if (kind === 'offline') {
+      title.textContent = surfaceStateText('offlineTitle');
+      body.textContent = surfaceStateText('offlineBody');
+    } else if (kind === 'auth') {
+      title.textContent = surfaceStateText('authTitle');
+      body.textContent = surfaceStateText('authBody');
+    } else if (kind === 'error') {
+      title.textContent = surfaceStateText('errorTitle');
+      body.textContent = surfaceStateText('errorBody');
+    } else {
+      title.textContent = surfaceStateText('emptyTitle');
+      body.textContent = surfaceStateText('emptyBody');
+    }
+  }
+
+  function setupSurfaceStateBanners() {
+    const tick = () => {
+      try { renderSurfaceStateBanner(); } catch (_) {}
+    };
+    subscribeRuntime('sessionChanged', () => {
+      // A real session switch is not the mid-turn auth blip — drop sticky.
+      if (surfaceAuthFailedSticky && surfaceAuthFailedAt &&
+          (Date.now() - surfaceAuthFailedAt) > 400) {
+        clearSurfaceAuthFailed();
+      } else {
+        setTimeout(tick, 100);
+      }
+    });
+    subscribeRuntime('messagesChanged', () => setTimeout(tick, 80));
+    subscribeRuntime('busyChanged', () => setTimeout(tick, 80));
+    try {
+      window.addEventListener('online', tick);
+      window.addEventListener('offline', tick);
+    } catch (_) {}
+    setTimeout(tick, 300);
+    setTimeout(tick, 1200);
+    reportHealth('legacy.surface_state', 'ok');
+  }
+
+  // ============================================================
+  // Auth login wall guard.
+  //
+  // Host webview (index.js) does:
+  //   processMessage: if e.error === "authentication_failed" → context.showLogin()
+  //   showLogin: authStatus=null; forceLogin=true
+  //   isAuthenticated: forceLogin → false → full-page Mkt login (Claude.ai /
+  //     Console / Bedrock). That unmounts the transcript mid-turn.
+  //
+  // Cold start (never logged in) and intentional /login must still work.
+  // We only swallow showLogin while processMessage is handling
+  // authentication_failed, and reclaim a stale forceLogin when the account
+  // still has a tokenSource/subscription so a prior blip does not trap the UI.
+  // ============================================================
+  const authGuardWrappedContexts = new WeakSet();
+  const authGuardWrappedSessions = new WeakSet();
+  let authGuardSuppressLogin = false;
+  let authGuardPatchAttempts = 0;
+  let authGuardPatchTimer = 0;
+  let authGuardNotifyAt = 0;
+
+  function accountLooksAuthenticated(account) {
+    if (!account || typeof account !== 'object') return false;
+    if (account.tokenSource && account.tokenSource !== 'none') return true;
+    if (account.subscriptionType) return true;
+    return false;
+  }
+
+  function contextAccountFromAppContext(ctx) {
+    try {
+      const conn = ctx && ctx.comms && ctx.comms.connection && ctx.comms.connection.value;
+      const cfg = conn && conn.claudeConfig && conn.claudeConfig.value;
+      return cfg && cfg.account ? cfg.account : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function notifyAuthFailureInline() {
+    const now = Date.now();
+    if (now - authGuardNotifyAt < 800) return;
+    authGuardNotifyAt = now;
+    markSurfaceAuthFailed();
+    try {
+      log('auth login wall suppressed (authentication_failed mid-turn)');
+    } catch (_) {}
+  }
+
+  function reclaimForcedLoginIfStillAuthed(ctx) {
+    if (!ctx || !ctx.forceLogin || typeof ctx.forceLogin !== 'object') return false;
+    try {
+      if (ctx.forceLogin.value !== true) return false;
+      if (!accountLooksAuthenticated(contextAccountFromAppContext(ctx))) return false;
+      ctx.forceLogin.value = false;
+      clearSurfaceAuthFailed();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function wrapShowLoginOnContext(ctx) {
+    if (!ctx || typeof ctx.showLogin !== 'function') return false;
+    if (authGuardWrappedContexts.has(ctx)) {
+      reclaimForcedLoginIfStillAuthed(ctx);
+      return true;
+    }
+    const original = ctx.showLogin;
+    authGuardWrappedContexts.add(ctx);
+    ctx.showLogin = async function incipitAuthLoginGuardShowLogin(...args) {
+      if (authGuardSuppressLogin) {
+        notifyAuthFailureInline();
+        return;
+      }
+      return original.apply(this, args);
+    };
+    reclaimForcedLoginIfStillAuthed(ctx);
+    return true;
+  }
+
+  function wrapAuthGuardOnSession(session) {
+    if (!session || typeof session.processMessage !== 'function') return false;
+    if (authGuardWrappedSessions.has(session)) return true;
+    const original = session.processMessage;
+    authGuardWrappedSessions.add(session);
+    session.processMessage = function incipitAuthLoginGuardProcessMessage(e) {
+      if (e && e.type === 'assistant' && e.error === 'authentication_failed') {
+        authGuardSuppressLogin = true;
+        try {
+          notifyAuthFailureInline();
+          return original.apply(this, arguments);
+        } finally {
+          authGuardSuppressLogin = false;
+        }
+      }
+      return original.apply(this, arguments);
+    };
+    return true;
+  }
+
+  function patchAuthLoginGuardTargets() {
+    let ok = false;
+    try {
+      const ctx = locateActiveAppContext();
+      if (wrapShowLoginOnContext(ctx)) ok = true;
+    } catch (_) {}
+    try {
+      const session = locateActiveSessionState();
+      if (wrapAuthGuardOnSession(session)) ok = true;
+    } catch (_) {}
+    return ok;
+  }
+
+  function scheduleAuthLoginGuardPatch(delay = 80) {
+    if (authGuardPatchTimer) return;
+    authGuardPatchTimer = setTimeout(() => {
+      authGuardPatchTimer = 0;
+      if (!patchAuthLoginGuardTargets() && ++authGuardPatchAttempts < 36) {
+        scheduleAuthLoginGuardPatch(700);
+      }
+    }, delay);
+  }
+
+  function setupAuthLoginGuard() {
+    authGuardPatchAttempts = 0;
+    scheduleAuthLoginGuardPatch(0);
+    subscribeRuntime('sessionChanged', () => {
+      authGuardPatchAttempts = 0;
+      scheduleAuthLoginGuardPatch(0);
+    });
+    subscribeRuntime('busyChanged', () => {
+      // Re-claim if a prior forceLogin is still sticky while account looks fine.
+      try {
+        reclaimForcedLoginIfStillAuthed(locateActiveAppContext());
+      } catch (_) {}
+      scheduleAuthLoginGuardPatch(120);
+    });
+    // Cheap DOM fallback: if the full login wall already painted (stale
+    // forceLogin before our wrap), reclaim once the fiber context is up.
+    setTimeout(() => {
+      try {
+        if (document.querySelector('[class*="baseState_"], [class*="methodSelection_"]')) {
+          reclaimForcedLoginIfStillAuthed(locateActiveAppContext());
+        }
+      } catch (_) {}
+    }, 900);
+    reportHealth('legacy.auth_login_guard', 'ok');
+  }
+
+  // ---- Continue button: stop current turn (if any), then send "继续" ----
+  // Icon-only control left of host send/stop. Always ships via unwrapped
+  // session.send (Guide path). When busy, interrupt the live CLI channel
+  // first and wait for the stream to settle so the new message is a clean
+  // new turn — never queued behind deferred-next.
+  const CONTINUE_SEND_TEXT = '继续';
+  const CONTINUE_STOP_TIMEOUT_MS = 4000;
+  const CONTINUE_STOP_POLL_MS = 80;
+  let continueButtonTimer = 0;
+  let continueButtonObserver = null;
+
+  function continueButtonA11yLabel() {
+    return CFG.language === 'zh' ? '停止并继续' : 'Stop and continue';
+  }
+
+  function continueButtonTitle() {
+    return CFG.language === 'zh'
+      ? '强制停止当前回复，然后发送「继续」'
+      : 'Force-stop the current reply, then send “继续”';
+  }
+
+  function findHostSendButton() {
+    return document.querySelector('[data-incipit-send-button]') ||
+      document.querySelector('[class*="sendButton"]');
+  }
+
+  function interruptActiveClaudeTurn() {
+    try {
+      const session = locateActiveSessionState();
+      const conn = typeof locateClaudeConnection === 'function'
+        ? locateClaudeConnection()
+        : null;
+      const channelId = session && session.claudeChannelId;
+      if (channelId && conn && typeof conn.interruptClaude === 'function') {
+        try { conn.interruptClaude(channelId); } catch (_) {}
+        try { noteChannelInterrupt(); } catch (_) {}
+      }
+      if (session) {
+        try { session.claudeChannelId = null; } catch (_) {}
+      }
+      // Also click the host stop control so UI/busy state flips with us.
+      const stopBtn = findHostSendButton();
+      if (stopBtn && (
+        stopBtn.getAttribute('data-incipit-send-state') === 'stop' ||
+        sendButtonDomState() === 'stop'
+      )) {
+        try { stopBtn.click(); } catch (_) {}
+      }
+    } catch (error) {
+      warn(
+        'continue button: interrupt failed',
+        error && error.message ? error.message : error,
+      );
+    }
+  }
+
+  function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForTurnIdle(timeoutMs) {
+    const deadline = nowMs() + timeoutMs;
+    // Honour interrupt cooldown so the old CLI process can drain.
+    const since = typeof sinceLastChannelInterrupt === 'function'
+      ? sinceLastChannelInterrupt()
+      : Infinity;
+    if (since < CHANNEL_INTERRUPT_COOLDOWN_MS) {
+      await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS - since);
+    }
+    while (nowMs() < deadline) {
+      let busy = false;
+      try { busy = conversationIsBusy(); } catch (_) { busy = false; }
+      if (!busy && sendButtonDomState() !== 'stop') return true;
+      await sleepMs(CONTINUE_STOP_POLL_MS);
+    }
+    return false;
+  }
+
+  async function sendContinueMessage() {
+    const session = locateActiveSessionState();
+    if (!session) {
+      warn('continue button: no active session');
+      return;
+    }
+    const rawSend = rawSendForSession(session) || session.send;
+    if (typeof rawSend !== 'function') {
+      warn('continue button: session.send unavailable');
+      return;
+    }
+
+    let busy = false;
+    try { busy = conversationIsBusy() || sendButtonDomState() === 'stop'; }
+    catch (_) { busy = sendButtonDomState() === 'stop'; }
+
+    if (busy) {
+      interruptActiveClaudeTurn();
+      const idle = await waitForTurnIdle(CONTINUE_STOP_TIMEOUT_MS);
+      if (!idle) {
+        // Best-effort second interrupt, then send anyway so the user is
+        // not stuck — host may still accept the new turn.
+        interruptActiveClaudeTurn();
+        await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS);
+      }
+    }
+
+    try {
+      deferredNextBypassDepth++;
+      await rawSend.apply(session, [CONTINUE_SEND_TEXT, [], false]);
+    } catch (error) {
+      warn(
+        'continue button send failed:',
+        error && error.message ? error.message : error,
+      );
+    } finally {
+      deferredNextBypassDepth = Math.max(0, deferredNextBypassDepth - 1);
+    }
+  }
+
+  function ensureContinueButton() {
+    const send = findHostSendButton();
+    if (!send || !send.parentElement) return null;
+    let btn = document.querySelector('[data-incipit-continue-btn]');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-incipit-continue-btn', '');
+      // Icon-only: glyph drawn by CSS ::before mask (no text node).
+      btn.textContent = '';
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (btn.dataset.incipitInflight === '1') return;
+        btn.dataset.incipitInflight = '1';
+        Promise.resolve(sendContinueMessage()).finally(() => {
+          try { delete btn.dataset.incipitInflight; } catch (_) {}
+        });
+      });
+    }
+    const label = continueButtonA11yLabel();
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', continueButtonTitle());
+    // Keep empty — CSS owns the glyph.
+    if (btn.textContent) btn.textContent = '';
+    if (btn.parentElement !== send.parentElement || btn.nextElementSibling !== send) {
+      send.parentElement.insertBefore(btn, send);
+    }
+    return btn;
+  }
+
+function setupContinueButton() {
+    const tick = () => {
+      try { ensureContinueButton(); } catch (_) {}
+    };
+    tick();
+    if (!continueButtonTimer) {
+      continueButtonTimer = setInterval(tick, 1200);
+    }
+    if (!continueButtonObserver && typeof MutationObserver === 'function') {
+      let scheduled = false;
+      try {
+        continueButtonObserver = new MutationObserver(() => {
+          if (scheduled) return;
+          scheduled = true;
+          requestAnimationFrame(() => {
+            scheduled = false;
+            tick();
+          });
+        });
+        const root = document.body || document.documentElement;
+        if (root) {
+          continueButtonObserver.observe(root, { childList: true, subtree: true });
+        }
+      } catch (_) {
+        continueButtonObserver = null;
+      }
+    }
+    subscribeRuntime('sessionChanged', () => setTimeout(tick, 80));
+    reportHealth('legacy.continue_btn', 'ok');
+  }
+
   function setupChangeReviewFileReview() {
     setupChangeReviewChannel();
     reportHealth('legacy.change_review', 'ok');
@@ -6834,6 +7370,119 @@ import {
     return clone.textContent || '';
   }
 
+  // Collapse host-internal protocol XML that leaks into user bubbles
+  // (task-notification continuations, system-reminder rows, slash-command
+  // bookkeeping). The raw XML is never user prose — surface a compact
+  // status card and tuck the original payload under "show raw".
+  function decorateProtocolLeakBubble(bubbleEl, record) {
+    if (!bubbleEl || bubbleEl.nodeType !== 1) return;
+    if (bubbleEl.dataset.incipitProtocolDecorated === '1') {
+      // React may remount the content and drop our card; re-arm if missing.
+      if (bubbleEl.querySelector('[data-incipit-protocol-card]')) return;
+      delete bubbleEl.dataset.incipitProtocolDecorated;
+    }
+
+    let text = '';
+    if (record) {
+      text = firstTextOfRecord(record) || transcriptText(record) || '';
+    }
+    if (!text) text = userBubbleText(bubbleEl);
+    if (!isProtocolLeakText(text)) return;
+
+    const parsed = parseProtocolText(text);
+    if (!parsed || !parsed.dominant) return;
+
+    const content = userBubbleContentElement(bubbleEl) || bubbleEl;
+    // Hide the host-rendered raw XML (React owns the nodes; do not delete).
+    content.setAttribute('data-incipit-protocol-raw-hidden', '');
+
+    let card = bubbleEl.querySelector('[data-incipit-protocol-card]');
+    if (!card) {
+      card = buildProtocolCard(parsed, text);
+      // Prefer placing the card just above the content node so the action
+      // row (sibling of content) keeps its layout.
+      if (content.parentElement) {
+        content.parentElement.insertBefore(card, content);
+      } else {
+        bubbleEl.insertBefore(card, bubbleEl.firstChild);
+      }
+    } else {
+      refreshProtocolCard(card, parsed, text);
+    }
+    bubbleEl.dataset.incipitProtocolDecorated = '1';
+    bubbleEl.setAttribute('data-incipit-protocol-kind', parsed.kind);
+  }
+
+  function buildProtocolCard(parsed, rawText) {
+    const lang = CFG && CFG.language === 'zh' ? 'zh' : 'en';
+    const card = document.createElement('div');
+    card.setAttribute('data-incipit-protocol-card', '');
+    card.setAttribute('data-incipit-protocol-kind', parsed.kind);
+    card.setAttribute('data-incipit-protocol-status', parsed.status || 'info');
+
+    const head = document.createElement('div');
+    head.setAttribute('data-incipit-protocol-head', '');
+
+    const kind = document.createElement('span');
+    kind.setAttribute('data-incipit-protocol-kind-label', '');
+    kind.textContent = protocolCardTitle(parsed, lang);
+
+    const status = document.createElement('span');
+    status.setAttribute('data-incipit-protocol-status-chip', '');
+    status.textContent = protocolStatusLabel(parsed.status, lang);
+
+    const headline = document.createElement('span');
+    headline.setAttribute('data-incipit-protocol-headline', '');
+    headline.textContent = protocolCardHeadline(parsed, lang);
+
+    head.appendChild(kind);
+    head.appendChild(status);
+    head.appendChild(headline);
+    card.appendChild(head);
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.setAttribute('data-incipit-protocol-toggle', '');
+    toggle.textContent = lang === 'zh' ? '显示原始内容' : 'Show raw';
+    toggle.addEventListener('click', evt => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const open = card.getAttribute('data-incipit-protocol-expanded') === '1';
+      if (open) {
+        card.removeAttribute('data-incipit-protocol-expanded');
+        toggle.textContent = lang === 'zh' ? '显示原始内容' : 'Show raw';
+      } else {
+        card.setAttribute('data-incipit-protocol-expanded', '1');
+        toggle.textContent = lang === 'zh' ? '收起原始内容' : 'Hide raw';
+      }
+    });
+    card.appendChild(toggle);
+
+    const raw = document.createElement('pre');
+    raw.setAttribute('data-incipit-protocol-raw', '');
+    raw.textContent = rawText || parsed.raw || '';
+    card.appendChild(raw);
+
+    return card;
+  }
+
+  function refreshProtocolCard(card, parsed, rawText) {
+    if (!card || !parsed) return;
+    const lang = CFG && CFG.language === 'zh' ? 'zh' : 'en';
+    card.setAttribute('data-incipit-protocol-kind', parsed.kind);
+    card.setAttribute('data-incipit-protocol-status', parsed.status || 'info');
+    const kind = card.querySelector('[data-incipit-protocol-kind-label]');
+    if (kind) kind.textContent = protocolCardTitle(parsed, lang);
+    const status = card.querySelector('[data-incipit-protocol-status-chip]');
+    if (status) status.textContent = protocolStatusLabel(parsed.status, lang);
+    const headline = card.querySelector('[data-incipit-protocol-headline]');
+    if (headline) headline.textContent = protocolCardHeadline(parsed, lang);
+    const raw = card.querySelector('[data-incipit-protocol-raw]');
+    if (raw && raw.textContent !== (rawText || parsed.raw || '')) {
+      raw.textContent = rawText || parsed.raw || '';
+    }
+  }
+
   // Walk upward to the outer `userMessageContainer`, which hosts the sibling row.
   function findUserMessageHost(bubbleEl) {
     return closestByAttr(bubbleEl, ATTR.userMessageContainer);
@@ -6846,7 +7495,7 @@ import {
   function buildCopyDropdownItems(getMarkdown) {
     return [
       {
-        label: 'Copy as text',
+        label: transcriptActionText('copyAsText'),
         icon: COPY_AS_TEXT_ICON_SVG,
         onClick: () => {
           const md = (getMarkdown() || '').toString();
@@ -6854,7 +7503,7 @@ import {
         },
       },
       {
-        label: 'Copy as markdown',
+        label: transcriptActionText('copyAsMarkdown'),
         icon: COPY_AS_MARKDOWN_ICON_SVG,
         onClick: () => {
           copyText((getMarkdown() || '').toString());
@@ -6881,26 +7530,26 @@ import {
     const forkBlocked = busyAtOpen || !hasPrevUuid;
     return [
       {
-        label: 'Rerun with code rewind',
+        label: transcriptActionText('rerunWithRewind'),
         icon: RERUN_ICON_SVG,
         disabled: rewindBlocked,
-        title: rewindBlocked ? 'Disabled while streaming' : '',
+        title: rewindBlocked ? transcriptActionText('disabledStreaming') : '',
         onClick: () => { rerunWithRewindFromUser(liveRecord(), null); },
       },
       {
-        label: 'Fork with code rewind',
+        label: transcriptActionText('forkWithRewind'),
         icon: FORK_ICON_SVG,
         disabled: forkBlocked,
         title: forkBlocked
-          ? (busyAtOpen ? 'Disabled while streaming' : 'Cannot fork from the first message')
+          ? (busyAtOpen ? transcriptActionText('disabledStreaming') : transcriptActionText('cannotForkFirst'))
           : '',
         onClick: () => { forkWithRewindFromUser(liveRecord(), null); },
       },
       {
-        label: 'Rewind code only',
+        label: transcriptActionText('rewindOnly'),
         icon: REWIND_ONLY_ICON_SVG,
         disabled: rewindBlocked,
-        title: rewindBlocked ? 'Disabled while streaming' : '',
+        title: rewindBlocked ? transcriptActionText('disabledStreaming') : '',
         onClick: () => { rewindOnlyFromUser(liveRecord(), null); },
       },
       { type: 'separator' },
@@ -6927,7 +7576,8 @@ import {
       !record.isSynthetic &&
       !transcriptHasToolResult(record) &&
       !isCompactSummaryRecord(record) &&
-      !isSlashCommandRecord(record)
+      !isSlashCommandRecord(record) &&
+      !isProtocolLeakRecord(record)
     );
     const identity = isRealUser ? transcriptRecordIdentity(record) : null;
     // Closures below capture `record` once at decoration time; saving
@@ -6944,7 +7594,7 @@ import {
       // Pencil — open inline editor for this user record.
       row.appendChild(makeTranscriptActionButton(
         'edit',
-        'Edit user message (local history only)',
+        transcriptActionText('editUser'),
         EDIT_ICON_SVG,
         () => {
           const cur = liveRecord();
@@ -6970,7 +7620,7 @@ import {
       // multi-window setups.
       const rerunBtn = makeTranscriptActionButton(
         'rerun',
-        'Rerun this turn',
+        transcriptActionText('rerunTurn'),
         RERUN_ICON_SVG,
         () => { rerunFromUser(liveRecord(), rerunBtn); }
       );
@@ -6987,7 +7637,7 @@ import {
       if (hasPrev) {
         const forkBtn = makeTranscriptActionButton(
           'fork',
-          'Fork conversation from here',
+          transcriptActionText('forkHere'),
           FORK_ICON_SVG,
           () => { forkFromUser(liveRecord(), forkBtn); }
         );
@@ -7001,7 +7651,7 @@ import {
     // here at popup-open time.
     const moreBtn = makeTranscriptActionButton(
       'more',
-      'More actions',
+      transcriptActionText('moreActions'),
       MORE_ICON_SVG,
       () => {
         if (isRealUser) {
@@ -7435,7 +8085,7 @@ import {
       markdownRoot.removeAttribute('data-incipit-edit-hover-preview');
     });
 
-    const moreBtn = makeTranscriptActionButton('more', 'More actions', MORE_ICON_SVG, () => {
+    const moreBtn = makeTranscriptActionButton('more', transcriptActionText('moreActions'), MORE_ICON_SVG, () => {
       openActionDropdown(moreBtn, buildCopyDropdownItems(getMarkdown));
     });
     row.appendChild(moreBtn);
@@ -7482,6 +8132,9 @@ import {
     const handle = (bubble) => {
       // Interrupted messages are not real user input.
       if (bubble.querySelector(SEL.interruptedMessage)) return;
+      const record = transcriptRecordForElement(bubble) ||
+        transcriptRecordForElement(findUserMessageHost(bubble) || bubble);
+      decorateProtocolLeakBubble(bubble, record);
       addUserCopyButton(bubble);
       classifyUserBubble(bubble);
     };
@@ -9247,8 +9900,58 @@ import {
       for (const row of rows) {
         const content = row.querySelector('[class*="toolBodyRowContent"]');
         if (!content) continue;
+        // Protocol-XML tool results (task-notification payloads from
+        // Monitor/Read of .output files) collapse to a status card first;
+        // generic line truncation still applies to non-protocol rows.
+        if (decorateProtocolToolResult(content)) continue;
         applyToolRowTruncation(content, toolRowPreviewProfile(row, toolName));
       }
+    }
+
+    // Collapse a tool OUT cell whose text is a dominant host-protocol
+    // payload (task-notification, system-reminder, …). Leaves the host
+    // <pre>/toolResult nodes in place (React-owned) and overlays a
+    // compact status card. Idempotent across re-decorates.
+    function decorateProtocolToolResult(content) {
+      if (!content || content.nodeType !== 1) return false;
+      if (content.getAttribute('data-incipit-protocol-out') === '1') {
+        if (content.querySelector(':scope > [data-incipit-protocol-card]')) return true;
+        content.removeAttribute('data-incipit-protocol-out');
+      }
+
+      const clipTarget = content.querySelector('[class*="toolResult_"]') ||
+                         content.querySelector('pre') ||
+                         content;
+      const fullText = (clipTarget.textContent || '').trim();
+      if (!isProtocolLeakText(fullText)) return false;
+      const parsed = parseProtocolText(fullText);
+      if (!parsed || !parsed.dominant) return false;
+
+      // Hide the raw host nodes without deleting them.
+      content.setAttribute('data-incipit-protocol-out', '1');
+      content.setAttribute('data-incipit-protocol-kind', parsed.kind);
+      content.setAttribute('data-incipit-protocol-status', parsed.status || 'info');
+      if (clipTarget !== content) {
+        clipTarget.setAttribute('data-incipit-protocol-raw-hidden', '');
+      }
+
+      let card = content.querySelector(':scope > [data-incipit-protocol-card]');
+      if (!card) {
+        card = buildProtocolCard(parsed, fullText);
+        content.insertBefore(card, content.firstChild);
+      } else {
+        refreshProtocolCard(card, parsed, fullText);
+      }
+
+      // Drop any prior "+ N more lines" toggle — the card owns expand.
+      const oldBtn = content.querySelector(':scope > [data-incipit-tool-out-more]');
+      if (oldBtn) oldBtn.remove();
+      if (clipTarget.getAttribute &&
+          clipTarget.getAttribute('data-incipit-tool-out-clipped') !== null) {
+        clipTarget.removeAttribute('data-incipit-tool-out-clipped');
+        clipTarget.style.removeProperty('--incipit-tool-out-preview-max-height');
+      }
+      return true;
     }
 
     function toolRowPreviewProfile(row, toolName) {
@@ -10445,6 +11148,14 @@ import {
       pathEl.dataset.incipitToolFullpath = spec.path;
       pathEl.dataset.incipitToolOpenPath = spec.path;
       pathEl.dataset.incipitToolPathSource = spec.source || '';
+      // File-extension tint for tool-card path chips (ui/tool-card.css).
+      const base = String(spec.path).split(/[\\/]/).pop() || '';
+      const dot = base.lastIndexOf('.');
+      if (dot > 0 && dot < base.length - 1) {
+        pathEl.dataset.incipitFileExt = base.slice(dot + 1).toLowerCase();
+      } else {
+        delete pathEl.dataset.incipitFileExt;
+      }
       toolPathOpenSpecs.set(pathEl, spec);
 
       const opener = readHostFileOpener(toolEl);
@@ -11765,6 +12476,21 @@ import {
 
       const data = grepData;
       if (!data) return;
+
+      // Protocol-XML OUT (task-notification from Monitor/Read of .output)
+      // must still collapse on error/pending rows — those are exactly the
+      // statuses where a failed background task shows up as a blue code block.
+      // Only run the protocol detector here; generic line truncation stays
+      // on the success path so we don't change failed-Bash OUT behaviour.
+      const protocolGrid = body.querySelector('[class*="toolBodyGrid"]');
+      if (protocolGrid) {
+        const rows = protocolGrid.querySelectorAll('[class*="toolBodyRow"]');
+        for (const row of rows) {
+          const content = row.querySelector('[class*="toolBodyRowContent"]');
+          if (content) decorateProtocolToolResult(content);
+        }
+      }
+
       // Blacklist only the terminal failure states. An allowlist on 'success'
       // would silently break if Claude Code introduces a new status name
       // (e.g. 'succeeded', 'ok', 'completed') in a minor version — stats and
@@ -12108,6 +12834,8 @@ import {
       setupUserBubbleNativeActionSuppression,
       setupDeferredNextMessageQueue,
       setupChangeReviewFileReview,
+      setupSurfaceStateBanners,
+      setupAuthLoginGuard,
       setupAskRequestRefinement,
       setupCommandMenuTransientSelectionCleanup,
       setupCustomModelPicker,
@@ -12122,7 +12850,11 @@ import {
     initLegacyForkRewind(legacyContext);
     initLegacyUserBubble(legacyContext);
     initLegacyDeferredNext(legacyContext);
+    initLegacySurfaceState(legacyContext);
     setupChangeReviewFileReview();
+    setupSurfaceStateBanners();
+    setupAuthLoginGuard();
+    setupContinueButton();
     setupCommandMenuTransientSelectionCleanup();
     setupCustomModelPicker();
     setupGatewayModelPicker();

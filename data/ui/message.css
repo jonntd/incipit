@@ -1,0 +1,12 @@
+/* ui/message.css — transcript prose surface (P2 module split)
+   Agent chrome must NOT live here. See docs/ui-roadmap.md. */
+
+/* Empty conversation / offline banners are styled in empty-state.css */
+
+/* Keep assistant prose borderless during streaming (flash-free). */
+[data-incipit-message],
+[data-incipit-message] > [data-incipit-markdown-root] {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}

@@ -2828,15 +2828,34 @@ function canEditUserEntry(entry) {
   // through the model as plain text and the headless slash parser then
   // rejects it. Authoritative gate so even a malformed webview request
   // can't mutate one (matches the webview's isSlashCommandRecord).
+  // Same gate covers host-injected task-notification / system-reminder
+  // / local-command-caveat rows (matches isProtocolLeakRecord).
   if (entryLooksLikeCommandRecord(entry)) return false;
+  if (entryLooksLikeProtocolLeakRecord(entry)) return false;
   return true;
 }
 
 const COMMAND_RECORD_PREFIX_RE = /^\s*<\/?(?:local-)?command-[a-z]+\b/i;
+const PROTOCOL_LEAK_PREFIX_RE =
+  /^\s*<\/?(?:task-notification|system-reminder|local-command-caveat)\b/i;
 
 function entryLooksLikeCommandRecord(entry) {
   const firstText = editableTextFromEntry(entry);
   return typeof firstText === 'string' && COMMAND_RECORD_PREFIX_RE.test(firstText);
+}
+
+function entryLooksLikeProtocolLeakRecord(entry) {
+  const firstText = editableTextFromEntry(entry);
+  if (typeof firstText !== 'string') return false;
+  if (PROTOCOL_LEAK_PREFIX_RE.test(firstText)) return true;
+  // Dominant embedded task-notification (rare: host may prepend a short
+  // label before the XML). Cheap substring check; full parse lives in the
+  // webview pure module.
+  if (/<task-notification\b/i.test(firstText) &&
+      /<\/task-notification\s*>/i.test(firstText)) {
+    return true;
+  }
+  return false;
 }
 
 function canEditAssistantTextEntry(entry) {

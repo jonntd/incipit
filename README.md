@@ -22,6 +22,10 @@ Remove it and the extension is back to its stock state.
 
 ---
 
+## UI roadmap
+
+Surface-layer P0/P1/P2 plan and acceptance: [`docs/ui-roadmap.md`](docs/ui-roadmap.md).
+
 ## Install
 
 Requires Node.js 16 or later, and the official Claude Code extension already installed.

@@ -87,6 +87,11 @@
   --app-input-active-border: rgba(13, 13, 13, 0.20) !important;
   --app-transparent-inner-border: rgba(0, 0, 0, 0.08) !important;
   --app-transparent-border: rgba(13, 13, 13, 0.10) !important;
+  --incipit-status-success: #1c9c1c;
+  --incipit-status-pending: #a39f8e;
+  --incipit-status-error: #c92626;
+  --incipit-status-accent: #bf5d3a;
+  --incipit-status-info: #1a6fc4;
   --incipit-message-mention-chip-background: #ead8cf;
   --incipit-message-mention-chip-foreground: #8f452b;
   --incipit-message-mention-chip-background-hover: #e2c8bc;
@@ -115,9 +120,9 @@
   --incipit-tool-card-radius: 8px;
   --incipit-tool-card-fg: #0d0d0d;
   --incipit-tool-card-fg-secondary: #8c897e;
-  --incipit-tool-status-success: #1c9c1c;
-  --incipit-tool-status-pending: #a39f8e;
-  --incipit-tool-status-error: #c92626;
+  --incipit-tool-status-success: var(--incipit-status-success);
+  --incipit-tool-status-pending: var(--incipit-status-pending);
+  --incipit-tool-status-error: var(--incipit-status-error);
   /* Per-tool icon hues for cream paper — slightly darker than warm-black so
      they stay legible on #fff card surfaces. */
   --incipit-tool-icon-shell: #c4841a;
@@ -301,7 +306,10 @@
 [data-incipit-tool-use]:hover {
   background: var(--incipit-tool-card-bg-hover) !important;
   background-color: var(--incipit-tool-card-bg-hover) !important;
-  border-color: rgba(0, 0, 0, 0.14) !important;
+  /* Keep border transparent — a dark hairline still reads as a flash
+     rim when the host re-paints toolBody mid-stream. */
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 /* Restore hover-to-ink lift on the tool summary row. The mid-tone
@@ -706,10 +714,6 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 [data-incipit-change-review-turn-title] {
   color: rgba(13,13,13,0.88) !important;
 }
-[data-incipit-change-review-reject-turn],
-[data-incipit-change-review-reject-file] {
-  color: rgba(13,13,13,0.58) !important;
-}
 [data-incipit-change-review-file-name]:hover,
 [data-incipit-change-review-file][data-incipit-change-review-clickable="1"]:hover
   [data-incipit-change-review-file-name] {
@@ -758,6 +762,83 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 [data-incipit-change-review-modal-message] {
   color: rgba(13,13,13,0.74) !important;
 }
+
+
+/* Empty / offline / error surface banners on cream paper */
+[data-incipit-surface-state] {
+  border-color: rgba(13, 13, 13, 0.12) !important;
+  color: rgba(13, 13, 13, 0.58) !important;
+}
+[data-incipit-surface-state-title] {
+  color: rgba(13, 13, 13, 0.88) !important;
+}
+[data-incipit-surface-state="error"] {
+  border-color: rgba(201, 38, 38, 0.35) !important;
+  color: #a33 !important;
+}
+[data-incipit-surface-state="error"] [data-incipit-surface-state-title] {
+  color: #c92626 !important;
+}
+[data-incipit-surface-state="offline"] {
+  border-color: rgba(191, 93, 58, 0.35) !important;
+}
+[data-incipit-surface-state="offline"] [data-incipit-surface-state-title] {
+  color: #bf5d3a !important;
+}
+[data-incipit-surface-state="auth"] {
+  border-color: rgba(191, 93, 58, 0.4) !important;
+  color: rgba(140, 80, 40, 0.9) !important;
+}
+[data-incipit-surface-state="auth"] [data-incipit-surface-state-title] {
+  color: #bf5d3a !important;
+}
+
+/* Protocol leak cards (task-notification / system-reminder) on cream paper */
+[data-incipit-protocol-card] {
+  border-color: rgba(13, 13, 13, 0.12) !important;
+  background: rgba(13, 13, 13, 0.04) !important;
+  color: rgba(13, 13, 13, 0.86) !important;
+}
+[data-incipit-protocol-kind-label] {
+  color: rgba(13, 13, 13, 0.55) !important;
+  opacity: 1;
+}
+[data-incipit-protocol-headline] {
+  color: rgba(13, 13, 13, 0.88) !important;
+  opacity: 1;
+}
+[data-incipit-protocol-status-chip] {
+  background: rgba(13, 13, 13, 0.06) !important;
+  color: rgba(13, 13, 13, 0.72) !important;
+}
+[data-incipit-protocol-card][data-incipit-protocol-status="error"]
+  [data-incipit-protocol-status-chip] {
+  background: rgba(201, 38, 38, 0.12) !important;
+  color: #c92626 !important;
+}
+[data-incipit-protocol-card][data-incipit-protocol-status="success"]
+  [data-incipit-protocol-status-chip] {
+  background: rgba(46, 125, 50, 0.12) !important;
+  color: #2e7d32 !important;
+}
+[data-incipit-protocol-card][data-incipit-protocol-status="pending"]
+  [data-incipit-protocol-status-chip] {
+  background: rgba(191, 93, 58, 0.12) !important;
+  color: #bf5d3a !important;
+}
+[data-incipit-protocol-toggle] {
+  color: rgba(13, 13, 13, 0.5) !important;
+}
+[data-incipit-protocol-toggle]:hover,
+[data-incipit-protocol-toggle]:focus-visible {
+  color: rgba(13, 13, 13, 0.82) !important;
+}
+[data-incipit-protocol-raw] {
+  background: rgba(13, 13, 13, 0.04) !important;
+  border-color: rgba(13, 13, 13, 0.1) !important;
+  color: rgba(13, 13, 13, 0.7) !important;
+}
+
 [data-incipit-custom-model-action]::after {
   color: rgba(180,84,58,0.56) !important;
 }
@@ -1995,4 +2076,18 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 .incipit-prompt-enhancer-status[data-kind="warn"] {
   background: rgba(154, 107, 47, 0.12);
   color: #7a541f;
+}
+
+/* Continue — ghost on paper (match model-picker / notes) */
+[data-incipit-continue-btn] {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: rgba(13, 13, 13, 0.62) !important;
+  border: none !important;
+}
+[data-incipit-continue-btn]:hover {
+  background: rgba(13, 13, 13, 0.06) !important;
+  background-color: rgba(13, 13, 13, 0.06) !important;
+  color: #0d0d0d !important;
+  border: none !important;
 }

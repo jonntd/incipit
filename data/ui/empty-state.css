@@ -1,0 +1,65 @@
+/* ui/empty-state.css — empty / error / offline banners (P2) */
+
+[data-incipit-surface-state] {
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: var(--incipit-space-2, 8px) !important;
+  width: 100% !important;
+  max-width: var(--incipit-conversation-column-width, 720px) !important;
+  margin: 24px auto !important;
+  padding: 20px 16px !important;
+  border-radius: var(--incipit-radius-md, 8px) !important;
+  border: 1px dashed var(--incipit-tool-card-border, rgba(248, 248, 246, 0.12)) !important;
+  background: transparent !important;
+  color: var(--incipit-tool-card-fg-secondary, #9c9c9a) !important;
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: var(--incipit-type-ui, 12px) !important;
+  text-align: center !important;
+  line-height: 1.45 !important;
+  user-select: none !important;
+}
+
+[data-incipit-surface-state][data-incipit-surface-state-hidden] {
+  display: none !important;
+}
+
+[data-incipit-surface-state-title] {
+  color: var(--incipit-tool-card-fg, #e8e8e6) !important;
+  font-size: var(--incipit-type-title, 15px) !important;
+  font-weight: 500 !important;
+}
+
+[data-incipit-surface-state-body] {
+  max-width: 36em !important;
+  opacity: 0.85 !important;
+}
+
+[data-incipit-surface-state="error"] {
+  border-style: solid !important;
+  border-color: rgba(242, 85, 90, 0.35) !important;
+  color: #f0a8ab !important;
+}
+[data-incipit-surface-state="error"] [data-incipit-surface-state-title] {
+  color: #f2555a !important;
+}
+
+[data-incipit-surface-state="offline"] {
+  border-style: solid !important;
+  border-color: rgba(229, 165, 75, 0.35) !important;
+}
+[data-incipit-surface-state="offline"] [data-incipit-surface-state-title] {
+  color: #e5a54b !important;
+}
+
+/* Mid-turn authentication_failed — sticky banner, not the full login wall. */
+[data-incipit-surface-state="auth"] {
+  border-style: solid !important;
+  border-color: rgba(229, 165, 75, 0.4) !important;
+  color: #e8c99a !important;
+}
+[data-incipit-surface-state="auth"] [data-incipit-surface-state-title] {
+  color: #e5a54b !important;
+}

@@ -1,0 +1,146 @@
+/* ui/protocol-card.css — host-internal protocol leak surface
+   Collapses raw <task-notification> / system-reminder / command XML
+   into a compact status card. Agent chrome (UI sans), never Reading. */
+
+[data-incipit-protocol-card] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--incipit-space-1, 4px);
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border-radius: var(--incipit-radius-md, 6px);
+  border: 1px solid color-mix(in srgb, var(--app-text-color, #e8e4dc) 12%, transparent);
+  background: color-mix(in srgb, var(--app-text-color, #e8e4dc) 5%, transparent);
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: var(--incipit-type-ui, 12px);
+  line-height: 1.4;
+  color: var(--app-text-color, #e8e4dc);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+[data-incipit-protocol-head] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+[data-incipit-protocol-kind-label] {
+  font-weight: 600;
+  font-size: var(--incipit-type-caption, 11px);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  flex: 0 0 auto;
+}
+
+[data-incipit-protocol-status-chip] {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 0 6px;
+  min-height: 18px;
+  border-radius: var(--incipit-radius-pill, 999px);
+  font-size: var(--incipit-type-caption, 11px);
+  font-weight: 600;
+  line-height: 1;
+  background: color-mix(in srgb, var(--app-text-color, #e8e4dc) 10%, transparent);
+  color: inherit;
+}
+
+[data-incipit-protocol-card][data-incipit-protocol-status="error"]
+  [data-incipit-protocol-status-chip] {
+  background: color-mix(in srgb, var(--incipit-status-error, #e06c75) 22%, transparent);
+  color: var(--incipit-status-error, #e06c75);
+}
+
+[data-incipit-protocol-card][data-incipit-protocol-status="success"]
+  [data-incipit-protocol-status-chip] {
+  background: color-mix(in srgb, var(--incipit-status-success, #98c379) 22%, transparent);
+  color: var(--incipit-status-success, #98c379);
+}
+
+[data-incipit-protocol-card][data-incipit-protocol-status="pending"]
+  [data-incipit-protocol-status-chip] {
+  background: color-mix(in srgb, var(--incipit-status-pending, #e5c07b) 22%, transparent);
+  color: var(--incipit-status-pending, #e5c07b);
+}
+
+[data-incipit-protocol-card][data-incipit-protocol-status="cancelled"]
+  [data-incipit-protocol-status-chip] {
+  background: color-mix(in srgb, var(--app-text-color, #e8e4dc) 12%, transparent);
+  opacity: 0.85;
+}
+
+[data-incipit-protocol-headline] {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--app-text-color, #e8e4dc);
+  opacity: 0.92;
+}
+
+[data-incipit-protocol-toggle] {
+  align-self: flex-start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--app-text-color, #e8e4dc) 62%, transparent);
+  font: inherit;
+  font-size: var(--incipit-type-caption, 11px);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+[data-incipit-protocol-toggle]:hover,
+[data-incipit-protocol-toggle]:focus-visible {
+  color: var(--app-text-color, #e8e4dc);
+  outline: none;
+}
+
+[data-incipit-protocol-raw] {
+  display: none;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 16em;
+  overflow: auto;
+  border-radius: var(--incipit-radius-sm, 4px);
+  background: color-mix(in srgb, var(--app-text-color, #e8e4dc) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-text-color, #e8e4dc) 8%, transparent);
+  font-family: var(--incipit-ui-mono, ui-monospace, monospace) !important;
+  font-size: var(--incipit-type-caption, 11px);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: color-mix(in srgb, var(--app-text-color, #e8e4dc) 78%, transparent);
+}
+
+[data-incipit-protocol-card][data-incipit-protocol-expanded="1"]
+  [data-incipit-protocol-raw] {
+  display: block;
+}
+
+/* Host-rendered raw XML (user bubble content / tool OUT pre) stays in the
+   tree for React ownership but is hidden once the card is mounted. */
+[data-incipit-protocol-raw-hidden] {
+  display: none !important;
+}
+
+/* Tool OUT cell that was rewritten to a protocol card: drop the host
+   blue/code wash so the card sits on the tool surface. */
+[data-incipit-protocol-out="1"] {
+  background: transparent !important;
+  padding-top: 2px !important;
+}
+
+[data-incipit-protocol-out="1"] > [data-incipit-protocol-card] {
+  margin-top: 0;
+  margin-bottom: 0;
+  width: 100%;
+}

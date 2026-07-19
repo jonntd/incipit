@@ -389,7 +389,7 @@ function cssRuleBody(selector) {
     setup.includes('removeCurrentBusyChangeReviewTurnBlocks();') &&
     setup.includes('notifyChangeReviewTurnFinalized();') &&
     setup.includes('scheduleChangeReviewTurnBlocksRender();'),
-    'transcript review blocks are appended after assistantTurnFinalized only when composite busy is false');
+    'assistantTurnFinalized always notifies host; cards paint when idle (busy only defers paint)');
   assert.ok(conversationBusy.includes('return conversationBusyTriState() === true;') &&
     !conversationBusy.includes('return !!kernelConversationIsBusy();') &&
     legacy.includes('function conversationBusyTriState()') &&
@@ -800,6 +800,106 @@ function cssRuleBody(selector) {
     !legacy.includes("deferredText('close')") && !legacy.includes("deferredText('moreTitle')"),
     'the redundant kebab (Edit + duplicate-Delete) must be gone');
   ok('UI: dark + warm-white queue treatment, scroll cap, flattened action row');
+})();
+
+// ---- UI roadmap P0/P1 contracts (docs/ui-roadmap.md) ----
+(function uiRoadmapP0P1Contracts() {
+  // P0: first-paint border tokens (flash-free streaming frames)
+  for (const tok of [
+    '--app-input-border:',
+    '--app-input-active-border:',
+    '--app-transparent-inner-border:',
+    '--app-transparent-border:',
+  ]) {
+    assert.ok(theme.includes(tok), 'theme first-paint missing ' + tok);
+    assert.ok(warm.includes(tok), 'warm-white first-paint missing ' + tok);
+  }
+  assert.ok(shared.includes("'--app-input-border'") || shared.includes('"--app-input-border"') ||
+    shared.includes('--app-input-border'),
+    'enhance_shared APP_VAR_OVERRIDES must re-assert input border tokens');
+  assert.ok(theme.includes('Streaming re-paints host frames') ||
+    theme.includes('box-shadow: none !important'),
+    'assistant message frames must suppress host inset rims');
+
+  // P0: design / status tokens
+  for (const tok of [
+    '--incipit-type-caption',
+    '--incipit-type-ui',
+    '--incipit-type-body',
+    '--incipit-type-title',
+    '--incipit-space-1',
+    '--incipit-radius-md',
+    '--incipit-status-success',
+    '--incipit-status-error',
+    '--incipit-status-accent',
+  ]) {
+    assert.ok(theme.includes(tok), 'theme design token missing ' + tok);
+  }
+  assert.ok(
+    theme.includes('--incipit-conversation-column-width: min(720px, 100% - 24px)') ||
+    theme.includes('min(720px, 100% - 24px)'),
+    'conversation column must be responsive (min 720px / 100%-24px), not a fixed 570px',
+  );
+
+  // P0: tool status map — cancelled is success; Plan tools get icons
+  const statusFn = functionBody('normalizeExplicitHostStatus', 900);
+  assert.ok(statusFn.includes("s === 'cancelled'") && statusFn.includes("return 'success'"),
+    'cancelled/canceled host status must map to success (ExitPlanMode stay-in-plan)');
+  assert.ok(statusFn.includes("s === 'rejected'") && statusFn.includes("return 'error'"),
+    'rejected remains an error terminal state');
+  assert.ok(legacy.includes('ExitPlanMode:') && legacy.includes('EnterPlanMode:') &&
+    legacy.includes('CreatePlan:'),
+    'Plan tool family must have dedicated card icons');
+  const resolveStatus = functionBody('resolveToolCardStatus', 1800);
+  assert.ok(resolveStatus.includes('isPlanTool') && resolveStatus.includes('/Plan/i'),
+    'resolveToolCardStatus must special-case Plan tools so non-error results stay green');
+
+  // P0: change-review mount + finalize (visibility contracts)
+  assert.ok(legacy.includes('function changeReviewHasMissingMounts') &&
+    legacy.includes('function scheduleChangeReviewMountRetry') &&
+    legacy.includes('CHANGE_REVIEW_MOUNT_RETRY_MAX'),
+    'change-review must expose missing-mount detection + bounded retry');
+  const setupReview = functionBody('setupChangeReviewFileReview', 3200);
+  assert.ok(setupReview.indexOf('notifyChangeReviewTurnFinalized()') <
+    setupReview.indexOf('if (changeReviewBusySafe())', setupReview.indexOf("assistantTurnFinalized")),
+    'finalize notify must run before any busy early-return in assistantTurnFinalized');
+  const placeReview = functionBody('placeChangeReviewTurnBlock', 2200);
+  assert.ok(placeReview.includes('actionRow') && placeReview.includes('markdownRoot') &&
+    placeReview.includes('appendChild(block)'),
+    'placeChangeReviewTurnBlock must fall back when action row is absent');
+
+  // P1: reduced motion + focus ring
+  assert.ok(theme.includes('prefers-reduced-motion') &&
+    theme.includes('animation-duration: 0.01ms'),
+    'theme must respect prefers-reduced-motion');
+  assert.ok(theme.includes(':focus-visible') &&
+    theme.includes('incipit-status-accent'),
+    'key interactive controls need accent focus-visible rings');
+
+  // P1: zh UI strings for review + transcript actions
+  assert.ok(legacy.includes('CHANGE_REVIEW_TEXT_ZH') &&
+    legacy.includes('拒绝本轮') &&
+    legacy.includes('{n} 个文件已更改'),
+    'change-review must ship a zh string table');
+  assert.ok(legacy.includes('TRANSCRIPT_ACTION_TEXT_ZH') &&
+    legacy.includes('function transcriptActionText') &&
+    legacy.includes('重跑本轮') &&
+    legacy.includes('仅回退代码'),
+    'transcript actions must ship zh labels via transcriptActionText()');
+  assert.ok(legacy.includes("transcriptActionText('editUser')") &&
+    legacy.includes("transcriptActionText('rerunTurn')") &&
+    legacy.includes("transcriptActionText('moreActions')") &&
+    legacy.includes("transcriptActionText('rewindOnly')"),
+    'user bubble / more menu must call transcriptActionText, not hard-coded English');
+
+  // Roadmap doc present
+  const roadmap = fs.existsSync(path.join(__dirname, '..', 'docs', 'ui-roadmap.md'))
+    ? fs.readFileSync(path.join(__dirname, '..', 'docs', 'ui-roadmap.md'), 'utf8')
+    : '';
+  assert.ok(roadmap.includes('## P0') && roadmap.includes('## P1') && roadmap.includes('## P2'),
+    'docs/ui-roadmap.md must document P0/P1/P2');
+
+  ok('UI roadmap P0/P1: tokens, flash-free borders, status map, review mount, zh chrome');
 })();
 
 console.log('\ndeferred-next: ' + passed + ' checks PASSED');

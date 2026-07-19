@@ -1,0 +1,22 @@
+/* ui/change-review.css — per-turn file review cards (P2 module split)
+   Layout rules remain in theme.css for now; this file holds additive
+   session-aware chrome and status token aliases. */
+
+[data-incipit-change-review-turn] {
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: var(--incipit-type-ui, 12px) !important;
+}
+
+[data-incipit-change-review-turn-title] [data-incipit-tool-added],
+[data-incipit-change-review-counts] [data-incipit-tool-added] {
+  color: var(--incipit-status-success, #3dd68c) !important;
+}
+[data-incipit-change-review-turn-title] [data-incipit-tool-removed],
+[data-incipit-change-review-counts] [data-incipit-tool-removed] {
+  color: var(--incipit-status-error, #f2555a) !important;
+}
+
+[data-incipit-change-review-reject-turn],
+[data-incipit-change-review-reject-file] {
+  color: var(--incipit-status-accent, #d97757) !important;
+}

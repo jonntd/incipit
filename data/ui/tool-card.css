@@ -1,0 +1,82 @@
+/* ui/tool-card.css — agent tool chrome (P2 module split)
+   No Reading/Emphasis serif on tool summaries. */
+
+/* Flash-free card shell: no bright white rim while streaming re-paints. */
+[data-incipit-tool-use][data-incipit-tool-card="1"],
+[data-incipit-tool-use] {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+[data-incipit-tool-use]:hover {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+[data-incipit-tool-use] [class*="toolBody_"],
+[data-incipit-tool-use] [class*="toolBodyGrid"],
+[data-incipit-tool-use] [class*="toolBodyRow_"] {
+  box-shadow: none !important;
+}
+
+/* File-extension tint on path chips (set by JS data-incipit-file-ext). */
+[data-incipit-tool-fullpath][data-incipit-file-ext="js"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="ts"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="jsx"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="tsx"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="mjs"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="cjs"] {
+  color: #e5c07b !important; /* JS/TS gold */
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="py"] {
+  color: #61afef !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="rs"] {
+  color: #e06c75 !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="go"] {
+  color: #56b6c2 !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="css"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="scss"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="less"] {
+  color: #c678dd !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="html"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="htm"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="vue"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="svelte"] {
+  color: #e06c75 !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="json"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="yaml"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="yml"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="toml"] {
+  color: #98c379 !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="md"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="mdx"] {
+  color: #abb2bf !important;
+}
+[data-incipit-tool-fullpath][data-incipit-file-ext="sh"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="bash"],
+[data-incipit-tool-fullpath][data-incipit-file-ext="zsh"] {
+  color: var(--incipit-tool-icon-shell, #e5a54b) !important;
+}
+
+/* MCP tools: kind often contains "__" or starts with mcp. */
+[data-incipit-tool-use][data-incipit-tool-kind*="__"] [data-incipit-tool-icon],
+[data-incipit-tool-use][data-incipit-tool-kind^="mcp" i] [data-incipit-tool-icon],
+[data-incipit-tool-use][data-incipit-tool-kind^="MCP"] [data-incipit-tool-icon] {
+  color: #d19a66 !important; /* warm MCP amber-orange */
+}
+
+/* Guard: tool summary must use UI font, never Reading/Emphasis. */
+[data-incipit-tool-use] [data-incipit-tool-summary],
+[data-incipit-tool-use] [data-incipit-tool-summary] * {
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-fullpath],
+[data-incipit-tool-use] [data-incipit-tool-summary] [class*="filePath_"],
+[data-incipit-tool-use] [data-incipit-tool-summary] code {
+  font-family: var(--incipit-ui-mono, ui-monospace, monospace) !important;
+}

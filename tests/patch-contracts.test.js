@@ -332,8 +332,8 @@ function assertRuntimeSourceContracts() {
     'installer must collect structured install contracts including hostRoute/I1/I2, inject __incipitInstallManifest, and expose them in the apply report',
   );
   assert(
-    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media']"),
-    'installer must copy capability/, legacy/, mermaid/, and hunkwise_media/ webview asset subtrees',
+    install.includes("const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media', 'ui']"),
+    'installer must copy capability/, legacy/, mermaid/, hunkwise_media/, and ui/ webview asset subtrees',
   );
   assert(
     install.includes('function patchCspDirective(') &&
@@ -397,6 +397,12 @@ function assertRuntimeSourceContracts() {
       markdownPreprocess.includes('inlineCodeEnd(text, i)') &&
       markdownPreprocess.includes('startsAsciiFolded(text, i,'),
     'markdown preprocess must copy the cached URL-boundary normalizer and run it before the optional math pass without touching code spans',
+  );
+  assert(
+    install.includes("[path.join('data', 'protocol_tags.js'),") &&
+      install.includes("'protocol_tags.js'") &&
+      fs.existsSync(path.join(__dirname, '..', 'data', 'protocol_tags.js')),
+    'installer must copy data/protocol_tags.js into the webview root assets',
   );
   assert(
     typography.includes('function renderTableBreakTextNodes(') &&

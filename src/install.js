@@ -55,6 +55,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'host_probe.js'), 'host_probe.js'],
   [path.join('data', 'host-badge.cjs'), 'host-badge.cjs'],
   [path.join('data', 'markdown_preprocess.js'), 'markdown_preprocess.js'],
+  [path.join('data', 'protocol_tags.js'), 'protocol_tags.js'],
   [path.join('data', 'math_tokens.js'), 'math_tokens.js'],
   [path.join('data', 'math_rewriter.js'), 'math_rewriter.js'],
   [path.join('data', 'theme.css'), THEME_TARGET_NAME],
@@ -71,7 +72,7 @@ const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
 // Sync the whole subtree so math, highlighting, fonts, and mermaid work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media'];
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media', 'ui'];
 const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({
   legacy: new Set(['session_status.js']),
 });
