@@ -11371,6 +11371,197 @@ import {
     //     text-selection for the filename, per user request.
     // Everything else in the row (tool label, whitespace, +N / -M,
     // chevron) toggles the fold.
+    //
+    // Tool-card chrome (left glyph + right status dot) mirrors the common
+    // "full-width dark tool row" layout used by modern agent UIs. Glyphs
+    // are original inline SVGs keyed off `block.name`; status comes from
+    // the fiber tool-use status. No third-party assets are embedded.
+    const TOOL_CARD_ICONS = {
+      Bash: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2.5 3.25a.75.75 0 0 1 1.06 0L6.8 6.5 3.56 9.75a.75.75 0 1 1-1.06-1.06L4.69 6.5 2.5 4.31a.75.75 0 0 1 0-1.06Zm4.75 7a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-6Z"/></svg>',
+      PowerShell: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2.5 3.25a.75.75 0 0 1 1.06 0L6.8 6.5 3.56 9.75a.75.75 0 1 1-1.06-1.06L4.69 6.5 2.5 4.31a.75.75 0 0 1 0-1.06Zm4.75 7a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-6Z"/></svg>',
+      BashOutput: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2.5 3.25a.75.75 0 0 1 1.06 0L6.8 6.5 3.56 9.75a.75.75 0 1 1-1.06-1.06L4.69 6.5 2.5 4.31a.75.75 0 0 1 0-1.06Zm4.75 7a.75.75 0 0 0 0 1.5h6a.75.75 0 0 0 0-1.5h-6Z"/></svg>',
+      KillShell: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4.28 3.22a.75.75 0 0 0-1.06 1.06L6.94 8l-3.72 3.72a.75.75 0 1 0 1.06 1.06L8 9.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L9.06 8l3.72-3.72a.75.75 0 0 0-1.06-1.06L8 6.94 4.28 3.22Z"/></svg>',
+      Read: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h6a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 11 15H5a1.5 1.5 0 0 1-1.5-1.5v-11ZM5 2.5v11h6v-11H5Zm1 2.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5h-2.5A.75.75 0 0 1 6 4.75Zm0 3a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5h-2.5A.75.75 0 0 1 6 7.75Z"/></svg>',
+      Write: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.78 1.72a.75.75 0 0 1 1.06 0l1.44 1.44a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 0 1-.33.2l-3 1a.75.75 0 0 1-.95-.95l1-3a.75.75 0 0 1 .2-.33l7.5-7.5Zm.53 1.59L5.56 9.99l-.44 1.33 1.33-.44 6.68-6.68-.82-.89Z"/></svg>',
+      Edit: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.78 1.72a.75.75 0 0 1 1.06 0l1.44 1.44a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 0 1-.33.2l-3 1a.75.75 0 0 1-.95-.95l1-3a.75.75 0 0 1 .2-.33l7.5-7.5Zm.53 1.59L5.56 9.99l-.44 1.33 1.33-.44 6.68-6.68-.82-.89Z"/></svg>',
+      MultiEdit: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.78 1.72a.75.75 0 0 1 1.06 0l1.44 1.44a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 0 1-.33.2l-3 1a.75.75 0 0 1-.95-.95l1-3a.75.75 0 0 1 .2-.33l7.5-7.5Zm.53 1.59L5.56 9.99l-.44 1.33 1.33-.44 6.68-6.68-.82-.89Z"/></svg>',
+      Grep: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10.5 9.5a4.5 4.5 0 1 0-1 1l3.25 3.25a.75.75 0 1 0 1.06-1.06L10.5 9.5Zm-4 0a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"/></svg>',
+      Glob: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3.38c.4 0 .78.16 1.06.44L9 3.5h3.5A1.5 1.5 0 0 1 14 5v7.5A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5v-9Zm1.5 0v9h9V5H8.56L7.5 3.94 6.94 3.5H3.5Z"/></svg>',
+      LS: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3.38c.4 0 .78.16 1.06.44L9 3.5h3.5A1.5 1.5 0 0 1 14 5v7.5A1.5 1.5 0 0 1 12.5 14h-9A1.5 1.5 0 0 1 2 12.5v-9Zm1.5 0v9h9V5H8.56L7.5 3.94 6.94 3.5H3.5Z"/></svg>',
+      WebFetch: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM3.05 7h2.1a9.6 9.6 0 0 0-.1 1 9.6 9.6 0 0 0 .1 1h-2.1a5 5 0 0 1 0-2Zm.7-1.5h1.72A8.4 8.4 0 0 1 7.5 2.6 5.01 5.01 0 0 0 3.75 5.5Zm3.75 0h1a8.4 8.4 0 0 0-1-2.4 8.4 8.4 0 0 0-1 2.4h1Zm0 1.5a8.1 8.1 0 0 0 0 2h1a8.1 8.1 0 0 0 0-2H7.5Zm-1 3.5h-1.72A5.01 5.01 0 0 0 7.5 13.4a8.4 8.4 0 0 1-2.03-2.9Zm2 0h1.72A8.4 8.4 0 0 1 8.5 13.4 5.01 5.01 0 0 0 12.25 10.5H10.5Zm1.65-1.5h2.1a5 5 0 0 0 0-2h-2.1a9.6 9.6 0 0 1 .1 1 9.6 9.6 0 0 1-.1 1Z"/></svg>',
+      WebSearch: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10.5 9.5a4.5 4.5 0 1 0-1 1l3.25 3.25a.75.75 0 1 0 1.06-1.06L10.5 9.5Zm-4 0a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"/></svg>',
+      Task: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 2.75A.75.75 0 0 1 5.75 2h4.5a.75.75 0 0 1 0 1.5h-4.5A.75.75 0 0 1 5 2.75ZM3.5 5A1.5 1.5 0 0 1 5 3.5h6A1.5 1.5 0 0 1 12.5 5v7A1.5 1.5 0 0 1 11 13.5H5A1.5 1.5 0 0 1 3.5 12V5Zm1.5 0v7h6V5H5Zm1.22 2.28a.75.75 0 0 1 1.06 0L8 7.94l1.72-1.72a.75.75 0 1 1 1.06 1.06l-2.25 2.25a.75.75 0 0 1-1.06 0L6.22 8.34a.75.75 0 0 1 0-1.06Z"/></svg>',
+      TodoWrite: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.75A.75.75 0 0 1 4.25 2h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 3.5 2.75Zm0 4A.75.75 0 0 1 4.25 6h7.5a.75.75 0 0 1 0 1.5h-7.5A.75.75 0 0 1 3.5 6.75Zm0 4A.75.75 0 0 1 4.25 10h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1-.75-.75Z"/></svg>',
+      Agent: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.75a.75.75 0 0 1 .75.75v.76a5.25 5.25 0 0 1 4 4.74h.75a.75.75 0 0 1 0 1.5h-.75a5.25 5.25 0 0 1-4 4.74v.76a.75.75 0 0 1-1.5 0v-.76a5.25 5.25 0 0 1-4-4.74H2.5a.75.75 0 0 1 0-1.5h.75a5.25 5.25 0 0 1 4-4.74V2.5A.75.75 0 0 1 8 1.75Zm0 2.5A3.75 3.75 0 1 0 11.75 8 3.75 3.75 0 0 0 8 4.25Z"/></svg>',
+      NotebookEdit: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h6a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 11 15H5a1.5 1.5 0 0 1-1.5-1.5v-11ZM5 2.5v11h6v-11H5Z"/></svg>',
+      Skill: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5 9.7 5.3 13.8 5.7 10.7 8.5 11.6 12.5 8 10.4 4.4 12.5 5.3 8.5 2.2 5.7 6.3 5.3 8 1.5Z"/></svg>',
+      AskUserQuestion: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM7.25 5.1c0-.55.4-1 1-1s1 .45 1 1c0 .4-.2.65-.55.95-.4.35-.7.7-.7 1.2v.25a.75.75 0 0 0 1.5 0v-.1c0-.15.08-.3.3-.5.45-.4 1.2-1 1.2-2 0-1.4-1.1-2.5-2.75-2.5S5.5 3.7 5.5 5.1a.75.75 0 0 0 1.5 0Zm.75 6.65a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Z"/></svg>',
+      default: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 3.75A.75.75 0 0 1 3.75 3h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 3 3.75Zm0 4A.75.75 0 0 1 3.75 7h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 3 7.75Zm0 4A.75.75 0 0 1 3.75 11h5.5a.75.75 0 0 1 0 1.5h-5.5A.75.75 0 0 1 3 11.75Z"/></svg>'
+    };
+
+    // Map a host-provided status string. Empty/undefined is NOT pending —
+    // Claude Code often omits `memoizedProps.status` even on finished tools.
+    // Returning null means "no explicit host status; try other signals".
+    function normalizeExplicitHostStatus(status) {
+      if (status == null || status === '') return null;
+      const s = String(status).toLowerCase();
+      if (
+        s === 'pending' || s === 'running' || s === 'in_progress' ||
+        s === 'in-progress' || s === 'queued' || s === 'started'
+      ) {
+        return 'pending';
+      }
+      if (
+        s === 'error' || s === 'failed' || s === 'failure' ||
+        s === 'cancelled' || s === 'canceled' || s === 'rejected'
+      ) {
+        return 'error';
+      }
+      // success / completed / ok / succeeded / done / any other terminal label
+      return 'success';
+    }
+
+    // Quiet peek at the paired tool_result — does not emit the once-per-id
+    // console.warn that `readToolResult` uses for diagnostics.
+    function peekToolResult(useBlock, el) {
+      if (!useBlock || !el) return null;
+      const result = toolResultSignalCap.read({ useBlock, el });
+      return result && result.ok ? result.value : null;
+    }
+
+    // Resolve the status-dot color for a tool row.
+    // Priority:
+    //   1. Explicit host fiber status when present
+    //   2. Paired tool_result (is_error → red, otherwise green)
+    //   3. Settled heuristics that match the fold blacklist (undefined
+    //      status is treated as complete, not pending)
+    //   4. Pending only when we still have no result and no settle cue
+    function resolveToolCardStatus(el, data) {
+      const explicit = normalizeExplicitHostStatus(data && data.status);
+      if (explicit === 'pending' || explicit === 'error' || explicit === 'success') {
+        // Host says pending, but a tool_result may already be present (race
+        // during the last paint). Prefer the result when we have one.
+        if (explicit === 'pending' && data && data.block) {
+          const tr = peekToolResult(data.block, el);
+          if (tr) {
+            if (tr.is_error === true || tr.isError === true) return 'error';
+            return 'success';
+          }
+        }
+        return explicit;
+      }
+
+      if (data && data.block) {
+        const tr = peekToolResult(data.block, el);
+        if (tr) {
+          if (tr.is_error === true || tr.isError === true) return 'error';
+          return 'success';
+        }
+      }
+
+      // Align with decorateToolUse fold gate: only 'error' / 'pending' are
+      // treated as unfinished. Missing host status on a painted row means
+      // the host already considers the call settled → green.
+      // Still-streaming rows usually keep an empty body or an explicit
+      // pending status; if neither, prefer success so finished Bash/Read
+      // rows (the common case in the user's screenshot) light green.
+      if (data && data.block) return 'success';
+
+      // No fiber data at all — leave grey until the next decorate.
+      return 'pending';
+    }
+
+    function toolCardIconHtml(toolName) {
+      if (!toolName) return TOOL_CARD_ICONS.default;
+      if (TOOL_CARD_ICONS[toolName]) return TOOL_CARD_ICONS[toolName];
+      // MCP tools often look like "server__tool" or "mcp__server__tool".
+      if (toolName.indexOf('__') !== -1 || /^mcp/i.test(toolName)) {
+        return TOOL_CARD_ICONS.default;
+      }
+      return TOOL_CARD_ICONS.default;
+    }
+
+    // Header order on the summary row:
+    //   [icon] [host title / path …] [stats +N −M] [status-dot]
+    // Stats used to live inside the host title wrap (inlineHost), which
+    // made "+66 −5 Edit file.js" read as one piled blob and could push the
+    // icon out of the visible flex line. Keep chrome as direct children of
+    // summary and re-pin every decorate.
+    function pinToolHeaderOrder(summary, icon, stats, statusEl) {
+      if (!summary) return;
+      icon = icon || summary.querySelector('[data-incipit-tool-icon]');
+      stats = stats || summary.querySelector('[data-incipit-tool-stats]');
+      statusEl = statusEl || summary.querySelector('[data-incipit-tool-status-dot]');
+
+      // Attach missing nodes first, then enforce order.
+      if (icon && icon.parentElement !== summary) {
+        summary.insertBefore(icon, summary.firstChild);
+      }
+      if (stats && stats.parentElement !== summary) {
+        summary.appendChild(stats);
+      }
+      if (statusEl && statusEl.parentElement !== summary) {
+        summary.appendChild(statusEl);
+      }
+      if (icon && summary.firstChild !== icon) {
+        summary.insertBefore(icon, summary.firstChild);
+      }
+      if (stats) {
+        if (statusEl) summary.insertBefore(stats, statusEl);
+        else if (summary.lastChild !== stats) summary.appendChild(stats);
+      }
+      if (statusEl && summary.lastChild !== statusEl) {
+        summary.appendChild(statusEl);
+      }
+    }
+
+    function ensureToolCardChrome(el, data) {
+      if (!el) return;
+      const summary = el.querySelector('[class*="toolSummary"], [data-incipit-tool-summary]');
+      if (!summary) return;
+
+      const toolName = data && data.block && data.block.name ? data.block.name : '';
+      const status = resolveToolCardStatus(el, data);
+      el.dataset.incipitToolCard = '1';
+      if (toolName) el.dataset.incipitToolKind = toolName;
+      else delete el.dataset.incipitToolKind;
+      // Outer row status lives on `data-incipit-tool-run-status` so it does
+      // not collide with the status-dot element's own attribute name.
+      el.dataset.incipitToolRunStatus = status;
+
+      let icon = summary.querySelector('[data-incipit-tool-icon]');
+      if (!icon) {
+        icon = document.createElement('span');
+        icon.setAttribute('data-incipit-tool-icon', '');
+        icon.setAttribute('aria-hidden', 'true');
+      }
+      if (icon.dataset.incipitToolIconKind !== (toolName || 'default')) {
+        icon.dataset.incipitToolIconKind = toolName || 'default';
+        icon.innerHTML = toolCardIconHtml(toolName);
+      }
+
+      let statusEl = summary.querySelector('[data-incipit-tool-status-dot]');
+      if (!statusEl) {
+        // Migrate any earlier attribute name so re-decorates stay clean.
+        const legacy = summary.querySelector('[data-incipit-tool-status]');
+        if (legacy && !legacy.hasAttribute('data-incipit-tool-status-dot')) {
+          legacy.setAttribute('data-incipit-tool-status-dot', '');
+          legacy.removeAttribute('data-incipit-tool-status');
+          statusEl = legacy;
+        } else {
+          statusEl = document.createElement('span');
+          statusEl.setAttribute('data-incipit-tool-status-dot', '');
+          statusEl.setAttribute('aria-hidden', 'true');
+        }
+      }
+      if (statusEl.dataset.incipitToolStatusValue !== status) {
+        statusEl.dataset.incipitToolStatusValue = status;
+      }
+
+      const stats = summary.querySelector('[data-incipit-tool-stats]');
+      pinToolHeaderOrder(summary, icon, stats, statusEl);
+    }
+
     function decorateToolUse(el) {
       // Path truncation runs regardless of fiber/status — it is a pure
       // display concern and should apply to failed / pending calls too.
@@ -11391,6 +11582,9 @@ import {
       const grepData = readToolUseBlock(el);
       decorateToolFilePaths(el, summary, grepData);
       handleGrepAuxLayout(el, summary, grepData);
+      // Card chrome (icon + status) applies to every tool row, including
+      // Grep / empty-body / pending / error — those paths return early below.
+      ensureToolCardChrome(el, grepData);
       // Grep is fully self-contained inside `handleGrepAuxLayout` — it
       // owns chevron, click handler, expansion div, and animation. The
       // mainline flow below would otherwise inject its own stats span,
@@ -11471,6 +11665,10 @@ import {
       // attribute churn would flip `innerHTML !== html` back to true
       // every frame and spin up a 60-fps rebuild loop.
       const inlineHost = findToolSummaryInlineHost(summary, titleWrap);
+      // Stats are a direct child of the summary row (not inside the host
+      // title wrap). That keeps order as:
+      //   [icon] [Edit + path] [+N \u2212M] [status-dot]
+      // instead of "+N \u2212M Edit path" piled inside one flex item.
       let statsEl = summary.querySelector('[data-incipit-tool-stats]');
       let addedSpan, removedSpan, chevronSpan;
       if (!statsEl) {
@@ -11485,14 +11683,25 @@ import {
         statsEl.appendChild(addedSpan);
         statsEl.appendChild(removedSpan);
         statsEl.appendChild(chevronSpan);
-        inlineHost.appendChild(statsEl);
       } else {
-        if (inlineHost && statsEl.parentElement !== inlineHost) {
-          inlineHost.appendChild(statsEl);
-        }
         addedSpan = statsEl.querySelector('[data-incipit-tool-added]');
         removedSpan = statsEl.querySelector('[data-incipit-tool-removed]');
         chevronSpan = statsEl.querySelector('[data-incipit-tool-chevron]');
+        if (!addedSpan) {
+          addedSpan = document.createElement('span');
+          addedSpan.setAttribute('data-incipit-tool-added', '');
+          statsEl.insertBefore(addedSpan, statsEl.firstChild);
+        }
+        if (!removedSpan) {
+          removedSpan = document.createElement('span');
+          removedSpan.setAttribute('data-incipit-tool-removed', '');
+          statsEl.appendChild(removedSpan);
+        }
+        if (!chevronSpan) {
+          chevronSpan = document.createElement('span');
+          chevronSpan.setAttribute('data-incipit-tool-chevron', '');
+          statsEl.appendChild(chevronSpan);
+        }
       }
 
       if (stats) {
@@ -11505,11 +11714,16 @@ import {
         el.dataset.incipitToolHasStats = '1';
       } else {
         // Non-Edit/Write tools: hide the +/- spans but keep them in place
-        // and keep the chevron visible.
+        // and keep the chevron visible when expanded.
         if (addedSpan.style.display !== 'none') addedSpan.style.display = 'none';
         if (removedSpan.style.display !== 'none') removedSpan.style.display = 'none';
         delete el.dataset.incipitToolHasStats;
       }
+
+      // Pin icon / stats / status as direct summary children every pass.
+      // Fingerprint spans still use inlineHost inside the title cluster.
+      pinToolHeaderOrder(summary, null, statsEl, null);
+      void inlineHost; // used below for fingerprint insertion host
 
       // Fingerprint fallback + collapsed/expanded label swap.
       // Edit/MultiEdit/Write own the row with `+N -M` and never get this.
@@ -11549,8 +11763,10 @@ import {
               fpSpan = document.createElement('span');
               fpSpan.setAttribute('data-incipit-tool-fingerprint', '');
             }
+            // Fingerprint stays inside the title cluster. Stats no longer
+            // live here, so never use statsEl as an insertBefore reference.
             if (fpSpan.parentElement !== inlineHost) {
-              inlineHost.insertBefore(fpSpan, statsEl);
+              inlineHost.appendChild(fpSpan);
             }
             if (fpSpan.textContent !== fpText) fpSpan.textContent = fpText;
           } else if (fpSpan) {
@@ -11561,7 +11777,7 @@ import {
             labelSpan.setAttribute('data-incipit-tool-fingerprint-label', '');
           }
           if (labelSpan.parentElement !== inlineHost) {
-            inlineHost.insertBefore(labelSpan, statsEl);
+            inlineHost.appendChild(labelSpan);
           }
           if (labelSpan.textContent !== label) labelSpan.textContent = label;
         }

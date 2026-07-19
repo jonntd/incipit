@@ -197,6 +197,33 @@
   --incipit-icon-md: 16px;
   --incipit-icon-lg: 18px;
   --incipit-hit-md: 26px;
+
+  /* Agent-style tool card surface (full-width row chrome). */
+  --incipit-tool-card-bg: #252526;
+  --incipit-tool-card-bg-hover: #2a2a2b;
+  --incipit-tool-card-border: rgba(255, 255, 255, 0.08);
+  --incipit-tool-card-radius: 8px;
+  --incipit-tool-card-fg: #e8e8e6;
+  --incipit-tool-card-fg-secondary: #9c9c9a;
+  --incipit-tool-status-success: #3dd68c;
+  --incipit-tool-status-pending: #8b9098;
+  --incipit-tool-status-error: #f2555a;
+  /* User bubble matches agent-panel accent chip:
+     soft translucent blue wash + light-blue ink (not solid bright blue).
+     Values mirror common dark-theme accent-a3 / accent-a11 scales. */
+  --incipit-user-bubble-bg: rgba(0, 119, 255, 0.227);
+  --incipit-user-bubble-fg: #70b8ff;
+  --incipit-user-bubble-radius: 8px;
+
+  /* Agent-panel chat typography (Augment-like): follow the host IDE UI /
+     editor fonts instead of the literary Reading/Emphasis stack. Fallback
+     mirrors common system sans stacks used by VS Code webviews. */
+  --incipit-ui-font: var(--vscode-font-family, system-ui, -apple-system,
+                          BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+                          Arial, sans-serif);
+  --incipit-ui-mono: var(--vscode-editor-font-family, ui-monospace,
+                          SFMono-Regular, Menlo, Monaco, Consolas,
+                          "Liberation Mono", monospace);
 }
 
 /* ============================================================
@@ -256,15 +283,37 @@
   overflow-x: clip !important;
 }
 
-/* Calibrate the timeline marker dot and connector for the adjusted message
-   typography. Different message shapes need slightly different top offsets. */
+/* Agent-card chat layout: hide the host left timeline rail (dot + connector).
+   Tool rows carry their own status indicator on the right; the literary
+   vertical rail competes with the full-width card stack. */
+[data-incipit-message]::before,
+[data-incipit-message]::after {
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
 
-/* Default offset for compact single-line items such as tool calls. */
+/* Host timelineMessage rows reserve left gutter for the rail. Collapse it
+   so tool cards and assistant prose use the full conversation column. */
+[data-incipit-message] {
+  padding-left: 0 !important;
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+}
+[data-incipit-message]:has([data-incipit-tool-use]) {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Keep offsets defined for any host style that still measures them. */
 [data-incipit-message]::before {
   top: 15px !important;
 }
-
-/* Replies and thinking blocks start with a paragraph and sit slightly lower. */
 [data-incipit-message]:has(> [data-incipit-markdown-root] > p)::before,
 [data-incipit-message]:has(> [data-incipit-markdown-root] span > p)::before,
 [data-incipit-message]:has([data-incipit-thinking-content])::before,
@@ -305,11 +354,12 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 }
 
 
-/* Thicken the connector to 2px and keep it centered under the marker dot. */
+/* Timeline connector stays suppressed in the agent-card layout (see above). */
 [data-incipit-message]::after {
-  width: 2px !important;
-  left: 11.5px !important;
-  background-color: rgba(255, 255, 255, 0.18) !important;
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  background: transparent !important;
 }
 
 
@@ -347,7 +397,8 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
 [data-incipit-message] h4,
 [data-incipit-message] h5,
 [data-incipit-message] h6 {
-  font-family: var(--incipit-body-font) !important;
+  /* Chat transcript uses host UI sans (agent-panel look), not literary serif. */
+  font-family: var(--incipit-ui-font) !important;
   /* Leave smoothing to Chromium so Windows can keep subpixel rendering. */
   font-feature-settings: 'kern', 'liga', 'calt';
 }
@@ -482,54 +533,50 @@ details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summa
    still carries <h1> for assistive tech and anchor linking, but the visual
    hierarchy collapses H1 onto H2. Margins keep a touch more breathing room
    than H2 so consecutive sections still feel delineated. */
+/* Heading hierarchy — host UI sans, weight 500 for agent-panel look. */
 [data-incipit-message] h1 {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: 15px;
-  font-weight: 400;
+  font-weight: 600;
   margin: 1.8em 0 0.45em;
   line-height: 1.36;
   letter-spacing: -0.008em;
 }
 [data-incipit-message] h2 {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: 15px;
-  font-weight: 400;
+  font-weight: 600;
   margin: 1.5em 0 0.4em;
   line-height: 1.36;
   letter-spacing: -0.008em;
 }
 [data-incipit-message] h3 {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: 14px;
-  font-weight: 400;
+  font-weight: 600;
   margin: 1.2em 0 0.3em;
   line-height: 1.44;
   letter-spacing: -0.004em;
 }
 [data-incipit-message] h4 {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: 1em;
-  font-weight: 400;
+  font-weight: 600;
   margin: 0.9em 0 0.2em;
 }
 [data-incipit-message] h5,
 [data-incipit-message] h6 {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: 1em;
-  font-weight: 400;
+  font-weight: 600;
   margin: 0.8em 0 0.2em;
 }
 
-/* ============================================================
-   Inline `strong` / `b` use the emphasis face at `font-weight: 400`
-   so the browser picks the real semibold font file instead of synthetic
-   bold. Do not route built-in emphasis through the configurable body face;
-   the default weight hierarchy is part of the design contract.
-   ============================================================ */
+/* Inline strong uses real weight on host UI sans (no literary Emphasis face). */
 [data-incipit-message] strong,
 [data-incipit-message] b {
-  font-family: var(--incipit-emphasis-font) !important;
-  font-weight: 400 !important;
+  font-family: var(--incipit-ui-font) !important;
+  font-weight: 600 !important;
 }
 
 /* ============================================================
@@ -827,24 +874,26 @@ pre.incipit-mermaid-source {
   line-height: 1.5 !important;
 }
 
-/* Tool headers use the emphasis face with `font-weight: 400` so the browser
-   picks the real semibold font file instead of synthetic bold. */
+/* Tool headers use the host UI sans (agent-panel look). */
 [data-incipit-tool-name] {
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-size: var(--incipit-body-size, 13px) !important;
-  font-weight: 400 !important;
+  font-weight: 500 !important;
   font-variation-settings: normal;
 }
 
-/* Tool arguments, paths, and commands stay monospace. */
+/* Tool arguments, paths, and commands stay monospace — prefer host editor mono. */
 [data-incipit-tool-path],
 [data-incipit-tool-args],
-[data-incipit-tool-summary],
 [data-incipit-tool-command],
-[data-incipit-tool-path],
 [data-incipit-command-ref] {
-  font-family: var(--incipit-code-font) !important;
-  font-variation-settings: "MONO" 1, "CASL" 0, "slnt" 0;
+  font-family: var(--incipit-ui-mono) !important;
+  font-variation-settings: normal;
+}
+/* Summary row itself is UI sans; mono only on path/command descendants. */
+[data-incipit-tool-summary] {
+  font-family: var(--incipit-ui-font) !important;
+  font-variation-settings: normal;
 }
 
 /* ============================================================
@@ -858,24 +907,165 @@ pre.incipit-mermaid-source {
      summary row and hid the host `secondaryLine` ("Modified" / "Added N").
      On non-Edit/Write tools the secondaryLine is kept as-is — the host's
      fingerprint is more informative than we could guess.
+   - `[data-incipit-tool-card="1"]` means we painted the full-width agent
+     card chrome (left icon + right status dot) via ensureToolCardChrome.
    ============================================================ */
 
-/* Summary row is the click target for fold toggle (except the filename
-   path, which stays selectable — see enhance.js). Grey by default, lights
-   up to body color on hover. `white-space: nowrap` keeps the injected
-   stats pinned to the row even when the tool-name text is very long. */
+/* Full-width tool card: one dark surface per tool row, stacked with a
+   small gap. Matches the common agent-panel card rhythm without pulling
+   in third-party assets. */
+[data-incipit-tool-use][data-incipit-tool-card="1"],
+[data-incipit-tool-use] {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 2px 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--incipit-tool-card-border) !important;
+  border-radius: var(--incipit-tool-card-radius) !important;
+  background: var(--incipit-tool-card-bg) !important;
+  background-color: var(--incipit-tool-card-bg) !important;
+  overflow: hidden;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+[data-incipit-tool-use]:hover {
+  background: var(--incipit-tool-card-bg-hover) !important;
+  background-color: var(--incipit-tool-card-bg-hover) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Summary row is a flex header:
+     [icon] [title + path …] [+N −M] [status-dot]
+   Click target for fold toggle (except the filename path). */
 [data-incipit-tool-use] [data-incipit-tool-summary] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-height: 32px !important;
+  padding: 5px 10px !important;
+  margin: 0 !important;
   cursor: pointer;
-  color: #9c9c9a;
+  color: var(--incipit-tool-card-fg-secondary);
   transition: color 0.12s ease;
   white-space: nowrap;
+  overflow: hidden;
+  font-family: var(--incipit-ui-font) !important;
+  font-size: var(--incipit-body-size, 13px) !important;
+  line-height: 1.35 !important;
 }
-[data-incipit-tool-use] [data-incipit-tool-summary]:hover,
-[data-incipit-tool-use] [data-incipit-tool-summary]:hover * {
-  color: inherit;
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover {
+  color: var(--incipit-tool-card-fg);
 }
+/* Do NOT recolor every descendant on hover — that wiped the green/red
+   +/- accents and made the left glyph disappear against the card. */
 [data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-name] {
-  color: inherit !important;
+  color: var(--incipit-tool-card-fg) !important;
+  font-family: var(--incipit-ui-font) !important;
+  font-weight: 400 !important;
+  flex: 0 0 auto;
+}
+
+/* Secondary path / command / fingerprint stay muted mono (editor mono). */
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-name-secondary],
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-secondary],
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-fingerprint],
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-fullpath],
+[data-incipit-tool-use] [data-incipit-tool-summary] [class*="toolNameTextSecondary"],
+[data-incipit-tool-use] [data-incipit-tool-summary] [class*="secondaryLine_"],
+[data-incipit-tool-use] [data-incipit-tool-summary] [class*="filePath_"] {
+  color: var(--incipit-tool-card-fg-secondary) !important;
+  font-family: var(--incipit-ui-mono) !important;
+  font-variation-settings: normal !important;
+  opacity: 0.92;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  max-width: 100%;
+}
+
+/* Only the host title cluster grows. Icon / stats / status stay fixed. */
+[data-incipit-tool-use] [data-incipit-tool-summary] > :not([data-incipit-tool-icon]):not([data-incipit-tool-status-dot]):not([data-incipit-tool-stats]) {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  order: 1;
+}
+
+/* Left tool glyph — always first, never shrink. */
+[data-incipit-tool-icon] {
+  display: inline-flex !important;
+  flex: 0 0 16px !important;
+  order: 0 !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 16px !important;
+  min-width: 16px !important;
+  height: 16px !important;
+  color: #b0b4ba !important;
+  opacity: 1 !important;
+  pointer-events: none;
+}
+[data-incipit-tool-icon] svg {
+  display: block !important;
+  width: 14px !important;
+  height: 14px !important;
+  fill: currentColor !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-icon] {
+  color: #e8e8e6 !important;
+}
+
+/* Stats sit after the title, before the status dot. */
+[data-incipit-tool-stats] {
+  order: 2 !important;
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  white-space: nowrap !important;
+  font-family: var(--incipit-ui-font) !important;
+  font-variation-settings: initial !important;
+  font-size: inherit !important;
+}
+
+/* Right status dot — success green / pending grey / error red. */
+[data-incipit-tool-status-dot] {
+  display: inline-block !important;
+  flex: 0 0 6px !important;
+  order: 3 !important;
+  width: 6px !important;
+  height: 6px !important;
+  margin-left: 4px !important;
+  border-radius: 50% !important;
+  background: var(--incipit-tool-status-success) !important;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+[data-incipit-tool-use][data-incipit-tool-run-status="pending"] [data-incipit-tool-status-dot],
+[data-incipit-tool-status-dot][data-incipit-tool-status-value="pending"] {
+  background: var(--incipit-tool-status-pending) !important;
+  animation: incipit-tool-pending-pulse 1.4s ease-in-out infinite;
+}
+[data-incipit-tool-use][data-incipit-tool-run-status="error"] [data-incipit-tool-status-dot],
+[data-incipit-tool-status-dot][data-incipit-tool-status-value="error"] {
+  background: var(--incipit-tool-status-error) !important;
+  animation: none;
+}
+[data-incipit-tool-use][data-incipit-tool-run-status="success"] [data-incipit-tool-status-dot],
+[data-incipit-tool-status-dot][data-incipit-tool-status-value="success"] {
+  background: var(--incipit-tool-status-success) !important;
+  animation: none;
+}
+@keyframes incipit-tool-pending-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 /* Restore a text cursor only on real path spans so they look selectable.
    Host uses the same `toolNameTextSecondary*` class family for plain-text
@@ -892,18 +1082,9 @@ pre.incipit-mermaid-source {
 }
 
 /* Host uses flex with a `flex: 1` plaintext span inside the title wrapper
-   for Bash / LSP / TodoWrite rows, which justifies any trailing sibling
-   (our stats) to the far-right of the summary. Some Agent/Task-style rows
-   put name + secondary text inside an inner block div. Force both wrappers
-   back to inline flow whenever we've injected stats so the `+N -M` and
-   chevron land immediately after the title text, matching the Edit case
-   where the host uses an inline-only `toolNameTextSecondary` span. */
-[data-incipit-tool-summary]:has([data-incipit-tool-stats]) > span:first-child {
-  display: inline !important;
-}
-[data-incipit-tool-summary]:has([data-incipit-tool-stats]) > span:first-child > div:has([data-incipit-tool-name]) {
-  display: inline !important;
-}
+   for Bash / LSP / TodoWrite rows. Keep the middle title cluster as a
+   single ellipsis-capable flex child of the card header; do not force
+   `display:inline` on the summary's first child (that is now the icon). */
 [data-incipit-tool-summary]:has([data-incipit-tool-stats]) [data-incipit-tool-name] {
   flex: 0 0 auto !important;
 }
@@ -917,6 +1098,7 @@ pre.incipit-mermaid-source {
      collapse; otherwise the chevron can open while the diff stays display:none. */
   display: block !important;
   overflow: hidden;
+  padding: 0 10px 8px !important;
   transition: max-height 0.22s ease,
               margin-top 0.22s ease,
               margin-bottom 0.22s ease,
@@ -931,8 +1113,8 @@ pre.incipit-mermaid-source {
   min-height: 0;
   margin-top: 0;
   margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
   border-top-width: 0;
   border-bottom-width: 0;
 }
@@ -943,22 +1125,12 @@ pre.incipit-mermaid-source {
   display: none !important;
 }
 
-/* Stats block sits inline right after the tool name/path.  Body font, body
-   size — no mono override. Parent `toolSummary` applies a mono font via
-   `[data-incipit-tool-summary]`, we step out of it with `inherit !important`
-   to land on the body stack. `vertical-align: middle` lines the chevron's
-   geometric center up with the x-height of the surrounding text rather than
-   hanging the whole 16×16 block above the baseline (which reads as a
-   top-right offset, most visible on short Bash / LSP rows). */
+/* Stats block — order/flex owned by the card-header rules above.
+   Keep accent colors and UI-font override here. */
 [data-incipit-tool-stats] {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5em;
-  margin-left: 0.4em;
-  font-family: inherit !important;
+  font-family: var(--incipit-ui-font) !important;
   font-variation-settings: initial !important;
-  font-size: inherit;
-  vertical-align: middle;
+  font-size: inherit !important;
 }
 
 /* Plus / minus counters always show their semantic accent colors — they
@@ -989,8 +1161,14 @@ pre.incipit-mermaid-source {
   mask-size: 16px 16px;
 }
 
+/* Collapsed: hide chevron (status dot is the right-edge cue). Expanded:
+   show and rotate 90deg. */
+[data-incipit-tool-use][data-incipit-tool-collapsed="true"] [data-incipit-tool-chevron] {
+  display: none !important;
+}
 [data-incipit-tool-use]:not([data-incipit-tool-collapsed="true"]) [data-incipit-tool-chevron] {
   transform: rotate(90deg);
+  opacity: 0.7;
 }
 
 /* Fallback fingerprint + collapsed/expanded label swap.
@@ -1009,12 +1187,10 @@ pre.incipit-mermaid-source {
   font-variation-settings: initial;
   font-style: normal;
 }
-/* Label is an abstract semantic word ('command' / 'pattern' / 'query'),
-   not user input — render it in the body serif so it reads like prose, not
-   a code token. */
+/* Label is an abstract semantic word ('command' / 'pattern' / 'query'). */
 [data-incipit-tool-fingerprint-label] {
   margin-left: 0.4em;
-  font-family: var(--incipit-body-font) !important;
+  font-family: var(--incipit-ui-font) !important;
   font-variation-settings: initial;
   font-style: normal;
 }
@@ -4382,12 +4558,21 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   letter-spacing: 0 !important;
 }
 [data-incipit-user-bubble] {
-  background: #121212 !important;
-  background-color: #121212 !important;
+  background: var(--incipit-user-bubble-bg) !important;
+  background-color: var(--incipit-user-bubble-bg) !important;
+  color: var(--incipit-user-bubble-fg) !important;
   border: none !important;
   outline: none !important;
   box-shadow: none !important;
-  border-radius: 10px !important;
+  border-radius: var(--incipit-user-bubble-radius, 8px) !important;
+  font-family: var(--incipit-ui-font) !important;
+}
+[data-incipit-user-bubble],
+[data-incipit-user-bubble] [data-incipit-user-content],
+[data-incipit-user-bubble] [data-incipit-user-content] p,
+[data-incipit-user-bubble] [data-incipit-user-content] span,
+[data-incipit-user-bubble] [class*="expandableContainer"] [class*="content_"] {
+  font-family: var(--incipit-ui-font) !important;
 }
 
 /* Interrupted messages are not real user bubbles. They may share the host's
@@ -4427,14 +4612,26 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   [data-incipit-user-layout-wrapper] {
   display: contents !important;
 }
-/* Bubble element: shrink to content with a capped width. */
+/* Bubble element: shrink to content with a capped width — soft accent chip. */
 [data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) {
   display: inline-block !important;
-  max-width: min(34em, 76%) !important;
+  max-width: min(36em, 82%) !important;
   width: fit-content !important;
   text-align: left !important;
   vertical-align: top !important;
-  padding: 9px 13px !important;
+  padding: 8px 12px !important;
+  color: var(--incipit-user-bubble-fg) !important;
+  border-radius: var(--incipit-user-bubble-radius, 8px) !important;
+}
+/* Body ink inside the bubble follows accent-a11 (soft blue), not white. */
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content],
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] p,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] span,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] li,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"],
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"] p,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"] span {
+  color: var(--incipit-user-bubble-fg) !important;
 }
 [data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content],
 [data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"] {

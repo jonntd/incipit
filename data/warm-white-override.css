@@ -101,6 +101,28 @@
   --incipit-mermaid-accent-border: #bf5d3a;
   --incipit-mermaid-done-soft: #e4ede0;
   --incipit-mermaid-done-border: #718c5e;
+
+  /* Agent-style tool card surface (paper). */
+  --incipit-tool-card-bg: #ffffff;
+  --incipit-tool-card-bg-hover: #f4f2ec;
+  --incipit-tool-card-border: rgba(0, 0, 0, 0.10);
+  --incipit-tool-card-radius: 8px;
+  --incipit-tool-card-fg: #0d0d0d;
+  --incipit-tool-card-fg-secondary: #8c897e;
+  --incipit-tool-status-success: #1c9c1c;
+  --incipit-tool-status-pending: #a39f8e;
+  --incipit-tool-status-error: #c92626;
+  /* Light-theme accent chip: very soft blue wash + deep blue ink. */
+  --incipit-user-bubble-bg: rgba(0, 143, 245, 0.10);
+  --incipit-user-bubble-fg: #0d74ce;
+  --incipit-user-bubble-radius: 8px;
+  /* Same agent-panel UI fonts as dark theme — follow host IDE. */
+  --incipit-ui-font: var(--vscode-font-family, system-ui, -apple-system,
+                          BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+                          Arial, sans-serif);
+  --incipit-ui-mono: var(--vscode-editor-font-family, ui-monospace,
+                          SFMono-Regular, Menlo, Monaco, Consolas,
+                          "Liberation Mono", monospace);
 }
 
 @font-face {
@@ -155,7 +177,8 @@
 :root[data-incipit-body-bold] [data-incipit-message] blockquote,
 :root[data-incipit-body-bold] [data-incipit-user-bubble],
 :root[data-incipit-body-bold] [data-incipit-user-bubble] [data-incipit-user-content] {
-  font-family: var(--incipit-paper-reading-font, 'PaperReading'), var(--incipit-body-font) !important;
+  /* Chat surface stays on host UI sans even when literary bodyBold is on. */
+  font-family: var(--incipit-ui-font) !important;
 }
 
 /* ---------- Base surface ---------- */
@@ -164,9 +187,17 @@
   background-color: #f8f8f6 !important;
 }
 
-/* Timeline vertical connector. */
+/* Timeline rail stays suppressed in the agent-card layout. */
+[data-incipit-message]::before,
 [data-incipit-message]::after {
-  background-color: rgba(60,55,40,0.14) !important;
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+[data-incipit-message] {
+  padding-left: 0 !important;
 }
 
 /* ---------- Selection ---------- */
@@ -234,8 +265,20 @@
 [data-incipit-tool-use] [data-incipit-tool-summary],
 [data-incipit-thinking-summary],
 [class*="thinkingSummary"] {
-  color: #8c897e !important;
+  color: var(--incipit-tool-card-fg-secondary) !important;
   opacity: 1 !important;
+}
+
+/* Tool card surface on paper. */
+[data-incipit-tool-use] {
+  background: var(--incipit-tool-card-bg) !important;
+  background-color: var(--incipit-tool-card-bg) !important;
+  border-color: var(--incipit-tool-card-border) !important;
+}
+[data-incipit-tool-use]:hover {
+  background: var(--incipit-tool-card-bg-hover) !important;
+  background-color: var(--incipit-tool-card-bg-hover) !important;
+  border-color: rgba(0, 0, 0, 0.14) !important;
 }
 
 /* Restore hover-to-ink lift on the tool summary row. The mid-tone
@@ -249,8 +292,21 @@
    click target. */
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover,
 [data-incipit-tool-use] [data-incipit-tool-summary]:hover * {
-  color: #0d0d0d !important;
+  color: var(--incipit-tool-card-fg) !important;
   opacity: 1 !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary] [data-incipit-tool-name] {
+  color: var(--incipit-tool-card-fg) !important;
+}
+[data-incipit-tool-icon] {
+  color: var(--incipit-tool-card-fg-secondary) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-icon] {
+  color: var(--incipit-tool-card-fg) !important;
+}
+[data-incipit-tool-use] [data-incipit-tool-summary]:hover [data-incipit-tool-status-dot] {
+  /* Keep status-dot color; do not let the universal hover sweep recolor it. */
+  color: transparent !important;
 }
 
 /* +N / −M stats keep their semantic accent — vivid hue for light bg.
@@ -967,10 +1023,21 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
               0 2px 8px rgba(60,55,40,0.14) !important;
 }
 
-/* ---------- User bubble (one step deeper than background) ---------- */
+/* ---------- User bubble (soft accent chip, not solid bright blue) ---------- */
 [data-incipit-user-bubble] {
-  background: #E6E4DE !important;
-  background-color: #E6E4DE !important;
+  background: var(--incipit-user-bubble-bg) !important;
+  background-color: var(--incipit-user-bubble-bg) !important;
+  color: var(--incipit-user-bubble-fg) !important;
+  border-radius: var(--incipit-user-bubble-radius, 8px) !important;
+}
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) {
+  color: var(--incipit-user-bubble-fg) !important;
+}
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content],
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] p,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [data-incipit-user-content] span,
+[data-incipit-user-bubble]:not(:has([data-incipit-interrupted-message])) [class*="expandableContainer"] [class*="content_"] {
+  color: var(--incipit-user-bubble-fg) !important;
 }
 
 /* Interrupted markers borrow the host's user-message DOM shape but are not
