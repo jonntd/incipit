@@ -275,7 +275,7 @@ function cssRuleBody(selector) {
 
 (function changeReviewComposerMiniBarIsRemoved() {
   const state = functionBody('setupChangeReviewFileReview', 1800);
-  const blocks = functionBody('renderChangeReviewTurnBlocks', 1500);
+  const blocks = functionBody('renderChangeReviewTurnBlocks', 3200);
   const updateBlock = functionBody('updateChangeReviewTurnBlock', 3500);
   const format = functionBody('formatChangeReviewSummary', 700);
   const stats = functionBody('appendChangeReviewLineStats', 700);
@@ -355,7 +355,8 @@ function cssRuleBody(selector) {
     theme.includes('margin: 8px 0 16px') &&
     theme.includes('[data-incipit-change-review-counts] [data-incipit-tool-added]'),
     'change-review CSS must style subagent rows, breathing room, and semantic +/- counters');
-  assert.ok(blocks.includes('placeChangeReviewTurnBlock(host, block)') &&
+  assert.ok((blocks.includes('placeChangeReviewTurnBlock(host, block)') ||
+    blocks.includes('placeChangeReviewTurnBlock(host, block, placement.markdownRoot || null)')) &&
     !legacy.includes('data-incipit-change-review-card'),
     'full per-turn review belongs only in the transcript body, never above the input');
   ok('change-review composer mini bar removed; finalized transcript block remains');
@@ -371,9 +372,9 @@ function cssRuleBody(selector) {
   const latestUser = functionBody('changeReviewTurnKeyForLatestRealUser', 1300);
   const findRecord = functionBody('findAssistantRecordForTurn', 900);
   const hasText = functionBody('transcriptHasText', 450);
-  const renderBlocks = functionBody('renderChangeReviewTurnBlocks', 1500);
-  const placement = functionBody('placeChangeReviewTurnBlock', 1200);
-  const actionPlacement = functionBody('placeAssistantActionRow', 900);
+  const renderBlocks = functionBody('renderChangeReviewTurnBlocks', 2800);
+  const placement = functionBody('placeChangeReviewTurnBlock', 2200);
+  const actionPlacement = functionBody('placeAssistantActionRow', 1400);
   const conversationBusy = functionBody('conversationIsBusy', 1200);
   const legacyBusyProbe = functionBody('legacyCompositeBusyProbe', 1200);
   const reconcile = functionBody('reconcileAssistantTranscriptActions', 2300);
@@ -435,20 +436,33 @@ function cssRuleBody(selector) {
   assert.ok(renderBlocks.includes('if (changeReviewBusySafe())') &&
     renderBlocks.includes('removeCurrentBusyChangeReviewTurnBlocks();') &&
     renderBlocks.includes('findAssistantReviewPlacement(record)') &&
-    renderBlocks.includes('placeChangeReviewTurnBlock(host, block)') &&
+    (renderBlocks.includes('placeChangeReviewTurnBlock(host, block)') ||
+      renderBlocks.includes('placeChangeReviewTurnBlock(host, block, placement.markdownRoot || null)')) &&
     !renderBlocks.includes('host.insertBefore(block, actionRow || null)') &&
     placement.includes("host.querySelector(':scope > .incipit-assistant-action-row')") &&
     placement.includes('actionRow.nextSibling') &&
     placement.includes('host.insertBefore(block, actionRow.nextSibling)') &&
     !placement.includes('host.insertBefore(block, actionRow)') &&
-    !placement.includes('host.appendChild(block)'),
-    'transcript review blocks must wait for the incipit action row and sit after it');
+    // Prefer action-row anchor; markdown/host-end fallback is allowed so old
+    // sessions can remount before action rows finish decorating.
+    (placement.includes('host.appendChild(block)') ||
+      placement.includes('markdownRoot')),
+    'transcript review blocks prefer the action row, with a reload fallback when it is not ready');
   assert.ok(actionPlacement.includes('host.insertBefore(row, anchor.nextSibling)') &&
-    actionPlacement.includes('let moved = false') &&
-    actionPlacement.includes('moved = true') &&
-    actionPlacement.includes('if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();') &&
+    actionPlacement.includes('changeReviewHasMissingMounts()') &&
+    actionPlacement.includes('scheduleChangeReviewTurnBlocksRender()') &&
     !actionPlacement.includes("hasAttribute('data-incipit-change-review-turn')"),
-    'assistant action row must stay directly after output, then trigger review block rendering only after a real row move while idle');
+    'assistant action row placement must re-trigger review painting only when mounts are missing (avoids full re-render every scan frame)');
+  assert.ok(legacy.includes('function scheduleChangeReviewMountRetry') &&
+    legacy.includes('CHANGE_REVIEW_MOUNT_RETRY_MAX') &&
+    legacy.includes('function changeReviewHasMissingMounts') &&
+    renderBlocks.includes('scheduleChangeReviewMountRetry'),
+    'old-session reload must retry mounting review blocks until hosts are ready');
+  assert.ok(setup.includes('notifyChangeReviewTurnFinalized()') &&
+    // Finalize notify must not be gated on busy — otherwise host never
+    // marks the turn finalized and new sessions get no card.
+    !/if \(changeReviewBusySafe\(\)\) \{\s*removeCurrentBusyChangeReviewTurnBlocks\(\);\s*return;\s*\}\s*cancelChangeReviewTurnStarted\(\);\s*notifyChangeReviewTurnFinalized/.test(setup),
+    'assistantTurnFinalized must notify host even while busy is still true');
   assert.ok(typography.includes("const TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR = [") &&
     typography.includes("'[data-incipit-change-review-turn]'") &&
     typography.includes('function mutationTouchesIgnoredTranscriptActionSurface(mutation)') &&

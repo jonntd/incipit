@@ -3017,6 +3017,17 @@ import {
   let changeReviewStartTimer = 0;
   let changeReviewStartRetryUntil = 0;
   let changeReviewStartedTurnKey = '';
+  // Retry paint when payload is ready but assistant message hosts are not
+  // yet in the DOM (old-session reload race). Cleared when every visible
+  // turn has a mounted block, or retries are exhausted.
+  let changeReviewMountRetryTimer = 0;
+  let changeReviewMountRetryCount = 0;
+  const CHANGE_REVIEW_MOUNT_RETRY_MAX = 8;
+  const CHANGE_REVIEW_MOUNT_RETRY_MS = 180;
+  // Coalesce action-row-driven re-paints: the transcript action scanner
+  // touches every message host for many frames; re-rendering all review
+  // cards on each touch freezes the UI. Only schedule when mounts are
+  // actually missing, and at most once per frame via the existing rAF gate.
   const CHANGE_REVIEW_VISIBLE_FILE_LIMIT = 3;
   let changeReviewSeq = 0;
   const changeReviewDiffPending = new Map();
@@ -4090,7 +4101,12 @@ import {
   }
 
   function notifyChangeReviewTurnFinalized() {
-    postChangeReviewTurnLifecycle('change_review_turn_finalized', changeReviewTurnKeyForLastAssistant());
+    // Prefer the user turn that owns the trailing assistant. If the
+    // transcript tail is still tool_result-shaped or fiber-lagged, fall
+    // back to the latest real user so the host still finalizes a turn.
+    const turnKey = changeReviewTurnKeyForLastAssistant() ||
+      changeReviewTurnKeyForLatestRealUser();
+    postChangeReviewTurnLifecycle('change_review_turn_finalized', turnKey);
   }
 
   function findAssistantRecordForTurn(turnKey) {
@@ -4114,34 +4130,102 @@ import {
 
   function findAssistantReviewPlacement(record) {
     if (!record) return null;
+    // Prefer hosts that already have an action row (best insert anchor),
+    // but accept a plain message host so old sessions can mount review
+    // blocks before transcript actions finish decorating.
     const markdownRoot = lastAssistantMarkdownRoot(record);
     if (markdownRoot) {
       const host = findAssistantActionHost(markdownRoot) || closestByAttr(markdownRoot, ATTR.message);
-      if (host && host.querySelector(':scope > .incipit-assistant-action-row')) return { host, markdownRoot };
+      if (host) {
+        return {
+          host,
+          markdownRoot,
+          preferActionRow: !!host.querySelector(':scope > .incipit-assistant-action-row'),
+        };
+      }
     }
     const hosts = document.querySelectorAll(SEL.message + ', [class*="timelineMessage"]');
     for (const host of hosts) {
       if (host.closest(SEL.userMessageContainer) || host.closest('[class*="userMessageContainer"]')) continue;
-      if (!host.querySelector(':scope > .incipit-assistant-action-row')) continue;
       const rec = transcriptRecordForElement(host);
-      if (sameTranscriptRecord(rec, record)) return { host, markdownRoot: null };
+      if (!sameTranscriptRecord(rec, record)) continue;
+      return {
+        host,
+        markdownRoot: null,
+        preferActionRow: !!host.querySelector(':scope > .incipit-assistant-action-row'),
+      };
     }
     const roots = document.querySelectorAll(SEL.markdownRoot + ', [class*="root_"]');
     for (const root of roots) {
       const rec = transcriptRecordForElement(root);
       if (!sameTranscriptRecord(rec, record)) continue;
       const host = findAssistantActionHost(root) || closestByAttr(root, ATTR.message);
-      if (host && host.querySelector(':scope > .incipit-assistant-action-row')) return { host, markdownRoot: root };
+      if (!host) continue;
+      return {
+        host,
+        markdownRoot: root,
+        preferActionRow: !!host.querySelector(':scope > .incipit-assistant-action-row'),
+      };
     }
     return null;
   }
 
-  function placeChangeReviewTurnBlock(host, block) {
+  function placeChangeReviewTurnBlock(host, block, markdownRoot) {
     if (!host || !block) return false;
     const actionRow = host.querySelector(':scope > .incipit-assistant-action-row');
-    if (!actionRow) return false;
-    if (actionRow.nextSibling !== block) host.insertBefore(block, actionRow.nextSibling);
+    if (actionRow) {
+      if (actionRow.nextSibling !== block) host.insertBefore(block, actionRow.nextSibling);
+      return true;
+    }
+    // Fallback when action row is not decorated yet: park the block after
+    // the assistant markdown subtree (or at host end). A later paint with
+    // an action row re-homes it via the preferred path above.
+    if (markdownRoot && markdownRoot.isConnected) {
+      let anchor = markdownRoot;
+      while (anchor.parentElement && anchor.parentElement !== host) {
+        anchor = anchor.parentElement;
+      }
+      if (anchor.parentElement === host) {
+        if (anchor.nextSibling !== block) host.insertBefore(block, anchor.nextSibling);
+        return true;
+      }
+    }
+    if (block.parentElement !== host) host.appendChild(block);
+    else if (!block.nextSibling && host.lastChild !== block) host.appendChild(block);
     return true;
+  }
+
+  function changeReviewHasMissingMounts() {
+    const turns = changeReviewTurns();
+    if (!turns.length) return false;
+    for (const turn of turns) {
+      if (!turn || !turn.turnKey) continue;
+      if (changeReviewTurnFileCount(turn) <= 0) continue;
+      const el = document.querySelector(
+        '[data-incipit-change-review-turn="' + cssEscapeAttr(turn.turnKey) + '"]',
+      );
+      if (!el || !el.isConnected) return true;
+    }
+    return false;
+  }
+
+  function scheduleChangeReviewMountRetry(reason) {
+    if (changeReviewBusySafe()) return;
+    if (!changeReviewTurns().length) {
+      changeReviewMountRetryCount = 0;
+      if (changeReviewMountRetryTimer) {
+        clearTimeout(changeReviewMountRetryTimer);
+        changeReviewMountRetryTimer = 0;
+      }
+      return;
+    }
+    if (changeReviewMountRetryCount >= CHANGE_REVIEW_MOUNT_RETRY_MAX) return;
+    if (changeReviewMountRetryTimer) return;
+    changeReviewMountRetryTimer = setTimeout(() => {
+      changeReviewMountRetryTimer = 0;
+      changeReviewMountRetryCount += 1;
+      scheduleChangeReviewTurnBlocksRender();
+    }, CHANGE_REVIEW_MOUNT_RETRY_MS);
   }
 
   function renderChangeReviewTurnBlocks() {
@@ -4155,14 +4239,22 @@ import {
       const key = block.getAttribute('data-incipit-change-review-turn') || '';
       if (!wanted.has(key)) block.remove();
     });
-    if (!turns.length) return;
+    if (!turns.length) {
+      changeReviewMountRetryCount = 0;
+      return;
+    }
+    let missing = 0;
+    let mounted = 0;
     for (const turn of turns) {
       if (changeReviewTurnFileCount(turn) <= 0) continue;
       const record = findAssistantRecordForTurn(turn.turnKey);
       const placement = findAssistantReviewPlacement(record);
       let block = document.querySelector('[data-incipit-change-review-turn="' + cssEscapeAttr(turn.turnKey) + '"]');
       if (!placement || !placement.host) {
-        if (block) block.remove();
+        // Keep an already-mounted block if the host briefly unresolves
+        // (virtualization / re-render). Only drop when we have no block.
+        if (!block) missing += 1;
+        else mounted += 1;
         continue;
       }
       const host = placement.host;
@@ -4171,9 +4263,16 @@ import {
         block.setAttribute('data-incipit-change-review-turn', turn.turnKey);
         bindChangeReviewBlockDelegation(block);
       }
-      if (!placeChangeReviewTurnBlock(host, block)) continue;
+      if (!placeChangeReviewTurnBlock(host, block, placement.markdownRoot || null)) {
+        missing += 1;
+        continue;
+      }
       updateChangeReviewTurnBlock(block, turn);
+      mounted += 1;
     }
+    // Retry while some turns still lack a host (DOM not ready after reload).
+    if (missing > 0) scheduleChangeReviewMountRetry('missing-host');
+    else changeReviewMountRetryCount = 0;
   }
 
   function updateChangeReviewTurnBlock(block, turn) {
@@ -4244,6 +4343,7 @@ import {
       const msg = evt && evt.data;
       if (msg && msg.__incipitChangeReview === true && msg.payload) {
         changeReviewPayload = msg.payload;
+        changeReviewMountRetryCount = 0;
         if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
         return;
       }
@@ -4869,41 +4969,72 @@ import {
 
   function setupChangeReviewFileReview() {
     setupChangeReviewChannel();
+    reportHealth('legacy.change_review', 'ok');
     scheduleChangeReviewIdentityUpdate(0);
+    // Old sessions: host may answer identity before the transcript DOM is
+    // ready. One short delayed paint is enough; mount-retry covers the rest.
+    setTimeout(() => {
+      if (changeReviewTurns().length && !changeReviewBusySafe()) {
+        scheduleChangeReviewTurnBlocksRender();
+      }
+    }, 350);
     subscribeRuntime('sessionChanged', () => {
       changeReviewPayload = null;
       changeReviewStartedTurnKey = '';
+      changeReviewMountRetryCount = 0;
+      if (changeReviewMountRetryTimer) {
+        clearTimeout(changeReviewMountRetryTimer);
+        changeReviewMountRetryTimer = 0;
+      }
       cancelChangeReviewTurnStarted();
       scheduleChangeReviewIdentityUpdate(0);
       if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+      setTimeout(() => {
+        if (changeReviewTurns().length && !changeReviewBusySafe()) {
+          scheduleChangeReviewTurnBlocksRender();
+        }
+      }, 350);
     });
     subscribeRuntime('messagesChanged', () => {
-      scheduleChangeReviewIdentityUpdate(250);
+      // Identity only — never paint mid-stream. Finalize / busy-idle /
+      // mount-retry own the card paint.
+      scheduleChangeReviewIdentityUpdate(300);
       if (changeReviewBusySafe()) scheduleChangeReviewTurnStarted(20);
     });
     subscribeRuntime('busyChanged', evt => {
       if (evt && evt.busy === true) armChangeReviewTurnStarted();
       else cancelChangeReviewTurnStarted();
       if (!changeReviewBusySafe()) {
-        scheduleChangeReviewIdentityUpdate(250);
+        // Idle again: host may still be finalizing the turn we notified
+        // while busy. Refresh identity quickly and paint (no-op if empty).
+        scheduleChangeReviewIdentityUpdate(60);
+        scheduleChangeReviewTurnBlocksRender();
+        setTimeout(() => {
+          if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+        }, 280);
       } else {
         removeCurrentBusyChangeReviewTurnBlocks();
       }
     });
     subscribeRuntime('assistantTurnFinalized', () => {
+      // ALWAYS notify the host — even if busy is still true. Skipping this
+      // left turns un-finalized, so buildChangeReviewPayload filtered them
+      // out and new sessions never got an "N files changed" card.
+      cancelChangeReviewTurnStarted();
+      notifyChangeReviewTurnFinalized();
+      changeReviewStartedTurnKey = '';
       if (changeReviewBusySafe()) {
         removeCurrentBusyChangeReviewTurnBlocks();
         return;
       }
-      cancelChangeReviewTurnStarted();
-      notifyChangeReviewTurnFinalized();
-      changeReviewStartedTurnKey = '';
-      scheduleChangeReviewIdentityUpdate(150);
+      scheduleChangeReviewIdentityUpdate(60);
       setTimeout(() => {
         scheduleChangeReviewTurnBlocksRender();
-      }, 220);
+      }, 100);
+      setTimeout(() => {
+        if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+      }, 350);
     });
-    reportHealth('legacy.change_review', 'ok');
   }
 
   function setupTranscriptMutationChannel() {
@@ -7165,14 +7296,21 @@ import {
         host.insertBefore(row, anchor.nextSibling);
         moved = true;
       }
-      if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+      // Only re-paint when some review card is still unmounted. Calling
+      // full render on every action-row scan frame is the main freeze
+      // source after /compact and mid-session reloads.
+      if (changeReviewHasMissingMounts() && !changeReviewBusySafe()) {
+        scheduleChangeReviewTurnBlocksRender();
+      }
       return;
     }
     if (row.parentElement !== host || row.nextSibling) {
       host.appendChild(row);
       moved = true;
     }
-    if (moved && changeReviewTurns().length && !changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+    if (changeReviewHasMissingMounts() && !changeReviewBusySafe()) {
+      scheduleChangeReviewTurnBlocksRender();
+    }
   }
 
   // Returns true when the record is the trailing assistant of the
