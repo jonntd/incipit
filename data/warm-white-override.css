@@ -81,6 +81,12 @@
   --app-menu-foreground: #0d0d0d !important;
   --app-secondary-foreground: #797569 !important;
   --app-secondary-text: #797569 !important;
+  /* Paper borders: host's #ffffff1a inner rim is invisible on cream and
+     vscode input-border reads as a dark gash. Soft graphite only. */
+  --app-input-border: rgba(13, 13, 13, 0.12) !important;
+  --app-input-active-border: rgba(13, 13, 13, 0.20) !important;
+  --app-transparent-inner-border: rgba(0, 0, 0, 0.08) !important;
+  --app-transparent-border: rgba(13, 13, 13, 0.10) !important;
   --incipit-message-mention-chip-background: #ead8cf;
   --incipit-message-mention-chip-foreground: #8f452b;
   --incipit-message-mention-chip-background-hover: #e2c8bc;
@@ -125,6 +131,7 @@
   --incipit-tool-icon-todo: #1c9c1c;
   --incipit-tool-icon-skill: #d13a7a;
   --incipit-tool-icon-ask: #c4841a;
+  --incipit-tool-icon-plan: #7a4fd6;
   --incipit-tool-icon-default: #3b6db3;
   --incipit-icon-accent: #7a4fd6;
   --incipit-icon-accent-soft: rgba(122, 79, 214, 0.12);

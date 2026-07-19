@@ -156,6 +156,37 @@
   --app-menu-foreground: #f8f8f6 !important;
   --app-secondary-foreground: #bcbcb9 !important;
   --app-secondary-text: #bcbcb9 !important;
+  /* Borders: host defaults to vscode light-ish widget borders and
+     `--app-transparent-inner-border:#ffffff1a`. During streaming those
+     paint as a white rim around AI reply frames before (or instead of)
+     our JS overrides. Pin them to warm-black from first paint. */
+  --app-input-border: rgba(248, 248, 246, 0.10) !important;
+  --app-input-active-border: rgba(248, 248, 246, 0.18) !important;
+  --app-transparent-inner-border: rgba(248, 248, 246, 0.06) !important;
+  --app-transparent-border: rgba(248, 248, 246, 0.08) !important;
+
+  /* ---- Design tokens (P0/P1) — see docs/ui-roadmap.md ----
+     Type scale (4 steps). Prefer these over raw px in new rules. */
+  --incipit-type-caption: 11px;
+  --incipit-type-ui: 12px;
+  --incipit-type-body: var(--incipit-body-size, 13px);
+  --incipit-type-title: 15px;
+  /* Spacing (4 steps). */
+  --incipit-space-1: 4px;
+  --incipit-space-2: 8px;
+  --incipit-space-3: 12px;
+  --incipit-space-4: 16px;
+  /* Radii. */
+  --incipit-radius-sm: 4px;
+  --incipit-radius-md: 8px;
+  --incipit-radius-pill: 999px;
+  /* Semantic status (tool dots, banners, review). */
+  --incipit-status-success: #3dd68c;
+  --incipit-status-pending: #8b9098;
+  --incipit-status-error: #f2555a;
+  --incipit-status-accent: #d97757;
+  --incipit-status-info: #61afef;
+
   --incipit-message-mention-chip-background: #3d312d;
   --incipit-message-mention-chip-foreground: #e0a18b;
   --incipit-message-mention-chip-background-hover: #493932;
@@ -183,7 +214,9 @@
   --incipit-code-font: 'Rec Mono Linear', 'Noto Sans SC',
                'Microsoft YaHei UI', 'Microsoft YaHei',
                Consolas, Monaco, 'Courier New', monospace;
-  --incipit-conversation-column-width: 570px;
+  /* Responsive reading column: grow a bit on wide sidebars, never overflow.
+     min() keeps ~24px breathing room; 720px caps line length for prose. */
+  --incipit-conversation-column-width: min(720px, 100% - 24px);
 
   /* Icon / hit-target scale for footer chrome and message action rows.
      Previously each control wrote its own px (12–20), so adjacent glyphs
@@ -202,12 +235,12 @@
   --incipit-tool-card-bg: #252526;
   --incipit-tool-card-bg-hover: #2a2a2b;
   --incipit-tool-card-border: rgba(255, 255, 255, 0.08);
-  --incipit-tool-card-radius: 8px;
+  --incipit-tool-card-radius: var(--incipit-radius-md);
   --incipit-tool-card-fg: #e8e8e6;
   --incipit-tool-card-fg-secondary: #9c9c9a;
-  --incipit-tool-status-success: #3dd68c;
-  --incipit-tool-status-pending: #8b9098;
-  --incipit-tool-status-error: #f2555a;
+  --incipit-tool-status-success: var(--incipit-status-success);
+  --incipit-tool-status-pending: var(--incipit-status-pending);
+  --incipit-tool-status-error: var(--incipit-status-error);
   /* Trae-style per-tool icon hues. Icons inherit `currentColor`; these
      tokens color the left glyph by tool kind so the chat stops reading as
      a single grey ink. Tuned for warm-black (slightly bright). */
@@ -222,6 +255,7 @@
   --incipit-tool-icon-todo: #2fb287;
   --incipit-tool-icon-skill: #ff7eb6;
   --incipit-tool-icon-ask: #f0a020;
+  --incipit-tool-icon-plan: #c4a7ff;
   --incipit-tool-icon-default: #8ab4f8;
   --incipit-icon-accent: #b98cff;
   --incipit-icon-accent-soft: rgba(185, 140, 255, 0.18);
@@ -321,6 +355,42 @@
   padding-left: 0 !important;
   margin-top: 2px !important;
   margin-bottom: 2px !important;
+  /* Streaming re-paints host frames with inset rims / focus outlines.
+     Keep assistant prose borderless so chunks do not flash a white edge. */
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background-clip: padding-box !important;
+}
+[data-incipit-message] > [data-incipit-markdown-root],
+[data-incipit-message] [data-incipit-markdown-root] {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  /* Avoid mid-stream background transition flashes when host toggles
+     edit-hover / focus classes on the markdown root. */
+  transition: none !important;
+}
+/* Kill host CSS-module frames that draw inset white rims
+   (`box-shadow: inset 0 0 0 1px var(--app-transparent-inner-border)`). */
+[data-incipit-message] [class*="contentWrapper_"],
+[data-incipit-message] [class*="messageContent_"],
+[data-incipit-message] [class*="assistant_"],
+[data-incipit-messages-container] > [class*="message_"],
+[data-incipit-messages-container] > [class*="timelineMessage"] {
+  box-shadow: none !important;
+  outline: none !important;
+}
+[data-incipit-messages-container] > [class*="message_"]:focus,
+[data-incipit-messages-container] > [class*="message_"]:focus-visible,
+[data-incipit-messages-container] > [class*="timelineMessage"]:focus,
+[data-incipit-messages-container] > [class*="timelineMessage"]:focus-visible,
+[data-incipit-message]:focus,
+[data-incipit-message]:focus-visible,
+[data-incipit-markdown-root]:focus,
+[data-incipit-markdown-root]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 [data-incipit-message]:has([data-incipit-tool-use]) {
   padding-left: 0 !important;
@@ -1094,7 +1164,70 @@ pre.incipit-mermaid-source {
 [data-incipit-tool-icon][data-incipit-tool-icon-kind="AskUserQuestion"] {
   color: var(--incipit-tool-icon-ask) !important;
 }
+/* Plan mode tools */
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="ExitPlanMode"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="EnterPlanMode"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind="CreatePlan"],
+[data-incipit-tool-icon][data-incipit-tool-icon-kind*="Plan"] {
+  color: var(--incipit-tool-icon-plan) !important;
+}
 /* default / MCP / unknown already uses --incipit-tool-icon-default */
+
+/* Plan / ExitPlanMode caption ("Stayed in plan mode") — host often puts it
+   as a secondaryLine sibling under the summary. Give it card padding and
+   muted UI font so it doesn't look like an orphaned one-liner under the
+   rounded chrome. */
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] > [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] > [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="EnterPlanMode"] > [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="CreatePlan"] > [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] [data-incipit-tool-summary] + [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] [data-incipit-tool-summary] + [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="EnterPlanMode"] [data-incipit-tool-summary] + [class*="secondaryLine_"],
+[data-incipit-tool-use][data-incipit-tool-kind="CreatePlan"] [data-incipit-tool-summary] + [class*="secondaryLine_"] {
+  display: block !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 10px 8px 34px !important; /* indent under title, past the icon */
+  color: var(--incipit-tool-card-fg-secondary) !important;
+  font-family: var(--incipit-ui-font) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  white-space: normal !important;
+  opacity: 0.9 !important;
+}
+
+/* Plan file path in the summary: solid muted text, no terracotta dotted
+   underline (that affordance is for markdown links, not tool paths). */
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] [data-incipit-tool-summary] [class*="filePath_"],
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] [data-incipit-tool-summary] [class*="toolNameTextSecondary"],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] [data-incipit-tool-summary] [class*="filePath_"],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] [data-incipit-tool-summary] [class*="toolNameTextSecondary"],
+[data-incipit-tool-use][data-incipit-tool-kind="EnterPlanMode"] [data-incipit-tool-summary] [class*="filePath_"],
+[data-incipit-tool-use][data-incipit-tool-kind="CreatePlan"] [data-incipit-tool-summary] [class*="filePath_"] {
+  text-decoration: none !important;
+  border-bottom: none !important;
+  background-image: none !important;
+  color: var(--incipit-tool-card-fg-secondary) !important;
+}
+/* Short plan result caption in toolBody (host may put "Stayed in plan mode" here). */
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-kind="EnterPlanMode"] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-kind="CreatePlan"] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-kind*="Plan"] [class*="toolBody_"],
+[data-incipit-tool-use][data-incipit-tool-kind="ExitPlanMode"] [class*="toolBody_"] {
+  padding: 0 10px 8px 34px !important;
+  color: var(--incipit-tool-card-fg-secondary) !important;
+  font-family: var(--incipit-ui-font) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  border: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 
 /* Stats sit after the title, before the status dot. */
 [data-incipit-tool-stats] {
@@ -5163,8 +5296,13 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
    affordance. User bubbles already carry the draft-card colour at
    rest, so this rule does not need a user-side counterpart. */
 [data-incipit-markdown-root] {
-  transition: background-color 0.18s ease;
+  /* No background transition — during streaming host class toggles
+     made a soft flash look like a white edge. */
+  transition: none;
   border-radius: 4px;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
 }
 [data-incipit-markdown-root][data-incipit-edit-hover-preview] {
   background-color: #272727;

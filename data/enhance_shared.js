@@ -378,6 +378,20 @@ export const APP_VAR_OVERRIDES = {
   '--app-secondary-foreground': SOFT_FG_2,
   '--app-secondary-text': SOFT_FG_2,
   '--app-monospace-font-family': 'var(--incipit-code-font)',
+  // Host paints inset rims via these; leave them at vscode defaults and
+  // AI reply frames flash a white edge while streaming.
+  '--app-input-border': CFG.palette === 'warm-white'
+    ? 'rgba(13, 13, 13, 0.12)'
+    : 'rgba(248, 248, 246, 0.10)',
+  '--app-input-active-border': CFG.palette === 'warm-white'
+    ? 'rgba(13, 13, 13, 0.20)'
+    : 'rgba(248, 248, 246, 0.18)',
+  '--app-transparent-inner-border': CFG.palette === 'warm-white'
+    ? 'rgba(0, 0, 0, 0.08)'
+    : 'rgba(248, 248, 246, 0.06)',
+  '--app-transparent-border': CFG.palette === 'warm-white'
+    ? 'rgba(13, 13, 13, 0.10)'
+    : 'rgba(248, 248, 246, 0.08)',
 };
 
 let appVarApplyScheduled = false;

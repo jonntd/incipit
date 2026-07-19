@@ -11534,6 +11534,11 @@ import {
       NotebookEdit: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h6a1.5 1.5 0 0 1 1.5 1.5v11A1.5 1.5 0 0 1 11 15H5a1.5 1.5 0 0 1-1.5-1.5v-11ZM5 2.5v11h6v-11H5Z"/></svg>',
       Skill: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5 9.7 5.3 13.8 5.7 10.7 8.5 11.6 12.5 8 10.4 4.4 12.5 5.3 8.5 2.2 5.7 6.3 5.3 8 1.5Z"/></svg>',
       AskUserQuestion: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM7.25 5.1c0-.55.4-1 1-1s1 .45 1 1c0 .4-.2.65-.55.95-.4.35-.7.7-.7 1.2v.25a.75.75 0 0 0 1.5 0v-.1c0-.15.08-.3.3-.5.45-.4 1.2-1 1.2-2 0-1.4-1.1-2.5-2.75-2.5S5.5 3.7 5.5 5.1a.75.75 0 0 0 1.5 0Zm.75 6.65a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Z"/></svg>',
+      // Plan tools share a document-with-list glyph (host title is often
+      // "Claude's Plan"). ExitPlanMode / EnterPlanMode / CreatePlan all map here.
+      ExitPlanMode: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h4.25a.75.75 0 0 1 0 1.5H5a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h6a.5.5 0 0 0 .5-.5V8.75a.75.75 0 0 1 1.5 0V12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9Zm7.22.22a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1 0 1.06l-2 2a.75.75 0 1 1-1.06-1.06L11.44 6H8.75a.75.75 0 0 1 0-1.5h2.69L10.72 3.78a.75.75 0 0 1 0-1.06ZM5.75 5a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5H6.5A.75.75 0 0 1 5.75 5Zm0 2.5a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Zm0 2.5a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Z"/></svg>',
+      EnterPlanMode: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h6a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 11 14H5a1.5 1.5 0 0 1-1.5-1.5v-9ZM5 2.5v9h6v-9H5Zm.75 1.75a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Zm0 2.5a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Zm0 2.5a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Z"/></svg>',
+      CreatePlan: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.5 2.5A1.5 1.5 0 0 1 5 1h6a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 11 14H5a1.5 1.5 0 0 1-1.5-1.5v-9ZM5 2.5v9h6v-9H5Zm.75 1.75a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Zm0 2.5a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Zm0 2.5a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5H6.5a.75.75 0 0 1-.75-.75Z"/></svg>',
       default: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 3.75A.75.75 0 0 1 3.75 3h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 3 3.75Zm0 4A.75.75 0 0 1 3.75 7h8.5a.75.75 0 0 1 0 1.5h-8.5A.75.75 0 0 1 3 7.75Zm0 4A.75.75 0 0 1 3.75 11h5.5a.75.75 0 0 1 0 1.5h-5.5A.75.75 0 0 1 3 11.75Z"/></svg>'
     };
 
@@ -11551,9 +11556,15 @@ import {
       }
       if (
         s === 'error' || s === 'failed' || s === 'failure' ||
-        s === 'cancelled' || s === 'canceled' || s === 'rejected'
+        s === 'rejected'
       ) {
         return 'error';
+      }
+      // cancelled/canceled is often a deliberate non-error terminal state
+      // (ExitPlanMode "Stayed in plan mode", user dismissed a prompt). Treat
+      // as success so the status dot is green, not error-red.
+      if (s === 'cancelled' || s === 'canceled') {
+        return 'success';
       }
       // success / completed / ok / succeeded / done / any other terminal label
       return 'success';
@@ -11575,6 +11586,11 @@ import {
     //      status is treated as complete, not pending)
     //   4. Pending only when we still have no result and no settle cue
     function resolveToolCardStatus(el, data) {
+      const toolName = data && data.block && data.block.name
+        ? String(data.block.name)
+        : '';
+      const isPlanTool = /Plan/i.test(toolName);
+
       const explicit = normalizeExplicitHostStatus(data && data.status);
       if (explicit === 'pending' || explicit === 'error' || explicit === 'success') {
         // Host says pending, but a tool_result may already be present (race
@@ -11585,6 +11601,12 @@ import {
             if (tr.is_error === true || tr.isError === true) return 'error';
             return 'success';
           }
+        }
+        // Plan tools: host sometimes still labels a deliberate "stay in plan"
+        // outcome as error. Prefer success when the result is non-error.
+        if (explicit === 'error' && isPlanTool && data && data.block) {
+          const tr = peekToolResult(data.block, el);
+          if (tr && tr.is_error !== true && tr.isError !== true) return 'success';
         }
         return explicit;
       }
@@ -11612,6 +11634,10 @@ import {
     function toolCardIconHtml(toolName) {
       if (!toolName) return TOOL_CARD_ICONS.default;
       if (TOOL_CARD_ICONS[toolName]) return TOOL_CARD_ICONS[toolName];
+      // Plan-mode tools share a document glyph even when the host renames them.
+      if (/Plan/i.test(toolName)) {
+        return TOOL_CARD_ICONS.EnterPlanMode || TOOL_CARD_ICONS.default;
+      }
       // MCP tools often look like "server__tool" or "mcp__server__tool".
       if (toolName.indexOf('__') !== -1 || /^mcp/i.test(toolName)) {
         return TOOL_CARD_ICONS.default;
