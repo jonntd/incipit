@@ -1640,6 +1640,10 @@ function sessionEditHarness(dir) {
   assert.ok(legacy.includes("document.body.appendChild(panel)"), 'body-mounted panel');
   assert.ok(legacy.includes('scheduleSessionEditsChrome'), 'debounced chrome');
   assert.ok(legacy.includes('updateSessionEditsToggleChip'), 'cheap chip update');
+  assert.ok(legacy.includes("data-float"), 'float chip when rail hidden');
+  assert.ok(legacy.includes('confirmSessionEditsDiscard'), 'styled discard confirm');
+  assert.ok(legacy.includes('setSessionEditsButtonBusy'), 'busy button state');
+  assert.ok(!legacy.includes("window.confirm(changeReviewText('discardAllConfirm'))"), 'no window.confirm for discard');
   assert.ok(legacy.includes('sessionEditsChipSignature'), 'chip signature');
   assert.ok(legacy.includes('openChangeReviewDiff'), 'modal diff path');
   assert.ok(legacy.includes('data-incipit-session-edits-keep-all'), 'keep all');

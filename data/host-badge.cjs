@@ -3307,7 +3307,20 @@ function buildCachedChangeReviewPayload(state, target, parser) {
     size: parser.size || 0,
     mtimeMs: parser.mtimeMs || 0,
   });
-  const version = parser.changeReviewVersion + ':' + (reviewState.version || 0);
+  // Include timeline max checkpoint so user-save / agent timeline writes bust
+  // this cache even when JSONL mtime and changeReviewVersion lag.
+  let timelineStamp = 0;
+  try {
+    const sid = path.basename(parser.path, JSONL_SUFFIX);
+    timelineStamp = checkpointTimeline.maxCheckpointTimestamp(
+      checkpointTimeline.loadTimeline(sid)
+    ) || 0;
+    const bl = checkpointTimeline.getBaselineTimestamp(sid) || 0;
+    timelineStamp = timelineStamp + ':' + bl;
+  } catch (_) {
+    timelineStamp = 0;
+  }
+  const version = parser.changeReviewVersion + ':' + (reviewState.version || 0) + ':' + timelineStamp;
   if (cached.changeReviewPayload && cached.changeReviewVersion === version) {
     return cached.changeReviewPayload;
   }
@@ -6472,63 +6485,89 @@ async function resolveSessionEditsOpenDiff(state, comm, message) {
     throw new Error('VS Code API unavailable.');
   }
 
-  const sides = checkpointTimeline.getDiffSides(ctx.sessionId, filePath);
   const display = displayPathForCwd(filePath, ctx.parser && ctx.parser.projectCwd) || path.basename(filePath);
   const title = `${display} (Session Edits)`;
 
-  // Prefer timeline sides; fall back to Claude backup aggregate if needed.
-  let leftText = sides && !sides.leftUnavailable ? (sides.left || '') : null;
-  let rightText = sides && !sides.rightUnavailable ? (sides.right || '') : null;
-  let leftMissing = sides ? sides.leftMissing : false;
-  let rightMissing = sides ? sides.rightMissing : false;
+  // Resolve on-disk paths only — never openTextDocument({ content }) which
+  // creates untitled *unsaved* tabs (the bug the user hit).
+  let leftPath = null;
+  let rightPath = null;
+  let leftMissing = false;
+  let rightMissing = false;
+  let emptyPath = null;
 
-  if (!sides) {
-    // Legacy fallback: earliest change-review backup
+  const sides = checkpointTimeline.getDiffSides(ctx.sessionId, filePath);
+  if (sides) {
+    leftPath = sides.leftPath || null;
+    rightPath = sides.rightPath || null;
+    leftMissing = !!sides.leftMissing;
+    rightMissing = !!sides.rightMissing;
+    emptyPath = sides.emptySidePath || null;
+    if (sides.leftUnavailable && !leftMissing) {
+      throw new Error('Baseline snapshot is unavailable for this file.');
+    }
+  } else {
+    // Legacy fallback: Claude file-history backup on disk.
     const groups = collectSessionEditFileGroups(ctx.parser, ctx.reviewState);
     const group = groups.get(changeReviewFileKey(filePath));
     if (!group) throw new Error('No matching file change was found.');
     const baseline = sessionEditDiffBaselineSource(group);
     if (baseline.kind === 'created') {
-      leftText = '';
       leftMissing = true;
     } else if (baseline.kind === 'backup' && baseline.backupPath) {
-      leftText = fs.readFileSync(baseline.backupPath, 'utf8');
+      leftPath = baseline.backupPath;
+    } else {
+      throw new Error('No baseline backup available for this file.');
     }
     rightMissing = !fs.existsSync(filePath);
-    rightText = rightMissing ? '' : fs.readFileSync(filePath, 'utf8');
+    rightPath = rightMissing ? null : filePath;
+    emptyPath = checkpointTimeline.emptySidePath();
   }
 
+  if (!emptyPath) {
+    try { emptyPath = checkpointTimeline.emptySidePath(); } catch (_) { emptyPath = null; }
+  }
+
+  // Created: empty (on-disk) ↔ current file
   if (leftMissing && !rightMissing) {
-    const rightDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-    const empty = await vscode.workspace.openTextDocument({
-      content: '',
-      language: rightDoc.languageId || 'plaintext',
-    });
+    if (!rightPath || !fs.existsSync(rightPath)) throw new Error('File does not exist on disk.');
+    if (!emptyPath) throw new Error('Could not prepare empty baseline for new-file diff.');
     await openSessionEditsNativeDiff(
-      vscode, empty.uri, rightDoc.uri, `${display} (new) · Session Edits`
+      vscode,
+      vscode.Uri.file(emptyPath),
+      vscode.Uri.file(rightPath),
+      `${display} (new) · Session Edits`
     );
     return { ok: true, mode: 'diff-created', filePath };
   }
+
+  // Deleted: baseline blob ↔ empty (on-disk)
   if (rightMissing) {
-    const leftDoc = await vscode.workspace.openTextDocument({
-      content: leftText || '',
-      language: 'plaintext',
-    });
-    const empty = await vscode.workspace.openTextDocument({ content: '', language: leftDoc.languageId || 'plaintext' });
+    if (!leftPath || !fs.existsSync(leftPath)) throw new Error('Baseline snapshot is missing.');
+    if (!emptyPath) throw new Error('Could not prepare empty side for deleted-file diff.');
     await openSessionEditsNativeDiff(
-      vscode, leftDoc.uri, empty.uri, `${display} (deleted) · Session Edits`
+      vscode,
+      vscode.Uri.file(leftPath),
+      vscode.Uri.file(emptyPath),
+      `${display} (deleted) · Session Edits`
     );
     return { ok: true, mode: 'diff-deleted', filePath };
   }
 
-  // Both sides present: left from timeline baseline (virtual doc), right from disk.
-  const rightDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-  const leftDoc = await vscode.workspace.openTextDocument({
-    content: leftText == null ? '' : leftText,
-    language: rightDoc.languageId || 'plaintext',
-  });
-  await openSessionEditsNativeDiff(vscode, leftDoc.uri, rightDoc.uri, title);
-  return { ok: true, mode: 'diff', filePath };
+  // Modified: baseline blob on disk ↔ current file on disk (no untitled docs).
+  if (!leftPath || !fs.existsSync(leftPath)) {
+    throw new Error('Baseline snapshot is missing on disk.');
+  }
+  if (!rightPath || !fs.existsSync(rightPath)) {
+    throw new Error('File does not exist on disk.');
+  }
+  await openSessionEditsNativeDiff(
+    vscode,
+    vscode.Uri.file(leftPath),
+    vscode.Uri.file(rightPath),
+    title
+  );
+  return { ok: true, mode: 'diff', filePath, leftPath, rightPath };
 }
 
 function handleSessionEditsOpenDiffRequest(comm, state, message) {

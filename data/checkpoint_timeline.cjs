@@ -147,6 +147,26 @@ function readBlob(sessionId, hash) {
   }
 }
 
+function blobPath(sessionId, hash) {
+  if (!hash || typeof hash !== 'string') return null;
+  if (!/^[a-f0-9]{64}$/i.test(hash)) return null;
+  const p = path.join(blobsDir(sessionId), hash);
+  try {
+    return fs.existsSync(p) ? p : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Stable empty file on disk — used as empty side of vscode.diff (no untitled dirty doc). */
+function emptySidePath() {
+  const dir = path.join(ROOT_DIR, '.empty');
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'empty');
+  if (!fs.existsSync(p)) fs.writeFileSync(p, '', 'utf8');
+  return p;
+}
+
 function fileKey(absPath) {
   return String(absPath || '').replace(/\\/g, '/');
 }
@@ -738,16 +758,29 @@ function getDiffSides(sessionId, absPath) {
   if (!rec) return null;
   const baseline = tl.baselineTimestamp || 0;
   const base = contentAtOrBefore(sessionId, rec, baseline);
-  const disk = readDiskText(absPath);
+  const diskExists = (() => {
+    try { return fs.existsSync(absPath) && fs.statSync(absPath).isFile(); }
+    catch (_) { return false; }
+  })();
+  // Prefer on-disk blob paths so vscode.diff never opens untitled/unsaved docs.
+  let leftPath = null;
+  if (base.kind === 'content' && base.hash) {
+    leftPath = blobPath(sessionId, base.hash);
+  }
+  const leftMissing = base.kind === 'missing';
+  const rightMissing = !diskExists;
   return {
     path: absPath,
     baseline,
     left: base.kind === 'content' ? base.text : '',
-    leftMissing: base.kind === 'missing',
-    right: disk.kind === 'content' ? disk.text : '',
-    rightMissing: disk.kind === 'missing',
-    leftUnavailable: base.kind === 'unavailable',
-    rightUnavailable: disk.kind === 'unavailable',
+    leftPath, // file URI preferred for native diff
+    leftMissing,
+    right: diskExists ? (readDiskText(absPath).text || '') : '',
+    rightPath: diskExists ? absPath : null,
+    rightMissing,
+    leftUnavailable: base.kind === 'unavailable' || (base.kind === 'content' && !leftPath),
+    rightUnavailable: false,
+    emptySidePath: emptySidePath(),
   };
 }
 
@@ -794,6 +827,8 @@ module.exports = {
   maxCheckpointTimestamp,
   contentAtOrBefore,
   readBlob,
+  blobPath,
+  emptySidePath,
   writeBlob,
   hashText,
   clearCache,

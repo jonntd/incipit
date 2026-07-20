@@ -5586,18 +5586,51 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   box-sizing: border-box !important;
   flex: 1 1 auto;
   align-self: stretch;
+  /* Long-message collapse (max-height:600) must not clip the editor. */
+  max-height: none !important;
+  overflow: visible !important;
 }
+/* CRITICAL: while editing, neutralize long-message clip on every host
+   wrapper the shell may sit under. Without this, collapsed long bubbles
+   keep overflow:hidden at 600px and the growing textarea / Save row are
+   cut off mid-edit ("edit UI looks broken"). */
 [data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-expandable],
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-inline-edit-shell="user"] {
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-content],
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="expandableContainer"],
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="contentWrapper_"],
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="content_"],
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-inline-edit-shell="user"],
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [data-incipit-user-expandable],
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="expandableContainer"],
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="contentWrapper_"] {
   display: block !important;
   width: 100% !important;
   max-width: 100% !important;
   min-width: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
   box-sizing: border-box !important;
 }
 [data-incipit-user-message-container][data-incipit-inline-editing="user"] .incipit-inline-edit-textarea {
   width: 100% !important;
   max-width: 100% !important;
+  min-height: 4.5em !important;
+  overflow: hidden !important; /* autoGrow owns height; avoid double scroll */
+}
+/* Show-more is meaningless while editing — hide so it doesn't sit over Save. */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] .claude-show-more-row,
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) .claude-show-more-row {
+  display: none !important;
+}
+/* Keep edit action icons always visible (not hover-only transcript rows). */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] .incipit-inline-edit-actions,
+[data-incipit-inline-edit-actions="user"] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 2 !important;
 }
 
 /* Edit-state action row: same shape and spacing as the icon row it

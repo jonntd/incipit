@@ -54,6 +54,28 @@
 [data-incipit-session-edits-toggle][hidden] {
   display: none !important;
 }
+/* Always-visible floating Edits entry (body-mounted). */
+[data-incipit-session-edits-toggle][data-float="1"] {
+  position: fixed !important;
+  right: 16px !important;
+  bottom: 72px !important;
+  z-index: 2147483000 !important;
+  margin: 0 !important;
+  min-height: 36px !important;
+  padding: 8px 14px !important;
+  border-radius: 999px !important;
+  border: 1px solid color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 45%, var(--vscode-panel-border, #444)) !important;
+  background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 92%, #000) !important;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35) !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+[data-incipit-session-edits-toggle][data-float="1"]:hover {
+  background: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 86%, #000) !important;
+}
+[data-incipit-session-edits-toggle][data-float="1"][hidden] {
+  display: none !important;
+}
 [data-incipit-session-edits-toggle-label] {
   font-weight: 500 !important;
 }
@@ -141,13 +163,15 @@
   align-items: center !important;
   justify-content: center !important;
   gap: 6px !important;
-  min-height: 28px !important;
-  padding: 6px 10px !important;
+  /* Dense IDE chrome: aim ≥32px hit target (skill: 44px ideal; IDE lists compromise at 32). */
+  min-height: 32px !important;
+  padding: 7px 12px !important;
   border-radius: 6px !important;
   border: 0 !important;
   font: inherit !important;
   font-weight: 500 !important;
   cursor: pointer !important;
+  transition: background-color 0.15s ease, filter 0.15s ease, opacity 0.15s ease !important;
 }
 [data-incipit-session-edits-discard-all] {
   background: color-mix(in srgb, var(--vscode-foreground, #ccc) 10%, transparent) !important;
@@ -156,17 +180,37 @@
 [data-incipit-session-edits-discard-all]:hover:not(:disabled) {
   background: color-mix(in srgb, var(--vscode-foreground, #ccc) 16%, transparent) !important;
 }
+[data-incipit-session-edits-discard-all]:active:not(:disabled),
+[data-incipit-session-edits-keep-all]:active:not(:disabled) {
+  filter: brightness(0.94) !important;
+}
 [data-incipit-session-edits-keep-all] {
-  background: color-mix(in srgb, var(--vscode-button-background, #0e639c) 90%, #000) !important;
+  /* Single primary CTA (skill §4 primary-action): Keep is the affirmative action. */
+  background: var(--vscode-button-background, #0e639c) !important;
   color: var(--vscode-button-foreground, #fff) !important;
 }
 [data-incipit-session-edits-keep-all]:hover:not(:disabled) {
-  filter: brightness(1.08) !important;
+  background: var(--vscode-button-hoverBackground, #1177bb) !important;
+  filter: none !important;
+}
+[data-incipit-session-edits-discard-all]:focus-visible,
+[data-incipit-session-edits-keep-all]:focus-visible,
+[data-incipit-session-edits-return]:focus-visible,
+[data-incipit-session-edits-toggle]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4) !important;
+  outline-offset: 2px !important;
 }
 [data-incipit-session-edits-discard-all]:disabled,
 [data-incipit-session-edits-keep-all]:disabled {
-  opacity: 0.4 !important;
-  cursor: default !important;
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-incipit-session-edits-discard-all],
+  [data-incipit-session-edits-keep-all] {
+    transition: none !important;
+  }
 }
 
 /* List */
@@ -186,16 +230,20 @@
   gap: 8px !important;
   padding: 28px 16px !important;
   text-align: center !important;
-  opacity: 0.8 !important;
+  opacity: 1 !important;
 }
 [data-incipit-session-edits-empty-title] {
   font-size: 15px !important;
   font-weight: 600 !important;
+  color: var(--vscode-foreground, #ddd) !important;
+  opacity: 0.95 !important;
 }
 [data-incipit-session-edits-empty-body] {
   font-size: 12px !important;
-  opacity: 0.65 !important;
+  color: var(--vscode-descriptionForeground, #999) !important;
+  opacity: 1 !important;
   max-width: 260px !important;
+  line-height: 1.5 !important;
 }
 [data-incipit-session-edits-return] {
   margin-top: 6px !important;
@@ -216,16 +264,27 @@
   justify-content: space-between !important;
   gap: 8px !important;
   width: 100% !important;
-  min-height: 28px !important;
-  padding: 5px 8px !important;
+  min-height: 32px !important;
+  padding: 6px 8px !important;
   border-radius: 6px !important;
   cursor: pointer !important;
   color: inherit !important;
   font: inherit !important;
+  /* color-not-only: focus/hover use background, not color alone */
+  transition: background-color 0.12s ease !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-incipit-session-edits-file] {
+    transition: none !important;
+  }
 }
 [data-incipit-session-edits-file]:hover,
 [data-incipit-session-edits-file][data-focused="1"] {
   background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)) !important;
+}
+[data-incipit-session-edits-file]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4) !important;
+  outline-offset: -2px !important;
 }
 [data-incipit-session-edits-file-info] {
   display: flex !important;
@@ -253,45 +312,77 @@
   text-decoration: line-through !important;
   opacity: 0.65 !important;
 }
+/* Open / Undo sit as siblings of the path (not inside overflow:hidden info),
+   so hover never clips them into a solid white square. */
 [data-incipit-session-edits-file-controls] {
-  display: none !important;
+  display: inline-flex !important;
   align-items: center !important;
-  gap: 2px !important;
-  flex-shrink: 0 !important;
+  gap: 8px !important;
+  flex: 0 0 auto !important;
+  /* Visible on hover OR keyboard focus of the row / button — never hover-only. */
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.15s ease !important;
 }
 [data-incipit-session-edits-file]:hover [data-incipit-session-edits-file-controls],
-[data-incipit-session-edits-file][data-focused="1"] [data-incipit-session-edits-file-controls] {
-  display: inline-flex !important;
+[data-incipit-session-edits-file][data-focused="1"] [data-incipit-session-edits-file-controls],
+[data-incipit-session-edits-file]:focus-within [data-incipit-session-edits-file-controls] {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-incipit-session-edits-file-controls] {
+    transition: none !important;
+  }
 }
 [data-incipit-session-edits-open],
 [data-incipit-session-edits-undo] {
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  width: 22px !important;
-  height: 22px !important;
+  box-sizing: border-box !important;
+  /* Visual glyph ~14px; hit target ≥28px (dense IDE list). Expand with padding. */
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
   border: 0 !important;
   border-radius: 4px !important;
   background: transparent !important;
-  color: inherit !important;
+  color: var(--vscode-foreground, #ccc) !important;
   cursor: pointer !important;
-  opacity: 0.8 !important;
+  opacity: 0.9 !important;
   padding: 0 !important;
+  margin: 0 !important;
+  line-height: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  box-shadow: none !important;
+  /* Keep focus ring — never outline:none without replacement. */
+  outline: none !important;
 }
 [data-incipit-session-edits-open]:hover,
 [data-incipit-session-edits-undo]:hover {
   opacity: 1 !important;
+  background: color-mix(in srgb, var(--vscode-foreground, #fff) 12%, transparent) !important;
+}
+[data-incipit-session-edits-open]:focus-visible,
+[data-incipit-session-edits-undo]:focus-visible {
+  opacity: 1 !important;
+  outline: 2px solid var(--vscode-focusBorder, #007fd4) !important;
+  outline-offset: 1px !important;
   background: color-mix(in srgb, var(--vscode-foreground, #fff) 10%, transparent) !important;
 }
 [data-incipit-session-edits-open]:disabled,
 [data-incipit-session-edits-undo]:disabled {
-  opacity: 0.3 !important;
+  opacity: 0.35 !important;
   cursor: default !important;
 }
 [data-incipit-session-edits-file-side] {
   display: inline-flex !important;
   align-items: center !important;
   flex: 0 0 auto !important;
+  margin-left: 4px !important;
 }
 
 /* Icons */
@@ -307,12 +398,32 @@
 [data-incipit-session-edits-keep-all] svg {
   width: 14px !important;
   height: 14px !important;
+  min-width: 14px !important;
+  min-height: 14px !important;
   display: block !important;
+  overflow: visible !important;
   fill: none !important;
   stroke: currentColor !important;
   stroke-width: 2 !important;
   stroke-linecap: round !important;
   stroke-linejoin: round !important;
+  color: inherit !important;
+  background: transparent !important;
+  /* Host / vscode-webview often sets path { fill: currentColor } which
+     paints lucide outlines as solid blobs. Force outline geometry. */
+}
+[data-incipit-session-edits-toggle-icon] svg path,
+[data-incipit-session-edits-file-icon] svg path,
+[data-incipit-session-edits-icon] svg path,
+[data-incipit-session-edits-btn-icon] svg path,
+[data-incipit-session-edits-open] svg path,
+[data-incipit-session-edits-undo] svg path,
+[data-incipit-session-edits-discard-all] svg path,
+[data-incipit-session-edits-keep-all] svg path {
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 2 !important;
+  vector-effect: non-scaling-stroke !important;
 }
 
 /* Modal must sit above the edits panel */
@@ -348,4 +459,55 @@
 }
 [data-incipit-session-edits-toggle][data-live="1"] {
   opacity: 1 !important;
+}
+
+/* Discard confirm dialog actions */
+[data-incipit-session-edits-confirm-content] {
+  min-width: min(360px, calc(100vw - 48px)) !important;
+  max-width: 420px !important;
+}
+[data-incipit-session-edits-confirm-actions] {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+  padding: 4px 16px 14px !important;
+}
+[data-incipit-session-edits-confirm-cancel],
+[data-incipit-session-edits-confirm-ok] {
+  min-height: 32px !important;
+  padding: 6px 14px !important;
+  border-radius: 6px !important;
+  border: 0 !important;
+  font: inherit !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+}
+[data-incipit-session-edits-confirm-cancel] {
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 10%, transparent) !important;
+  color: var(--vscode-foreground, #ccc) !important;
+}
+[data-incipit-session-edits-confirm-cancel]:hover {
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 16%, transparent) !important;
+}
+[data-incipit-session-edits-confirm-ok] {
+  /* destructive emphasis */
+  background: var(--vscode-inputValidation-errorBorder, #f14c4c) !important;
+  color: #fff !important;
+}
+[data-incipit-session-edits-confirm-ok]:hover {
+  filter: brightness(1.08) !important;
+}
+[data-incipit-session-edits-confirm-cancel]:focus-visible,
+[data-incipit-session-edits-confirm-ok]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4) !important;
+  outline-offset: 2px !important;
+}
+
+/* Busy / inflight buttons */
+[data-incipit-session-edits-keep-all][data-incipit-inflight],
+[data-incipit-session-edits-discard-all][data-incipit-inflight],
+[data-incipit-session-edits-open][data-incipit-inflight],
+[data-incipit-session-edits-undo][data-incipit-inflight] {
+  opacity: 0.7 !important;
+  cursor: progress !important;
 }

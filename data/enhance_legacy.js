@@ -3062,6 +3062,12 @@ import {
     deletedHint: 'Deleted file',
     rootDirLabel: 'project root',
     discardAllConfirm: 'Discard all pending file changes in this session? Files will be restored to their earlier versions.',
+    discardConfirmTitle: 'Discard all changes?',
+    discardConfirmAction: 'Discard',
+    discardConfirmCancel: 'Cancel',
+    working: 'Working…',
+    keeping: 'Keeping…',
+    discarding: 'Discarding…',
     noPendingEdits: 'Edits will appear here once your agent makes changes to files.',
     noCodeEdits: 'No Code Edits',
     sourceUser: 'you',
@@ -3116,6 +3122,12 @@ import {
     deletedHint: '已删除文件',
     rootDirLabel: '项目根目录',
     discardAllConfirm: '丢弃本会话全部待确认文件改动？文件将恢复到更早版本。',
+    discardConfirmTitle: '丢弃全部改动？',
+    discardConfirmAction: '丢弃',
+    discardConfirmCancel: '取消',
+    working: '处理中…',
+    keeping: '正在保留…',
+    discarding: '正在丢弃…',
     noPendingEdits: '代理修改文件后，改动会出现在这里。',
     noCodeEdits: '无代码改动',
     returnToThread: '返回对话',
@@ -3546,10 +3558,9 @@ import {
     }
     composerRailEl.toggleAttribute('data-incipit-composer-rail-hidden',
       !deferredComposerIsVisible(mount.input) || askPanelIsActive());
-    // Session Edits toggle rides this rail; re-parent when the rail remounts.
-    if (sessionEditsToggleEl && sessionEditsToggleEl.parentElement !== composerRailEl) {
-      try { composerRailEl.appendChild(sessionEditsToggleEl); } catch (_) {}
-    }
+    // Do NOT force-reparent Session Edits onto a hidden rail — that used to
+    // swallow the chip whenever Ask panel / deferred visibility hid the rail.
+    // Placement is owned by ensureSessionEditsToggle() (rail if visible, else body).
     return { rail: composerRailEl, input: mount.input };
   }
 
@@ -4615,10 +4626,11 @@ import {
   }
 
   function sessionEditsBarMount() {
-    // Badge lives on the composer rail (closest stable chrome without hijacking host tabs).
-    const mount = ensureComposerRail();
-    if (!mount || !mount.rail) return null;
-    return mount.rail;
+    // Always body-float the Edits chip. Riding the composer rail was unreliable:
+    // rail gets `data-incipit-composer-rail-hidden` / overflow clipping / remounts
+    // and the chip disappears even when sessionEdits has pending files.
+    if (document.body) return { host: document.body, mode: 'float' };
+    return null;
   }
 
   function sessionEditsMessagesMount() {
@@ -4651,7 +4663,12 @@ import {
     if (attr) el.setAttribute(attr, '');
     else el.setAttribute('data-incipit-session-edits-icon', '');
     const paths = SESSION_EDITS_ICONS[name] || SESSION_EDITS_ICONS.file;
-    el.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + paths + '</svg>';
+    // Explicit xmlns + fill/stroke on root — host styles often force svg fill
+    // and turn outline icons into solid white squares.
+    el.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" ' +
+      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+      'stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths + '</svg>';
     return el;
   }
 
@@ -4768,9 +4785,11 @@ import {
   }
 
   function ensureSessionEditsToggle() {
-    const rail = sessionEditsBarMount();
-    if (!rail) {
-      // Composer not ready: keep prior node if any, otherwise skip until next paint.
+    const mount = sessionEditsBarMount();
+    if (!mount || !mount.host) {
+      // Composer / body not ready: keep prior node if any; schedule a retry when
+      // we know there are pending edits so the chip cannot stay permanently dead.
+      if (sessionEditsFiles().length > 0) scheduleSessionEditsChrome(250);
       return sessionEditsToggleEl && sessionEditsToggleEl.isConnected ? sessionEditsToggleEl : null;
     }
     if (!sessionEditsToggleEl || !sessionEditsToggleEl.isConnected) {
@@ -4782,16 +4801,19 @@ import {
         evt.preventDefault();
         evt.stopPropagation();
         sessionEditsPanelOpen = !sessionEditsPanelOpen;
+        // Opening: force full chip rebuild (drop stale signature).
+        try { btn.removeAttribute('data-incipit-chip-sig'); } catch (_) {}
         if (sessionEditsPanelOpen) sessionEditsClampFocus(sessionEditsFocusedPath);
         renderSessionEditsChrome();
       });
       sessionEditsToggleEl = btn;
     }
-    // Prefer living on the composer rail (above the input). If the rail remounts,
-    // re-parent without destroying the button so listeners stay intact.
-    if (sessionEditsToggleEl.parentElement !== rail) {
-      rail.appendChild(sessionEditsToggleEl);
+    // Re-parent without destroying listeners when rail remounts or we fall back
+    // to body float (rail hidden by ask-panel / deferred visibility).
+    if (sessionEditsToggleEl.parentElement !== mount.host) {
+      try { mount.host.appendChild(sessionEditsToggleEl); } catch (_) {}
     }
+    sessionEditsToggleEl.setAttribute('data-float', '1');
     return sessionEditsToggleEl;
   }
 
@@ -5003,14 +5025,20 @@ import {
 
   function updateSessionEditsToggleChip(toggle, totals, hasPending, staleCount) {
     if (!toggle) return;
+    // Always keep float styling — chip must stay visible outside host chrome.
+    try { toggle.setAttribute('data-float', '1'); } catch (_) {}
+    const shouldShow = !!(hasPending || sessionEditsPanelOpen);
     const sig = sessionEditsChipSignature(totals, hasPending, staleCount);
     if (toggle.getAttribute('data-incipit-chip-sig') === sig) {
-      // Only ensure visibility / open flags if signature unchanged.
-      toggle.hidden = !hasPending && !sessionEditsPanelOpen;
+      toggle.hidden = !shouldShow;
+      // Ensure still in body if React/host moved it.
+      if (shouldShow && document.body && toggle.parentElement !== document.body) {
+        try { document.body.appendChild(toggle); } catch (_) {}
+      }
       return;
     }
     toggle.setAttribute('data-incipit-chip-sig', sig);
-    toggle.hidden = !hasPending && !sessionEditsPanelOpen;
+    toggle.hidden = !shouldShow;
     // Rebuild chip contents only when numbers / state actually change.
     toggle.textContent = '';
     toggle.appendChild(sessionEditsSvgIcon('file-diff', 'data-incipit-session-edits-toggle-icon'));
@@ -5043,6 +5071,9 @@ import {
     toggle.setAttribute('data-stale', staleCount > 0 ? '1' : '0');
     toggle.setAttribute('data-live', totals.live > 0 ? '1' : '0');
     toggle.setAttribute('aria-expanded', sessionEditsPanelOpen ? 'true' : 'false');
+    if (shouldShow && document.body && toggle.parentElement !== document.body) {
+      try { document.body.appendChild(toggle); } catch (_) {}
+    }
   }
 
   function renderSessionEditsChrome() {
@@ -5052,6 +5083,10 @@ import {
     const staleCount = files.filter(f => f && f.status === 'stale').length;
     const toggle = ensureSessionEditsToggle();
     updateSessionEditsToggleChip(toggle, totals, hasPending, staleCount);
+    if (hasPending && !toggle) {
+      // Rail/body not ready yet — keep retrying so the chip cannot vanish forever.
+      scheduleSessionEditsChrome(300);
+    }
 
     // Closed panel: never touch list DOM / panel children — chip only.
     if (!sessionEditsPanelOpen) {
@@ -5085,6 +5120,7 @@ import {
       const discardAll = document.createElement('button');
       discardAll.type = 'button';
       discardAll.setAttribute('data-incipit-session-edits-discard-all', '');
+      discardAll.setAttribute('aria-label', changeReviewText('discardAll'));
       const hasLive = (totals.live || 0) > 0;
       discardAll.title = (busy || hasLive) ? changeReviewText('liveHint') : changeReviewText('discardAllHint');
       discardAll.disabled = busy || hasLive || !hasPending;
@@ -5096,6 +5132,7 @@ import {
       const keepAll = document.createElement('button');
       keepAll.type = 'button';
       keepAll.setAttribute('data-incipit-session-edits-keep-all', '');
+      keepAll.setAttribute('aria-label', changeReviewText('keepAll'));
       keepAll.title = changeReviewText('keepAllHint');
       keepAll.disabled = !hasPending;
       keepAll.appendChild(sessionEditsSvgIcon('check-check', 'data-incipit-session-edits-btn-icon'));
@@ -5146,6 +5183,11 @@ import {
         if (file.source) row.setAttribute('data-source', file.source);
         row.setAttribute('data-focused', file.filePath === focusedPath ? '1' : '0');
         row.setAttribute('role', 'option');
+        row.setAttribute('aria-label',
+          (file.displayPath || file.filePath || 'file') + ' ' +
+          (file.added ? ('+' + file.added + ' ') : '') +
+          (file.removed ? ('-' + file.removed + ' ') : '') +
+          changeReviewText('openDiffNative'));
 
         // Left: file icon + path (Augment Filepath showIcon)
         const info = document.createElement('div');
@@ -5192,7 +5234,8 @@ import {
         undo.disabled = busy || file.status === 'unavailable' || file.live === true;
         controls.appendChild(openBtn);
         controls.appendChild(undo);
-        info.appendChild(controls);
+        // Controls must NOT live under file-info (overflow:hidden) — they were
+        // clipped into a white square next to the path on hover.
 
         // Right: soft +N/-M badges always visible (Augment c-edit-change-summary size:0)
         const side = document.createElement('div');
@@ -5216,6 +5259,7 @@ import {
         }
 
         row.appendChild(info);
+        row.appendChild(controls);
         row.appendChild(side);
         row.title = changeReviewText('openDiffNative');
         list.appendChild(row);
@@ -5239,13 +5283,140 @@ import {
     sessionEditsScrollFocusedIntoView(panel);
   }
 
+  function setSessionEditsButtonBusy(button, busy, labelText) {
+    if (!button) return;
+    if (busy) {
+      button.dataset.incipitInflight = '1';
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      if (labelText) {
+        if (!button.dataset.incipitLabel) {
+          button.dataset.incipitLabel = button.textContent || '';
+        }
+        // Preserve icon if first child is icon span
+        const icon = button.querySelector('[data-incipit-session-edits-btn-icon], svg, span[data-incipit-session-edits-btn-icon]');
+        const label = button.querySelector('span:not([data-incipit-session-edits-btn-icon])');
+        if (label && !label.getAttribute('data-incipit-session-edits-btn-icon')) {
+          label.textContent = labelText;
+        } else {
+          button.textContent = labelText;
+          if (icon) button.insertBefore(icon, button.firstChild);
+        }
+      }
+    } else {
+      button.removeAttribute('data-incipit-inflight');
+      button.removeAttribute('aria-busy');
+      // Leave disabled to re-render; renderSessionEditsChrome rebuilds buttons.
+      if (button.dataset.incipitLabel) {
+        delete button.dataset.incipitLabel;
+      }
+    }
+  }
+
+  /** VS Code-styled confirm (replaces window.confirm) — skill: confirmation-dialogs. */
+  function confirmSessionEditsDiscard() {
+    return new Promise(resolve => {
+      closeChangeReviewModal();
+      if (!document.body) {
+        resolve(false);
+        return;
+      }
+      const backdrop = document.createElement('div');
+      backdrop.setAttribute('data-incipit-change-review-modal', '');
+      backdrop.setAttribute('data-incipit-session-edits-confirm', '');
+      backdrop.setAttribute('role', 'dialog');
+      backdrop.setAttribute('aria-modal', 'true');
+      backdrop.setAttribute('aria-labelledby', 'incipit-session-edits-confirm-title');
+
+      const content = document.createElement('div');
+      content.setAttribute('data-incipit-write-diff-modal-content', '');
+      content.setAttribute('data-incipit-session-edits-confirm-content', '');
+
+      const header = document.createElement('div');
+      header.setAttribute('data-incipit-write-diff-modal-header', '');
+      const title = document.createElement('span');
+      title.id = 'incipit-session-edits-confirm-title';
+      title.setAttribute('data-incipit-write-diff-modal-title', '');
+      title.textContent = changeReviewText('discardConfirmTitle');
+      header.appendChild(title);
+
+      const body = document.createElement('div');
+      body.setAttribute('data-incipit-change-review-modal-message', '');
+      body.textContent = changeReviewText('discardAllConfirm');
+
+      const actions = document.createElement('div');
+      actions.setAttribute('data-incipit-session-edits-confirm-actions', '');
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.setAttribute('data-incipit-session-edits-confirm-cancel', '');
+      cancel.textContent = changeReviewText('discardConfirmCancel');
+
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.setAttribute('data-incipit-session-edits-confirm-ok', '');
+      confirm.textContent = changeReviewText('discardConfirmAction');
+
+      const finish = (value) => {
+        document.removeEventListener('keydown', onKey, true);
+        try { backdrop.remove(); } catch (_) {}
+        if (changeReviewModal && changeReviewModal.backdrop === backdrop) {
+          changeReviewModal = null;
+        }
+        resolve(value);
+      };
+
+      cancel.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(false);
+      });
+      confirm.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(true);
+      });
+      backdrop.addEventListener('click', (e) => {
+        if (e.target !== backdrop) return;
+        e.preventDefault();
+        finish(false);
+      });
+      const onKey = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(false);
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(true);
+        }
+      };
+      document.addEventListener('keydown', onKey, true);
+
+      actions.appendChild(cancel);
+      actions.appendChild(confirm);
+      content.appendChild(header);
+      content.appendChild(body);
+      content.appendChild(actions);
+      backdrop.appendChild(content);
+      changeReviewModal = { backdrop, onKeyDown: onKey, content };
+      document.body.appendChild(backdrop);
+      try { confirm.focus(); } catch (_) {}
+    });
+  }
+
   function keepAllSessionEdits(button) {
     // Keep is metadata-only — safe while streaming.
-    if (button) button.dataset.incipitInflight = '1';
+    if (button && button.dataset.incipitInflight === '1') return;
+    setSessionEditsButtonBusy(button, true, changeReviewText('keeping'));
+    // Also disable sibling discard while keeping
+    const discardBtn = sessionEditsPanelEl &&
+      sessionEditsPanelEl.querySelector('[data-incipit-session-edits-discard-all]');
+    if (discardBtn) discardBtn.disabled = true;
     postSessionEditsRequest('session_edits_keep_all_request', {})
       .then(() => {
         forceChangeReviewTurnBlocksRefresh();
-        // After keep, close the panel if nothing pending remains.
         if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
       })
       .catch(error => {
@@ -5256,40 +5427,51 @@ import {
         );
       })
       .finally(() => {
-        if (button) button.removeAttribute('data-incipit-inflight');
+        setSessionEditsButtonBusy(button, false);
         renderSessionEditsChrome();
       });
   }
 
   function discardAllSessionEdits(button) {
     if (changeReviewBusySafe()) return;
-    if (!window.confirm(changeReviewText('discardAllConfirm'))) return;
-    if (button) button.dataset.incipitInflight = '1';
-    const files = sessionEditsFiles().map(sessionEditsRejectInfoFromFile).filter(Boolean);
-    postSessionEditsRequest('session_edits_discard_all_request', {})
-      .then(payload => {
-        dispatchChangeReviewRejected(files);
-        forceChangeReviewTurnBlocksRefresh();
-        const summary = summarizeDiscardResults(payload && payload.results);
-        if (summary.fail > 0 || summary.ok > 0) showDiscardSummary(summary);
-        if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
-      })
-      .catch(error => {
-        warn('session edits discard all failed:', error && error.message ? error.message : error);
-        openChangeReviewModalShell(
-          changeReviewText('discardSummaryTitle'),
-          changeReviewText('discardFail', { msg: error && error.message ? error.message : String(error) }),
-        );
-      })
-      .finally(() => {
-        if (button) button.removeAttribute('data-incipit-inflight');
-        renderSessionEditsChrome();
-      });
+    if (button && button.dataset.incipitInflight === '1') return;
+    confirmSessionEditsDiscard().then(ok => {
+      if (!ok) return;
+      setSessionEditsButtonBusy(button, true, changeReviewText('discarding'));
+      const keepBtn = sessionEditsPanelEl &&
+        sessionEditsPanelEl.querySelector('[data-incipit-session-edits-keep-all]');
+      if (keepBtn) keepBtn.disabled = true;
+      const files = sessionEditsFiles().map(sessionEditsRejectInfoFromFile).filter(Boolean);
+      postSessionEditsRequest('session_edits_discard_all_request', {})
+        .then(payload => {
+          dispatchChangeReviewRejected(files);
+          forceChangeReviewTurnBlocksRefresh();
+          const summary = summarizeDiscardResults(payload && payload.results);
+          if (summary.fail > 0 || summary.ok > 0) showDiscardSummary(summary);
+          if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
+        })
+        .catch(error => {
+          warn('session edits discard all failed:', error && error.message ? error.message : error);
+          openChangeReviewModalShell(
+            changeReviewText('discardSummaryTitle'),
+            changeReviewText('discardFail', { msg: error && error.message ? error.message : String(error) }),
+          );
+        })
+        .finally(() => {
+          setSessionEditsButtonBusy(button, false);
+          renderSessionEditsChrome();
+        });
+    });
   }
 
   function keepOneSessionEdit(filePath, button) {
     if (!filePath) return;
-    if (button) button.dataset.incipitInflight = '1';
+    if (button && button.dataset.incipitInflight === '1') return;
+    if (button) {
+      button.dataset.incipitInflight = '1';
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+    }
     sessionEditsFocusPathAfterRemove(filePath);
     postSessionEditsRequest('session_edits_keep_file_request', { filePath })
       .then(() => {
@@ -5314,7 +5496,12 @@ import {
     if (!filePath || changeReviewBusySafe()) return;
     const focused = sessionEditsFocusedFile();
     if (focused && focused.filePath === filePath && focused.live === true) return;
-    if (button) button.dataset.incipitInflight = '1';
+    if (button && button.dataset.incipitInflight === '1') return;
+    if (button) {
+      button.dataset.incipitInflight = '1';
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+    }
     sessionEditsFocusPathAfterRemove(filePath);
     const files = sessionEditsFiles()
       .filter(f => f && f.filePath === filePath)
@@ -5502,6 +5689,14 @@ import {
         changeReviewPayload = msg.payload;
         changeReviewMountRetryCount = 0;
         if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+        // Paint Edits chip ASAP when there are pending files (debounce still
+        // coalesces bursts, but first paint must not wait if we were empty).
+        const pending = changeReviewPayload && changeReviewPayload.sessionEdits &&
+          Array.isArray(changeReviewPayload.sessionEdits.files) &&
+          changeReviewPayload.sessionEdits.files.length > 0;
+        if (pending) {
+          try { renderSessionEditsChrome(); } catch (_) {}
+        }
         scheduleSessionEditsChrome(sessionEditsPanelOpen ? 120 : 200);
         return;
       }
@@ -7893,7 +8088,15 @@ function setupContinueButton() {
     if (state.attachmentsEl) {
       state.attachmentsEl.removeAttribute('data-incipit-inline-edit-hidden');
     }
-    if (state.bubbleHost) state.bubbleHost.removeAttribute('data-incipit-inline-editing');
+    if (state.bubbleHost) {
+      state.bubbleHost.removeAttribute('data-incipit-inline-editing');
+      // Restore long-message collapse if we forced expand only for the edit.
+      const userBubbleEl = state.bubbleHost.querySelector('[data-incipit-user-bubble]');
+      if (userBubbleEl && userBubbleEl.dataset.incipitEditForcedExpand === '1') {
+        userBubbleEl.removeAttribute('data-claude-expanded');
+        delete userBubbleEl.dataset.incipitEditForcedExpand;
+      }
+    }
     return state;
   }
 
@@ -8523,6 +8726,22 @@ function setupContinueButton() {
       }
     }
     bubbleHost.setAttribute('data-incipit-inline-editing', kind);
+    // Long user bubbles stay clipped at 600px until expanded. Force-expand
+    // for the edit session so the textarea / action row are not cut off.
+    if (kind === 'user') {
+      const userBubbleEl = contentEl.closest('[data-incipit-user-bubble]') ||
+        bubbleHost.querySelector('[data-incipit-user-bubble]');
+      if (userBubbleEl) {
+        // Only force-expand if long + collapsed; remember for teardown.
+        if (
+          userBubbleEl.getAttribute('data-claude-length') === 'long' &&
+          userBubbleEl.getAttribute('data-claude-expanded') !== '1'
+        ) {
+          userBubbleEl.setAttribute('data-claude-expanded', '1');
+          userBubbleEl.dataset.incipitEditForcedExpand = '1';
+        }
+      }
+    }
 
     const autoGrow = () => {
       textarea.style.height = 'auto';
