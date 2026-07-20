@@ -22,6 +22,7 @@ import {
   conversationIsBusy as kernelConversationIsBusy,
   getHostState as kernelGetHostState,
   registerBusyProbe as registerRuntimeBusyProbe,
+  streamQuietForMs as kernelStreamQuietForMs,
   subscribe as subscribeRuntime,
 } from './runtime_kernel.js';
 
@@ -2760,7 +2761,10 @@ import {
       scheduleTranscriptActionSettleScan(0);
     });
     subscribeRuntime('sessionChanged', () => {
-      noteTranscriptActionMutation();
+      // Defer settle scan until after pin-to-bottom + first paint. Immediate
+      // noteTranscriptActionMutation on session open walked the whole
+      // transcript three times (burst) while scroll was still at the top.
+      scheduleTranscriptActionSettleScan(700);
     });
   }
 
@@ -3022,12 +3026,47 @@ import {
     noFiles: 'No file changes',
     stale: 'Stale',
     rejected: 'Rejected',
+    accepted: 'Kept',
     unavailable: 'Unavailable',
     close: 'Close',
     openDiff: 'Open diff',
+    openDiffNative: 'Open in editor diff',
+    openFile: 'Open file',
+    undoFile: 'Undo changes',
     loading: 'Loading diff...',
     rejectFail: 'Reject failed: {msg}',
     diffFail: 'Could not open review diff: {msg}',
+    editsTab: 'Edits',
+    editsTitle: 'Session edits',
+    keepAll: 'Keep All',
+    keepFile: 'Keep',
+    discardAll: 'Discard All',
+    keepAllHint: 'Keep all changes and clear the pending list',
+    keepFileHint: 'Keep this file change',
+    discardAllHint: 'Discard all pending changes (agent and yours if tracked)',
+    liveBadge: 'live',
+    liveHint: 'Agent is still writing — discard waits until the turn is idle',
+    keyboardHint: '↑↓ select · Enter diff · K keep · U undo · Shift+K/U all · Esc close',
+    createdBadge: 'new',
+    deletedBadge: 'del',
+    createdHint: 'Created file',
+    deletedHint: 'Deleted file',
+    rootDirLabel: 'project root',
+    discardAllConfirm: 'Discard all pending file changes in this session? Files will be restored to their earlier versions.',
+    noPendingEdits: 'Edits will appear here once your agent makes changes to files.',
+    noCodeEdits: 'No Code Edits',
+    sourceUser: 'you',
+    sourceMixed: 'you + agent',
+    sourceAgent: 'agent',
+    returnToThread: 'Return to Thread',
+    keepFail: 'Keep failed: {msg}',
+    discardFail: 'Discard failed: {msg}',
+    openFail: 'Could not open file: {msg}',
+    discardSummaryTitle: 'Discard results',
+    discardSummaryOk: 'Restored {ok} file(s).',
+    discardSummaryPartial: 'Restored {ok}, skipped {fail} (stale or unavailable).',
+    discardSummaryFail: 'Could not restore {fail} file(s).',
+    staleHint: 'Changed on disk after the agent edit',
   });
   const CHANGE_REVIEW_TEXT_ZH = Object.freeze({
     rejectTurn: '拒绝本轮',
@@ -3041,12 +3080,44 @@ import {
     noFiles: '无文件变更',
     stale: '已过期',
     rejected: '已拒绝',
+    accepted: '已保留',
     unavailable: '不可用',
     close: '关闭',
     openDiff: '打开 diff',
+    openDiffNative: '在编辑器中打开 diff',
+    openFile: '打开文件',
+    undoFile: '撤销更改',
     loading: '正在加载 diff…',
     rejectFail: '拒绝失败：{msg}',
     diffFail: '无法打开 diff：{msg}',
+    editsTab: 'Edits',
+    editsTitle: '本会话改动',
+    keepAll: '全部保留',
+    keepFile: '保留',
+    discardAll: '全部丢弃',
+    keepAllHint: '保留全部改动并清空待确认列表',
+    keepFileHint: '仅保留此文件改动',
+    discardAllHint: '丢弃本会话全部待确认改动（含 agent 与已跟踪的用户改动）',
+    liveBadge: '进行中',
+    liveHint: '代理仍在写入 — 空闲后再丢弃更安全',
+    keyboardHint: '↑↓ 选择 · Enter 打开 diff · K 保留 · U 撤销 · Shift+K/U 全部 · Esc 关闭',
+    createdBadge: '新建',
+    deletedBadge: '删除',
+    createdHint: '新建文件',
+    deletedHint: '已删除文件',
+    rootDirLabel: '项目根目录',
+    discardAllConfirm: '丢弃本会话全部待确认文件改动？文件将恢复到更早版本。',
+    noPendingEdits: '代理修改文件后，改动会出现在这里。',
+    noCodeEdits: '无代码改动',
+    returnToThread: '返回对话',
+    keepFail: '保留失败：{msg}',
+    discardFail: '丢弃失败：{msg}',
+    openFail: '无法打开文件：{msg}',
+    discardSummaryTitle: '丢弃结果',
+    discardSummaryOk: '已恢复 {ok} 个文件。',
+    discardSummaryPartial: '已恢复 {ok} 个，跳过 {fail} 个（过期或不可用）。',
+    discardSummaryFail: '未能恢复 {fail} 个文件。',
+    staleHint: '代理改完后磁盘又被改过',
   });
   const CHANGE_REVIEW_TEXT = Object.freeze(
     (CFG.language === 'zh' ? CHANGE_REVIEW_TEXT_ZH : CHANGE_REVIEW_TEXT_EN),
@@ -3084,6 +3155,14 @@ import {
   }
 
   let changeReviewPayload = null;
+  let sessionEditsPanelOpen = false;
+  let sessionEditsPanelEl = null;
+  let sessionEditsToggleEl = null;
+  let sessionEditsFocusedPath = '';
+  let sessionEditsActionPending = new Map();
+  let sessionEditsRenderTimer = 0;
+  let sessionEditsRenderQueued = false;
+  let sessionEditsLastContentKey = '';
   let changeReviewTurnBlockRenderScheduled = false;
   let changeReviewListenerBound = false;
   let changeReviewIdentityTimer = 0;
@@ -3458,6 +3537,10 @@ import {
     }
     composerRailEl.toggleAttribute('data-incipit-composer-rail-hidden',
       !deferredComposerIsVisible(mount.input) || askPanelIsActive());
+    // Session Edits toggle rides this rail; re-parent when the rail remounts.
+    if (sessionEditsToggleEl && sessionEditsToggleEl.parentElement !== composerRailEl) {
+      try { composerRailEl.appendChild(sessionEditsToggleEl); } catch (_) {}
+    }
     return { rail: composerRailEl, input: mount.input };
   }
 
@@ -3810,7 +3893,71 @@ import {
 
   function changeReviewRejectableFiles(turn) {
     return changeReviewTurnFiles(turn)
-      .filter(file => !file.status || file.status === 'pending');
+      .filter(file => !file.status || file.status === 'pending' || file.status === 'stale');
+  }
+
+  function sessionEditsPayload() {
+    const p = changeReviewPayload && changeReviewPayload.sessionEdits;
+    if (!p || typeof p !== 'object') {
+      return { empty: true, files: [], totals: { files: 0, added: 0, removed: 0, hasLineStats: false } };
+    }
+    return p;
+  }
+
+  function sessionEditsFiles() {
+    return Array.isArray(sessionEditsPayload().files) ? sessionEditsPayload().files : [];
+  }
+
+  function sessionEditsTotals() {
+    const t = sessionEditsPayload().totals || {};
+    return {
+      files: changeReviewNumber(t.files),
+      added: changeReviewNumber(t.added),
+      removed: changeReviewNumber(t.removed),
+      hasLineStats: t.hasLineStats === true,
+      live: changeReviewNumber(t.live),
+      created: changeReviewNumber(t.created),
+      deleted: changeReviewNumber(t.deleted),
+    };
+  }
+
+  function sessionEditsDirLabel(dirPath) {
+    if (!dirPath || dirPath === '.' || dirPath === '') return changeReviewText('rootDirLabel');
+    return dirPath;
+  }
+
+  function sessionEditsGroupFilesByDir(files) {
+    const groups = [];
+    const map = new Map();
+    for (const file of files) {
+      if (!file) continue;
+      const dir = typeof file.dirPath === 'string' && file.dirPath
+        ? file.dirPath
+        : sessionEditsDirFromDisplay(file.displayPath || file.filePath || '');
+      let g = map.get(dir);
+      if (!g) {
+        g = { dirPath: dir, files: [] };
+        map.set(dir, g);
+        groups.push(g);
+      }
+      g.files.push(file);
+    }
+    return groups;
+  }
+
+  function sessionEditsDirFromDisplay(displayPath) {
+    const raw = typeof displayPath === 'string' ? displayPath.replace(/\\/g, '/') : '';
+    if (!raw) return '.';
+    const idx = raw.lastIndexOf('/');
+    if (idx <= 0) return '.';
+    return raw.slice(0, idx);
+  }
+
+  function sessionEditsBaseName(displayPath) {
+    const raw = typeof displayPath === 'string' ? displayPath.replace(/\\/g, '/') : '';
+    if (!raw) return '';
+    const idx = raw.lastIndexOf('/');
+    return idx >= 0 ? raw.slice(idx + 1) : raw;
   }
 
   function changeReviewTotals(turn) {
@@ -3917,7 +4064,7 @@ import {
     }
 
     const reject = changeReviewButton(changeReviewText('rejectFile'), 'data-incipit-change-review-reject-file');
-    reject.disabled = !!options.busy || file.status === 'rejected' || file.status === 'stale' || file.status === 'unavailable';
+    reject.disabled = !!options.busy || file.status === 'rejected' || file.status === 'accepted' || file.status === 'stale' || file.status === 'unavailable';
     if (reject.disabled) reject.dataset.incipitDisabled = '1';
     row.appendChild(reject);
     return row;
@@ -4048,6 +4195,7 @@ import {
   function changeReviewStatusLabel(status) {
     if (status === 'stale') return changeReviewText('stale');
     if (status === 'rejected') return changeReviewText('rejected');
+    if (status === 'accepted') return changeReviewText('accepted');
     if (status === 'unavailable') return changeReviewText('unavailable');
     return status || '';
   }
@@ -4409,6 +4557,896 @@ import {
     while (next.firstChild) block.appendChild(next.firstChild);
   }
 
+  function postSessionEditsRequest(type, payload, timeoutMs = 15000) {
+    setupChangeReviewChannel();
+    const api = getIncipitVsCodeApi();
+    if (!api || typeof api.postMessage !== 'function') {
+      return Promise.reject(new Error('Could not reach the VS Code webview channel.'));
+    }
+    const requestId = 'session-edits-' + (++changeReviewSeq).toString(36);
+    const message = {
+      __incipit: true,
+      type,
+      requestId,
+      sessionId: getActiveSessionId(),
+      cwd: getActiveSessionCwd() || (changeReviewPayload && changeReviewPayload.cwd) || null,
+      busy: changeReviewBusySafe(),
+      ...payload,
+    };
+    return new Promise((resolve, reject) => {
+      sessionEditsActionPending.set(requestId, { resolve, reject });
+      try {
+        api.postMessage(message);
+      } catch (error) {
+        sessionEditsActionPending.delete(requestId);
+        reject(error);
+        return;
+      }
+      setTimeout(() => {
+        const item = sessionEditsActionPending.get(requestId);
+        if (!item) return;
+        sessionEditsActionPending.delete(requestId);
+        item.reject(new Error('Session edits request timed out.'));
+      }, timeoutMs);
+    });
+  }
+
+  function sessionEditsRejectInfoFromFile(file) {
+    if (!file) return null;
+    const path = file.displayPath || file.filePath || '';
+    if (!path) return null;
+    return {
+      path,
+      tool: typeof file.tool === 'string' ? file.tool : '',
+      isCreated: file.isCreated === true,
+      added: Number.isFinite(file.added) ? file.added : 0,
+      removed: Number.isFinite(file.removed) ? file.removed : 0,
+      hasLineStats: file.hasLineStats === true,
+    };
+  }
+
+  function sessionEditsBarMount() {
+    // Badge lives on the composer rail (closest stable chrome without hijacking host tabs).
+    const mount = ensureComposerRail();
+    if (!mount || !mount.rail) return null;
+    return mount.rail;
+  }
+
+  function sessionEditsMessagesMount() {
+    return document.querySelector('[data-incipit-messages-container]')
+      || document.querySelector('[class*="messagesContainer_"]')
+      || null;
+  }
+
+  function sessionEditsFilePaths() {
+    return sessionEditsFiles()
+      .map(f => f && f.filePath)
+      .filter(p => typeof p === 'string' && p);
+  }
+
+  // Lucide-like 14px strokes used by Augment Edits tab (file-diff / trash-2 /
+  // check-check / external-link / undo-2 / file-plus / file-minus).
+  const SESSION_EDITS_ICONS = Object.freeze({
+    'file-diff': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 12h4"/><path d="M10 16h4"/><path d="M10 8h1"/>',
+    'trash-2': '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    'check-check': '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+    'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    'undo-2': '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/>',
+    'file': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    'file-plus': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/>',
+    'file-minus': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/>',
+  });
+
+  function sessionEditsSvgIcon(name, attr) {
+    const el = document.createElement('span');
+    if (attr) el.setAttribute(attr, '');
+    else el.setAttribute('data-incipit-session-edits-icon', '');
+    const paths = SESSION_EDITS_ICONS[name] || SESSION_EDITS_ICONS.file;
+    el.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + paths + '</svg>';
+    return el;
+  }
+
+  function sessionEditsFileIconName(file) {
+    if (file && file.isDeleted === true) return 'file-minus';
+    if (file && file.isCreated === true) return 'file-plus';
+    return 'file-diff';
+  }
+
+
+  function sessionEditsFileExt(filePath) {
+    const raw = typeof filePath === 'string' ? filePath : '';
+    const base = raw.replace(/\\/g, '/').split('/').pop() || '';
+    if (!base || base.startsWith('.')) {
+      // dotfiles like .gitignore
+      if (base.startsWith('.') && base.length > 1 && base.indexOf('.', 1) < 0) return base.slice(1).toLowerCase();
+    }
+    const dot = base.lastIndexOf('.');
+    if (dot <= 0 || dot === base.length - 1) return '';
+    return base.slice(dot + 1).toLowerCase();
+  }
+
+  function sessionEditsExtLabel(ext) {
+    if (!ext) return '•';
+    if (ext.length <= 4) return ext.toUpperCase();
+    return ext.slice(0, 3).toUpperCase();
+  }
+
+  function sessionEditsLoadSize() {
+    try {
+      const raw = window.localStorage && window.localStorage.getItem('incipit.sessionEdits.panelSize');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const w = Number(parsed.w);
+      const h = Number(parsed.h);
+      if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+      return { w: Math.round(w), h: Math.round(h) };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function sessionEditsSaveSize(w, h) {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem('incipit.sessionEdits.panelSize', JSON.stringify({
+        w: Math.round(w),
+        h: Math.round(h),
+      }));
+    } catch (_) {}
+  }
+
+  function sessionEditsClampFocus(preferredPath) {
+    const paths = sessionEditsFilePaths();
+    if (!paths.length) {
+      sessionEditsFocusedPath = '';
+      return '';
+    }
+    const want = typeof preferredPath === 'string' && preferredPath
+      ? preferredPath
+      : sessionEditsFocusedPath;
+    if (want && paths.includes(want)) {
+      sessionEditsFocusedPath = want;
+      return want;
+    }
+    // Prefer next path after a removed focus; else previous; else first.
+    if (want) {
+      // files already reordered alphabetically — fall back to first remaining
+    }
+    sessionEditsFocusedPath = paths[0];
+    return sessionEditsFocusedPath;
+  }
+
+  function sessionEditsMoveFocus(delta) {
+    const paths = sessionEditsFilePaths();
+    if (!paths.length) {
+      sessionEditsFocusedPath = '';
+      return '';
+    }
+    let idx = paths.indexOf(sessionEditsFocusedPath);
+    if (idx < 0) idx = 0;
+    else idx = Math.max(0, Math.min(paths.length - 1, idx + delta));
+    sessionEditsFocusedPath = paths[idx];
+    return sessionEditsFocusedPath;
+  }
+
+  function sessionEditsFocusPathAfterRemove(removedPath) {
+    const before = sessionEditsFilePaths();
+    const idx = before.indexOf(removedPath);
+    // After keep/discard the path disappears on next payload; pick neighbor now
+    // so re-render can restore focus to a still-pending row.
+    if (idx < 0) return sessionEditsClampFocus('');
+    if (idx + 1 < before.length) return sessionEditsClampFocus(before[idx + 1]);
+    if (idx - 1 >= 0) return sessionEditsClampFocus(before[idx - 1]);
+    sessionEditsFocusedPath = '';
+    return '';
+  }
+
+  function sessionEditsScrollFocusedIntoView(panel) {
+    if (!panel) return;
+    const row = panel.querySelector('[data-incipit-session-edits-file][data-focused="1"]');
+    if (row && typeof row.scrollIntoView === 'function') {
+      try { row.scrollIntoView({ block: 'nearest' }); } catch (_) {
+        try { row.scrollIntoView(false); } catch (__) {}
+      }
+    }
+  }
+
+  function sessionEditsFocusedFile() {
+    const path = sessionEditsFocusedPath;
+    if (!path) return null;
+    return sessionEditsFiles().find(f => f && f.filePath === path) || null;
+  }
+
+  function ensureSessionEditsToggle() {
+    const rail = sessionEditsBarMount();
+    if (!rail) {
+      // Composer not ready: keep prior node if any, otherwise skip until next paint.
+      return sessionEditsToggleEl && sessionEditsToggleEl.isConnected ? sessionEditsToggleEl : null;
+    }
+    if (!sessionEditsToggleEl || !sessionEditsToggleEl.isConnected) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-incipit-session-edits-toggle', '');
+      btn.setAttribute('aria-label', changeReviewText('editsTab'));
+      btn.addEventListener('click', evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        sessionEditsPanelOpen = !sessionEditsPanelOpen;
+        if (sessionEditsPanelOpen) sessionEditsClampFocus(sessionEditsFocusedPath);
+        renderSessionEditsChrome();
+      });
+      sessionEditsToggleEl = btn;
+    }
+    // Prefer living on the composer rail (above the input). If the rail remounts,
+    // re-parent without destroying the button so listeners stay intact.
+    if (sessionEditsToggleEl.parentElement !== rail) {
+      rail.appendChild(sessionEditsToggleEl);
+    }
+    return sessionEditsToggleEl;
+  }
+
+  function ensureSessionEditsPanel() {
+    // ALWAYS mount on document.body as a floating panel. Never inject into
+    // the messages container — that caused transcript scroll jumps (hide
+    // siblings / reflow) and destroyed clicks when React remounted the host.
+    if (sessionEditsPanelEl && sessionEditsPanelEl.isConnected) {
+      if (sessionEditsPanelEl.parentElement !== document.body && document.body) {
+        document.body.appendChild(sessionEditsPanelEl);
+      }
+      return sessionEditsPanelEl;
+    }
+    if (!document.body) return null;
+
+    const panel = document.createElement('div');
+    panel.setAttribute('data-incipit-session-edits-panel', '');
+    panel.hidden = true;
+    panel.addEventListener('click', evt => {
+      const t = evt.target;
+      if (!(t instanceof Element)) return;
+      // Return to Thread / close
+      if (t.closest('[data-incipit-session-edits-close]') ||
+          t.closest('[data-incipit-session-edits-return]')) {
+        evt.preventDefault();
+        sessionEditsPanelOpen = false;
+        renderSessionEditsChrome();
+        return;
+      }
+      if (t.closest('[data-incipit-session-edits-keep-all]')) {
+        evt.preventDefault();
+        keepAllSessionEdits(t.closest('button'));
+        return;
+      }
+      if (t.closest('[data-incipit-session-edits-discard-all]')) {
+        evt.preventDefault();
+        discardAllSessionEdits(t.closest('button'));
+        return;
+      }
+      const keepOne = t.closest('[data-incipit-session-edits-keep]');
+      if (keepOne) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const row = keepOne.closest('[data-incipit-session-edits-file]');
+        const filePath = row && row.getAttribute('data-file-path');
+        if (filePath) {
+          sessionEditsClampFocus(filePath);
+          keepOneSessionEdit(filePath, keepOne);
+        }
+        return;
+      }
+      const undo = t.closest('[data-incipit-session-edits-undo]');
+      if (undo) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const row = undo.closest('[data-incipit-session-edits-file]');
+        const filePath = row && row.getAttribute('data-file-path');
+        if (filePath) {
+          sessionEditsClampFocus(filePath);
+          discardOneSessionEdit(filePath, undo);
+        }
+        return;
+      }
+      const openBtn = t.closest('[data-incipit-session-edits-open]');
+      if (openBtn) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const row = openBtn.closest('[data-incipit-session-edits-file]');
+        const filePath = row && row.getAttribute('data-file-path');
+        if (filePath) {
+          sessionEditsClampFocus(filePath);
+          openSessionEditFile(filePath);
+        }
+        return;
+      }
+      const fileRow = t.closest('[data-incipit-session-edits-file]');
+      if (fileRow) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (typeof evt.stopImmediatePropagation === 'function') evt.stopImmediatePropagation();
+        const fileId = fileRow.getAttribute('data-file-id') || '';
+        const filePath = fileRow.getAttribute('data-file-path') || '';
+        if (filePath) {
+          sessionEditsClampFocus(filePath);
+          paintSessionEditsFocus(filePath);
+        }
+        // Native VS Code diff editor (host: vscode.commands.executeCommand('vscode.diff')).
+        openSessionEditDiff(filePath, fileId);
+      }
+    }, true); // capture: beat host handlers that may stop bubble
+
+    document.body.appendChild(panel);
+    sessionEditsPanelEl = panel;
+    return panel;
+  }
+
+  function positionSessionEditsPanel(panel, toggle) {
+    if (!panel || panel.hidden) return;
+    const gap = 8;
+    const width = Math.min(380, Math.max(280, window.innerWidth - 24));
+    const maxH = Math.min(420, Math.max(200, window.innerHeight - 24));
+    panel.style.width = width + 'px';
+    panel.style.maxHeight = maxH + 'px';
+    panel.style.height = '';
+    const anchor = toggle && toggle.isConnected ? toggle : null;
+    const rect = anchor ? anchor.getBoundingClientRect() : null;
+    if (!rect || rect.width <= 0) {
+      panel.style.left = 'auto';
+      panel.style.right = '12px';
+      panel.style.bottom = '72px';
+      panel.style.top = 'auto';
+      return;
+    }
+    let left = Math.round(rect.right - width);
+    left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
+    const spaceAbove = rect.top - gap;
+    if (spaceAbove >= 160) {
+      panel.style.top = 'auto';
+      panel.style.bottom = Math.round(window.innerHeight - rect.top + gap) + 'px';
+      panel.style.maxHeight = Math.min(maxH, Math.max(160, spaceAbove - 4)) + 'px';
+    } else {
+      panel.style.bottom = 'auto';
+      panel.style.top = Math.round(rect.bottom + gap) + 'px';
+      panel.style.maxHeight = Math.min(maxH, Math.max(160, window.innerHeight - rect.bottom - gap - 4)) + 'px';
+    }
+    panel.style.left = left + 'px';
+    panel.style.right = 'auto';
+  }
+
+  function summarizeDiscardResults(results) {
+    const list = Array.isArray(results) ? results : [];
+    let ok = 0;
+    let fail = 0;
+    const failed = [];
+    for (const item of list) {
+      if (item && item.ok) ok += 1;
+      else {
+        fail += 1;
+        if (item) failed.push(item);
+      }
+    }
+    return { ok, fail, failed, total: list.length };
+  }
+
+  function showDiscardSummary(summary) {
+    if (!summary || !summary.total) return;
+    let body;
+    if (summary.fail <= 0) {
+      body = changeReviewText('discardSummaryOk', { ok: summary.ok });
+    } else if (summary.ok > 0) {
+      body = changeReviewText('discardSummaryPartial', { ok: summary.ok, fail: summary.fail });
+    } else {
+      body = changeReviewText('discardSummaryFail', { fail: summary.fail });
+    }
+    const reasons = summary.failed
+      .map(item => {
+        const status = item.status || 'failed';
+        const err = item.error ? String(item.error) : '';
+        return err ? (status + ': ' + err) : status;
+      })
+      .filter(Boolean)
+      .slice(0, 4);
+    if (reasons.length) body += '\n' + reasons.join('\n');
+    openChangeReviewModalShell(changeReviewText('discardSummaryTitle'), body);
+  }
+
+  function forceChangeReviewTurnBlocksRefresh() {
+    // Keep/Discard rebuilds the payload (accepted files leave turn cards), so
+    // the off-DOM HTML-diff swap already repaints. Never force-dirty the block
+    // — that reintroduced the hover-flicker self-feed loop.
+    scheduleChangeReviewTurnBlocksRender();
+  }
+
+  function scheduleSessionEditsChrome(delay = 80) {
+    // Coalesce rapid host payloads (streaming) into one paint — full list
+    // rebuilds were freezing the webview and eating clicks mid-gesture.
+    if (sessionEditsRenderTimer) clearTimeout(sessionEditsRenderTimer);
+    sessionEditsRenderQueued = true;
+    sessionEditsRenderTimer = setTimeout(() => {
+      sessionEditsRenderTimer = 0;
+      sessionEditsRenderQueued = false;
+      renderSessionEditsChrome();
+    }, Math.max(0, delay));
+  }
+
+  function paintSessionEditsFocus(path) {
+    const panel = sessionEditsPanelEl;
+    if (!panel) return;
+    panel.querySelectorAll('[data-incipit-session-edits-file]').forEach(el => {
+      const p = el.getAttribute('data-file-path') || '';
+      const on = !!(path && p === path);
+      el.setAttribute('data-focused', on ? '1' : '0');
+      el.setAttribute('tabindex', on ? '0' : '-1');
+    });
+  }
+
+  function renderSessionEditsChrome() {
+    const totals = sessionEditsTotals();
+    const files = sessionEditsFiles();
+    const hasPending = files.length > 0;
+    const staleCount = files.filter(f => f && f.status === 'stale').length;
+    const toggle = ensureSessionEditsToggle();
+    if (toggle) {
+      toggle.hidden = !hasPending && !sessionEditsPanelOpen;
+      toggle.textContent = '';
+      toggle.appendChild(sessionEditsSvgIcon('file-diff', 'data-incipit-session-edits-toggle-icon'));
+      const label = document.createElement('span');
+      label.setAttribute('data-incipit-session-edits-toggle-label', '');
+      label.textContent = changeReviewText('editsTab');
+      toggle.appendChild(label);
+      if (hasPending) {
+        const counts = document.createElement('span');
+        counts.setAttribute('data-incipit-session-edits-toggle-counts', '');
+        if (totals.hasLineStats || totals.added || totals.removed) {
+          if (totals.added > 0) {
+            const add = document.createElement('span');
+            add.setAttribute('data-incipit-tool-added', '');
+            add.textContent = '+' + totals.added;
+            counts.appendChild(add);
+          }
+          if (totals.removed > 0) {
+            const del = document.createElement('span');
+            del.setAttribute('data-incipit-tool-removed', '');
+            del.textContent = '-' + totals.removed;
+            counts.appendChild(del);
+          }
+        } else {
+          counts.textContent = String(totals.files);
+        }
+        toggle.appendChild(counts);
+      }
+      toggle.setAttribute('data-open', sessionEditsPanelOpen ? '1' : '0');
+      toggle.setAttribute('data-stale', staleCount > 0 ? '1' : '0');
+      toggle.setAttribute('data-live', totals.live > 0 ? '1' : '0');
+      toggle.setAttribute('aria-expanded', sessionEditsPanelOpen ? 'true' : 'false');
+    }
+
+    const panel = ensureSessionEditsPanel();
+    if (!panel) return;
+    // Clear any leftover overlay flag from older builds (caused scroll jumps).
+    try {
+      document.querySelectorAll('[data-incipit-session-edits-open]').forEach(el => {
+        el.removeAttribute('data-incipit-session-edits-open');
+      });
+    } catch (_) {}
+    panel.hidden = !sessionEditsPanelOpen;
+    if (!sessionEditsPanelOpen) {
+      // Closed: only the chip was updated above. Do not rebuild list.
+      return;
+    }
+
+    const busy = changeReviewBusySafe();
+    const focusedPath = hasPending ? sessionEditsClampFocus(sessionEditsFocusedPath) : (sessionEditsFocusedPath = '', '');
+    const next = document.createElement('div');
+    next.setAttribute('data-incipit-session-edits-inner', '');
+
+    // Sticky header: Discard All | Keep All  (Augment c-bottom-controls)
+    if (hasPending) {
+      const header = document.createElement('div');
+      header.setAttribute('data-incipit-session-edits-header', '');
+      const actions = document.createElement('div');
+      actions.setAttribute('data-incipit-session-edits-actions', '');
+      const discardAll = document.createElement('button');
+      discardAll.type = 'button';
+      discardAll.setAttribute('data-incipit-session-edits-discard-all', '');
+      discardAll.title = busy ? changeReviewText('liveHint') : changeReviewText('discardAllHint');
+      discardAll.disabled = busy || !hasPending;
+      discardAll.textContent = '';
+      discardAll.appendChild(sessionEditsSvgIcon('trash-2', 'data-incipit-session-edits-btn-icon'));
+      const discardLabel = document.createElement('span');
+      discardLabel.textContent = changeReviewText('discardAll');
+      discardAll.appendChild(discardLabel);
+      const keepAll = document.createElement('button');
+      keepAll.type = 'button';
+      keepAll.setAttribute('data-incipit-session-edits-keep-all', '');
+      keepAll.title = changeReviewText('keepAllHint');
+      keepAll.disabled = !hasPending;
+      keepAll.appendChild(sessionEditsSvgIcon('check-check', 'data-incipit-session-edits-btn-icon'));
+      const keepLabel = document.createElement('span');
+      keepLabel.textContent = changeReviewText('keepAll');
+      keepAll.appendChild(keepLabel);
+      actions.appendChild(discardAll);
+      actions.appendChild(keepAll);
+      header.appendChild(actions);
+      next.appendChild(header);
+    }
+
+    const list = document.createElement('div');
+    list.setAttribute('data-incipit-session-edits-list', '');
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', changeReviewText('editsTitle'));
+
+    if (!hasPending) {
+      // Augment empty state
+      const empty = document.createElement('div');
+      empty.setAttribute('data-incipit-session-edits-empty', '');
+      const emptyTitle = document.createElement('div');
+      emptyTitle.setAttribute('data-incipit-session-edits-empty-title', '');
+      emptyTitle.textContent = changeReviewText('noCodeEdits');
+      const emptyBody = document.createElement('div');
+      emptyBody.setAttribute('data-incipit-session-edits-empty-body', '');
+      emptyBody.textContent = changeReviewText('noPendingEdits');
+      const ret = document.createElement('button');
+      ret.type = 'button';
+      ret.setAttribute('data-incipit-session-edits-return', '');
+      ret.textContent = changeReviewText('returnToThread') || 'Return to Thread';
+      empty.appendChild(emptyTitle);
+      empty.appendChild(emptyBody);
+      empty.appendChild(ret);
+      list.appendChild(empty);
+    } else {
+      for (const file of files) {
+        // DIV not BUTTON: nested open/undo buttons made row clicks unreliable.
+        const row = document.createElement('div');
+        row.setAttribute('data-incipit-session-edits-file', '');
+        if (file.id) row.setAttribute('data-file-id', file.id);
+        if (file.filePath) row.setAttribute('data-file-path', file.filePath);
+        if (file.displayPath) row.setAttribute('data-display-path', file.displayPath);
+        if (file.status) row.setAttribute('data-status', file.status);
+        if (file.live === true) row.setAttribute('data-live', '1');
+        if (file.isCreated === true) row.setAttribute('data-created', '1');
+        if (file.isDeleted === true) row.setAttribute('data-deleted', '1');
+        if (file.source) row.setAttribute('data-source', file.source);
+        row.setAttribute('data-focused', file.filePath === focusedPath ? '1' : '0');
+        row.setAttribute('role', 'option');
+
+        // Left: file icon + path (Augment Filepath showIcon)
+        const info = document.createElement('div');
+        info.setAttribute('data-incipit-session-edits-file-info', '');
+        info.appendChild(sessionEditsSvgIcon(sessionEditsFileIconName(file), 'data-incipit-session-edits-file-icon'));
+        const name = document.createElement('span');
+        name.setAttribute('data-incipit-session-edits-file-name', '');
+        name.textContent = file.displayPath || file.filePath || '';
+        info.appendChild(name);
+        // Subtle origin chip when user (or mixed) edits are in the pending window.
+        if (file.source === 'user' || file.source === 'mixed') {
+          const src = document.createElement('span');
+          src.setAttribute('data-incipit-session-edits-source', file.source);
+          src.textContent = file.source === 'user'
+            ? changeReviewText('sourceUser')
+            : changeReviewText('sourceMixed');
+          info.appendChild(src);
+        }
+
+        // Hover controls (Open / Undo) — Augment edit-item__controls (hidden until hover)
+        const controls = document.createElement('div');
+        controls.setAttribute('data-incipit-session-edits-file-controls', '');
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.setAttribute('data-incipit-session-edits-open', '');
+        openBtn.title = changeReviewText('openFile');
+        openBtn.setAttribute('aria-label', changeReviewText('openFile'));
+        openBtn.appendChild(sessionEditsSvgIcon('external-link'));
+        openBtn.disabled = file.isDeleted === true;
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.setAttribute('data-incipit-session-edits-undo', '');
+        undo.title = file.live === true ? changeReviewText('liveHint') : changeReviewText('undoFile');
+        undo.setAttribute('aria-label', changeReviewText('undoFile'));
+        undo.appendChild(sessionEditsSvgIcon('undo-2'));
+        undo.disabled = busy || file.status === 'unavailable' || file.live === true;
+        controls.appendChild(openBtn);
+        controls.appendChild(undo);
+        info.appendChild(controls);
+
+        // Right: soft +N/-M badges always visible (Augment c-edit-change-summary size:0)
+        const side = document.createElement('div');
+        side.setAttribute('data-incipit-session-edits-file-side', '');
+        if (file.hasLineStats || file.added || file.removed) {
+          const counts = document.createElement('span');
+          counts.setAttribute('data-incipit-session-edits-summary', '');
+          if ((file.added || 0) > 0) {
+            const a = document.createElement('span');
+            a.setAttribute('data-incipit-tool-added', '');
+            a.textContent = '+' + (file.added || 0);
+            counts.appendChild(a);
+          }
+          if ((file.removed || 0) > 0) {
+            const r = document.createElement('span');
+            r.setAttribute('data-incipit-tool-removed', '');
+            r.textContent = '-' + (file.removed || 0);
+            counts.appendChild(r);
+          }
+          if (counts.childNodes.length) side.appendChild(counts);
+        }
+
+        row.appendChild(info);
+        row.appendChild(side);
+        row.title = changeReviewText('openDiffNative');
+        list.appendChild(row);
+      }
+    }
+    next.appendChild(list);
+
+    const contentKey = next.innerHTML;
+    const prevKey = panel.getAttribute('data-incipit-session-edits-content') || '';
+    if (contentKey !== prevKey) {
+      panel.textContent = '';
+      while (next.firstChild) panel.appendChild(next.firstChild);
+      panel.setAttribute('data-incipit-session-edits-content', contentKey);
+    } else {
+      panel.querySelectorAll('[data-incipit-session-edits-file]').forEach(el => {
+        const p = el.getAttribute('data-file-path') || '';
+        el.setAttribute('data-focused', p && p === focusedPath ? '1' : '0');
+      });
+    }
+    positionSessionEditsPanel(panel, toggle);
+    sessionEditsScrollFocusedIntoView(panel);
+  }
+
+  function keepAllSessionEdits(button) {
+    // Keep is metadata-only — safe while streaming.
+    if (button) button.dataset.incipitInflight = '1';
+    postSessionEditsRequest('session_edits_keep_all_request', {})
+      .then(() => {
+        forceChangeReviewTurnBlocksRefresh();
+        // After keep, close the panel if nothing pending remains.
+        if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
+      })
+      .catch(error => {
+        warn('session edits keep all failed:', error && error.message ? error.message : error);
+        openChangeReviewModalShell(
+          changeReviewText('editsTitle'),
+          changeReviewText('keepFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        renderSessionEditsChrome();
+      });
+  }
+
+  function discardAllSessionEdits(button) {
+    if (changeReviewBusySafe()) return;
+    if (!window.confirm(changeReviewText('discardAllConfirm'))) return;
+    if (button) button.dataset.incipitInflight = '1';
+    const files = sessionEditsFiles().map(sessionEditsRejectInfoFromFile).filter(Boolean);
+    postSessionEditsRequest('session_edits_discard_all_request', {})
+      .then(payload => {
+        dispatchChangeReviewRejected(files);
+        forceChangeReviewTurnBlocksRefresh();
+        const summary = summarizeDiscardResults(payload && payload.results);
+        if (summary.fail > 0 || summary.ok > 0) showDiscardSummary(summary);
+        if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
+      })
+      .catch(error => {
+        warn('session edits discard all failed:', error && error.message ? error.message : error);
+        openChangeReviewModalShell(
+          changeReviewText('discardSummaryTitle'),
+          changeReviewText('discardFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        renderSessionEditsChrome();
+      });
+  }
+
+  function keepOneSessionEdit(filePath, button) {
+    if (!filePath) return;
+    if (button) button.dataset.incipitInflight = '1';
+    sessionEditsFocusPathAfterRemove(filePath);
+    postSessionEditsRequest('session_edits_keep_file_request', { filePath })
+      .then(() => {
+        forceChangeReviewTurnBlocksRefresh();
+        if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
+        else sessionEditsClampFocus(sessionEditsFocusedPath);
+      })
+      .catch(error => {
+        warn('session edits keep file failed:', error && error.message ? error.message : error);
+        openChangeReviewModalShell(
+          changeReviewText('editsTitle'),
+          changeReviewText('keepFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        renderSessionEditsChrome();
+      });
+  }
+
+  function discardOneSessionEdit(filePath, button) {
+    if (!filePath || changeReviewBusySafe()) return;
+    const focused = sessionEditsFocusedFile();
+    if (focused && focused.filePath === filePath && focused.live === true) return;
+    if (button) button.dataset.incipitInflight = '1';
+    sessionEditsFocusPathAfterRemove(filePath);
+    const files = sessionEditsFiles()
+      .filter(f => f && f.filePath === filePath)
+      .map(sessionEditsRejectInfoFromFile)
+      .filter(Boolean);
+    postSessionEditsRequest('session_edits_discard_file_request', { filePath })
+      .then(payload => {
+        dispatchChangeReviewRejected(files);
+        forceChangeReviewTurnBlocksRefresh();
+        const summary = summarizeDiscardResults(payload && payload.results);
+        if (summary.fail > 0) showDiscardSummary(summary);
+        if (sessionEditsFiles().length === 0) sessionEditsPanelOpen = false;
+        else sessionEditsClampFocus(sessionEditsFocusedPath);
+      })
+      .catch(error => {
+        warn('session edits discard file failed:', error && error.message ? error.message : error);
+        openChangeReviewModalShell(
+          changeReviewText('discardSummaryTitle'),
+          changeReviewText('discardFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      })
+      .finally(() => {
+        if (button) button.removeAttribute('data-incipit-inflight');
+        renderSessionEditsChrome();
+      });
+  }
+
+  function openSessionEditFile(filePath) {
+    if (!filePath) return;
+    postSessionEditsRequest('session_edits_open_file_request', { filePath }, 10000)
+      .catch(error => {
+        warn('session edits open failed:', error && error.message ? error.message : error);
+        openChangeReviewModalShell(
+          changeReviewText('editsTitle'),
+          changeReviewText('openFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      });
+  }
+
+  function openSessionEditDiff(filePath, fileId) {
+    if (!filePath && !fileId) return;
+    // Primary: host opens VS Code native diff (backup ↔ disk).
+    postSessionEditsRequest('session_edits_open_diff_request', {
+      filePath: filePath || '',
+      fileId: fileId || '',
+    }, 12000)
+      .then(payload => {
+        if (payload && payload.ok === false) {
+          throw new Error(payload.error || 'Native diff failed');
+        }
+      })
+      .catch(error => {
+        warn('session edits native diff failed:', error && error.message ? error.message : error);
+        // Fallback: in-webview modal diff if we have a change-review file id.
+        if (fileId) {
+          const file = sessionEditsFiles().find(f => f && f.id === fileId)
+            || { id: fileId, filePath: filePath || '', displayPath: filePath || '' };
+          openChangeReviewDiff(file);
+          return;
+        }
+        openChangeReviewModalShell(
+          changeReviewText('editsTitle'),
+          changeReviewText('diffFail', { msg: error && error.message ? error.message : String(error) }),
+        );
+      });
+  }
+
+  // Keep the panel anchored when the composer reflows; Esc / outside click closes it.
+  if (!window.__incipitSessionEditsLayoutBound) {
+    window.__incipitSessionEditsLayoutBound = true;
+    const relayout = () => {
+      if (!sessionEditsPanelOpen) return;
+      positionSessionEditsPanel(sessionEditsPanelEl, sessionEditsToggleEl);
+    };
+    window.addEventListener('resize', relayout, { passive: true });
+    window.addEventListener('scroll', relayout, { passive: true, capture: true });
+    document.addEventListener('keydown', evt => {
+      if (!sessionEditsPanelOpen) return;
+      // Prefer letting an open review modal consume keys first.
+      if (changeReviewModal) return;
+      // Don't steal typing from composer / inputs.
+      const ae = document.activeElement;
+      if (ae && (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/i.test(ae.tagName || ''))) {
+        // Still allow Escape to close while focused in composer.
+        if (evt.key === 'Escape') {
+          evt.preventDefault();
+          evt.stopPropagation();
+          sessionEditsPanelOpen = false;
+          renderSessionEditsChrome();
+        }
+        return;
+      }
+
+      const key = evt.key;
+      const lower = typeof key === 'string' ? key.toLowerCase() : '';
+      const shift = !!evt.shiftKey;
+      const meta = !!evt.metaKey || !!evt.ctrlKey;
+
+      if (key === 'Escape') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        sessionEditsPanelOpen = false;
+        renderSessionEditsChrome();
+        return;
+      }
+
+      if (key === 'ArrowDown' || lower === 'j') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        paintSessionEditsFocus(sessionEditsMoveFocus(1));
+        sessionEditsScrollFocusedIntoView(sessionEditsPanelEl);
+        return;
+      }
+      if (key === 'ArrowUp') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        paintSessionEditsFocus(sessionEditsMoveFocus(-1));
+        sessionEditsScrollFocusedIntoView(sessionEditsPanelEl);
+        return;
+      }
+      if (lower === 'j' && !shift && !meta) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        sessionEditsMoveFocus(1);
+        renderSessionEditsChrome();
+        return;
+      }
+      if (key === 'Home') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const paths = sessionEditsFilePaths();
+        if (paths.length) paintSessionEditsFocus(sessionEditsClampFocus(paths[0]));
+        sessionEditsScrollFocusedIntoView(sessionEditsPanelEl);
+        return;
+      }
+      if (key === 'End') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const paths = sessionEditsFilePaths();
+        if (paths.length) paintSessionEditsFocus(sessionEditsClampFocus(paths[paths.length - 1]));
+        sessionEditsScrollFocusedIntoView(sessionEditsPanelEl);
+        return;
+      }
+      if (key === 'Enter' && !shift) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const file = sessionEditsFocusedFile();
+        if (file) openSessionEditDiff(file.filePath, file.id || '');
+        return;
+      }
+      // Keep focused: k / K (without shift-all). Shift+K = Keep All.
+      if (lower === 'k' && !meta) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (shift) keepAllSessionEdits(null);
+        else {
+          const file = sessionEditsFocusedFile();
+          if (file && file.filePath) keepOneSessionEdit(file.filePath, null);
+        }
+        return;
+      }
+      // Undo focused: u / Backspace / Delete. Shift+U = Discard All.
+      if ((lower === 'u' || key === 'Backspace' || key === 'Delete') && !meta) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (shift) {
+          discardAllSessionEdits(null);
+          return;
+        }
+        const file = sessionEditsFocusedFile();
+        if (file && file.filePath) discardOneSessionEdit(file.filePath, null);
+        return;
+      }
+    }, true);
+    // Full-page Edits tab: do not close on outside click (Augment switches tabs).
+    // Close via Esc, Return to Thread, or the Edits chip toggle.
+  }
+
   function setupChangeReviewChannel() {
     if (changeReviewListenerBound) return;
     changeReviewListenerBound = true;
@@ -4418,6 +5456,7 @@ import {
         changeReviewPayload = msg.payload;
         changeReviewMountRetryCount = 0;
         if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+        scheduleSessionEditsChrome(sessionEditsPanelOpen ? 120 : 200);
         return;
       }
       if (!msg || msg.__incipit !== true) return;
@@ -4439,6 +5478,29 @@ import {
         if (payload.ok === false) pending.reject(new Error(payload.error || firstRejectError(payload) || 'Reject failed'));
         else pending.resolve(payload);
         scheduleChangeReviewTurnBlocksRender();
+        scheduleSessionEditsChrome(60);
+        return;
+      }
+      if (msg.type === 'session_edits_keep_all_response' ||
+          msg.type === 'session_edits_keep_file_response' ||
+          msg.type === 'session_edits_discard_all_response' ||
+          msg.type === 'session_edits_discard_file_response' ||
+          msg.type === 'session_edits_open_file_response' ||
+          msg.type === 'session_edits_open_diff_response') {
+        const pending = sessionEditsActionPending.get(msg.requestId);
+        if (!pending) return;
+        sessionEditsActionPending.delete(msg.requestId);
+        const payload = msg.payload || {};
+        if (payload.payload) changeReviewPayload = payload.payload;
+        if (payload.ok === false) pending.reject(new Error(payload.error || 'Session edits action failed'));
+        else pending.resolve(payload);
+        // open file/diff: resolve only — no list rebuild (was janking clicks)
+        if (msg.type === 'session_edits_open_file_response' ||
+            msg.type === 'session_edits_open_diff_response') {
+          return;
+        }
+        forceChangeReviewTurnBlocksRefresh();
+        scheduleSessionEditsChrome(40);
       }
     });
   }
@@ -4503,6 +5565,8 @@ import {
     changeReviewIdentityTimer = setTimeout(() => {
       changeReviewIdentityTimer = 0;
       requestChangeReviewIdentity();
+      // Toggle-only refresh; list rebuilds only when the panel is open.
+      scheduleSessionEditsChrome(sessionEditsPanelOpen ? 120 : 250);
     }, delay);
   }
 
@@ -4538,6 +5602,7 @@ import {
 
   function openChangeReviewDiff(file) {
     if (!file || !file.id) return;
+    setupChangeReviewChannel();
     openChangeReviewModalShell(file.displayPath || file.filePath || 'diff', changeReviewText('loading'));
     postChangeReviewRequest('change_review_diff_request', { fileId: file.id }, 12000)
       .then(payload => {
@@ -5326,11 +6391,15 @@ import {
   // ---- Continue button: stop current turn (if any), then send "继续" ----
   // Icon-only control left of host send/stop. Always ships via unwrapped
   // session.send (Guide path). When busy, interrupt the live CLI channel
-  // first and wait for the stream to settle so the new message is a clean
-  // new turn — never queued behind deferred-next.
+  // and wait for genuine quiescence before sending so the new message is
+  // a clean new turn — never overlapping a still-flushing stream (that
+  // race produces host "Mismatched content block type content_block_delta
+  // text/thinking"). Never queued behind deferred-next.
   const CONTINUE_SEND_TEXT = '继续';
-  const CONTINUE_STOP_TIMEOUT_MS = 4000;
-  const CONTINUE_STOP_POLL_MS = 80;
+  // Post-quiesce settle: host busy can flip false before the interrupted
+  // CLI finishes its last SSE/jsonl write. Extra quiet beyond
+  // TURN_HANDOFF_QUIET_MS absorbs that residual flush.
+  const CONTINUE_POST_QUIET_MS = 350;
   let continueButtonTimer = 0;
   let continueButtonObserver = null;
 
@@ -5352,17 +6421,18 @@ import {
   function interruptActiveClaudeTurn() {
     try {
       const session = locateActiveSessionState();
-      const conn = typeof locateClaudeConnection === 'function'
+      // Prefer the same connection locator rerun hand-off uses.
+      const conn = (typeof locateConnection === 'function'
+        ? locateConnection()
+        : null) || (typeof locateClaudeConnection === 'function'
         ? locateClaudeConnection()
-        : null;
+        : null);
       const channelId = session && session.claudeChannelId;
       if (channelId && conn && typeof conn.interruptClaude === 'function') {
         try { conn.interruptClaude(channelId); } catch (_) {}
         try { noteChannelInterrupt(); } catch (_) {}
       }
-      if (session) {
-        try { session.claudeChannelId = null; } catch (_) {}
-      }
+      // Do NOT null claudeChannelId here — quiesce/reinterrupt still needs it.
       // Also click the host stop control so UI/busy state flips with us.
       const stopBtn = findHostSendButton();
       if (stopBtn && (
@@ -5383,28 +6453,14 @@ import {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  async function waitForTurnIdle(timeoutMs) {
-    const deadline = nowMs() + timeoutMs;
-    // Honour interrupt cooldown so the old CLI process can drain.
-    const since = typeof sinceLastChannelInterrupt === 'function'
-      ? sinceLastChannelInterrupt()
-      : Infinity;
-    if (since < CHANNEL_INTERRUPT_COOLDOWN_MS) {
-      await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS - since);
-    }
-    while (nowMs() < deadline) {
-      let busy = false;
-      try { busy = conversationIsBusy(); } catch (_) { busy = false; }
-      if (!busy && sendButtonDomState() !== 'stop') return true;
-      await sleepMs(CONTINUE_STOP_POLL_MS);
-    }
-    return false;
-  }
-
   async function sendContinueMessage() {
     const session = locateActiveSessionState();
     if (!session) {
       warn('continue button: no active session');
+      return;
+    }
+    if (historyHandoffInFlight) {
+      warn('continue button: handoff already in flight');
       return;
     }
     const rawSend = rawSendForSession(session) || session.send;
@@ -5417,27 +6473,51 @@ import {
     try { busy = conversationIsBusy() || sendButtonDomState() === 'stop'; }
     catch (_) { busy = sendButtonDomState() === 'stop'; }
 
-    if (busy) {
-      interruptActiveClaudeTurn();
-      const idle = await waitForTurnIdle(CONTINUE_STOP_TIMEOUT_MS);
-      if (!idle) {
-        // Best-effort second interrupt, then send anyway so the user is
-        // not stuck — host may still accept the new turn.
-        interruptActiveClaudeTurn();
-        await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS);
-      }
-    }
-
+    // Same serializer as edit/rerun: latch greys out action rows and blocks
+    // a second concurrent continue click from opening a second stream.
+    setHandoffLatch(true);
     try {
+      if (busy) {
+        // Prefer the full rerun quiesce path (interrupt + stable idle +
+        // cooldown + reinterrupt). The old continue path only waited until
+        // busy flipped false (often 600ms), then sent "继续" while the
+        // interrupted CLI was still flushing — host stream-assembler then
+        // threw Mismatched content_block_delta text/thinking.
+        if (typeof quiesceOldStream === 'function') {
+          const q = await quiesceOldStream();
+          if (!q || !q.ok) {
+            warn('continue button: stream did not quiesce; aborting send to protect the conversation');
+            return;
+          }
+        } else {
+          interruptActiveClaudeTurn();
+          await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS + TURN_HANDOFF_QUIET_MS);
+          if (conversationIsBusy() || sendButtonDomState() === 'stop') {
+            warn('continue button: still busy after fallback wait; aborting send');
+            return;
+          }
+        }
+        // Residual quiet after host reports idle — absorbs late SSE frames.
+        await sleepMs(CONTINUE_POST_QUIET_MS);
+        if (conversationIsBusy() || sendButtonDomState() === 'stop') {
+          warn('continue button: became busy again during post-quiet; aborting send');
+          return;
+        }
+      }
+
       deferredNextBypassDepth++;
-      await rawSend.apply(session, [CONTINUE_SEND_TEXT, [], false]);
+      try {
+        await rawSend.apply(session, [CONTINUE_SEND_TEXT, [], false]);
+      } finally {
+        deferredNextBypassDepth = Math.max(0, deferredNextBypassDepth - 1);
+      }
     } catch (error) {
       warn(
         'continue button send failed:',
         error && error.message ? error.message : error,
       );
     } finally {
-      deferredNextBypassDepth = Math.max(0, deferredNextBypassDepth - 1);
+      setHandoffLatch(false);
     }
   }
 
@@ -5503,17 +6583,177 @@ function setupContinueButton() {
     reportHealth('legacy.continue_btn', 'ok');
   }
 
+  // Detect "stream says busy but nothing has moved for a long time".
+  // Covers: model hung mid-tool, gateway stalled, sticky partialTail that
+  // already expired from composite busy, or host stop icon frozen.
+  // Surfaces a toast once per stall episode; does NOT auto-interrupt
+  // (that would reintroduce the content_block race). User can click the
+  // continue (stop+继续) button or host Stop.
+  const STREAM_STALL_WARN_MS = 45000;
+  const STREAM_STALL_POLL_MS = 4000;
+  let streamStallTimer = 0;
+  let streamStallWarnedAt = 0;
+
+  function streamStallToastText() {
+    return CFG.language === 'zh'
+      ? '回复似乎已卡住（长时间无输出）。可点「停止并继续」，或宿主停止按钮后再重试。'
+      : 'Reply looks stalled (no output for a while). Use Stop-and-continue, or the host Stop button, then retry.';
+  }
+
+  function checkStreamStall() {
+    let busy = false;
+    try { busy = conversationIsBusy(); } catch (_) { busy = false; }
+    if (!busy) {
+      streamStallWarnedAt = 0;
+      return;
+    }
+    let quietFor = null;
+    try {
+      quietFor = typeof kernelStreamQuietForMs === 'function'
+        ? kernelStreamQuietForMs()
+        : null;
+    } catch (_) { quietFor = null; }
+    // Also treat a frozen host stop icon with no recent DOM activity as stall.
+    if (quietFor == null) return;
+    if (quietFor < STREAM_STALL_WARN_MS) return;
+    // One toast per continuous busy episode (reset when busy clears).
+    if (streamStallWarnedAt && (nowMs() - streamStallWarnedAt) < STREAM_STALL_WARN_MS) return;
+    streamStallWarnedAt = nowMs();
+    try { showTranscriptToast(streamStallToastText(), 'warn'); } catch (_) {}
+  }
+
+  function setupStreamStallWatch() {
+    if (streamStallTimer) return;
+    streamStallTimer = setInterval(() => {
+      try { checkStreamStall(); } catch (_) {}
+    }, STREAM_STALL_POLL_MS);
+    subscribeRuntime('busyChanged', evt => {
+      if (evt && evt.busy === false) streamStallWarnedAt = 0;
+    });
+    subscribeRuntime('sessionChanged', () => { streamStallWarnedAt = 0; });
+    reportHealth('legacy.stream_stall_watch', 'ok');
+  }
+
+  // ---- Open-session: pin transcript to the latest message ----
+  // Host often mounts the full JSONL then leaves scroll near the top, so the
+  // user waits through "decorate everything → fold" before seeing the tail.
+  // We cannot make the host virtualise the message list, but we can:
+  //   1. jump the messages scroller to the bottom once content is in;
+  //   2. re-pin a few times while React/incipit finish first layout.
+  let transcriptPinBottomToken = 0;
+
+  function findTranscriptScroller() {
+    const candidates = [
+      document.querySelector(SEL.messagesContainer),
+      ...document.querySelectorAll('[class*="messagesContainer_"]'),
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      if (candidate.scrollHeight > candidate.clientHeight + 1) return candidate;
+    }
+    return candidates[0] || null;
+  }
+
+  function pinTranscriptToBottom() {
+    const scroller = findTranscriptScroller();
+    if (!scroller) return false;
+    try {
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      if (max <= 0) return false;
+      scroller.scrollTop = max;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function scheduleTranscriptPinToBottom(reason) {
+    const token = ++transcriptPinBottomToken;
+    // After pin, re-seed near-viewport tool decoration — open often seeds
+    // while scroll is still at top / pre-layout, so bottom tools only get
+    // observed after we jump.
+    const reseedToolsNearViewport = () => {
+      try {
+        const root = document.querySelector(SEL.messagesContainer) ||
+          document.querySelector('[class*="messagesContainer_"]');
+        if (!root || !root.querySelectorAll) return;
+        const tools = root.querySelectorAll('[class*="toolUse_"]');
+        let dirty = false;
+        for (let i = 0; i < tools.length; i++) {
+          const t = tools[i];
+          if (t.dataset && t.dataset.incipitToolCard === '1') continue;
+          try {
+            const rect = t.getBoundingClientRect();
+            if (rect.width <= 0 && rect.height <= 0) continue;
+            const vh = window.innerHeight || 800;
+            if (rect.bottom < -200 || rect.top > vh + 900) continue;
+          } catch (_) { continue; }
+          // Prefer the shared enqueue if tool-fold is live; else best-effort
+          // click the public decorate path via a synthetic MO seed.
+          if (typeof window !== 'undefined' && window.__incipitEnqueueToolUse) {
+            window.__incipitEnqueueToolUse(t);
+            dirty = true;
+          } else {
+            // Fall back: dispatch nothing — IntersectionObserver will catch
+            // tools that were registered with observeToolUseForLaterDecorate.
+          }
+        }
+        if (dirty && typeof window.__incipitScheduleToolRescan === 'function') {
+          window.__incipitScheduleToolRescan();
+        }
+      } catch (_) { /* best-effort */ }
+    };
+    const steps = [0, 16, 48, 120, 280, 600, 1200];
+    for (const delay of steps) {
+      setTimeout(() => {
+        if (token !== transcriptPinBottomToken) return;
+        // Do not fight the user if they already scrolled up.
+        const scroller = findTranscriptScroller();
+        if (scroller) {
+          const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+          const dist = max - scroller.scrollTop;
+          // After first pin, only re-pin while still near the bottom.
+          if (delay > 0 && dist > 240) return;
+        }
+        pinTranscriptToBottom();
+        if (delay === 48 || delay === 280) reseedToolsNearViewport();
+      }, delay);
+    }
+    try { reportHealth('legacy.transcript_pin_bottom', 'ok', { reason: reason || '' }); } catch (_) {}
+  }
+
+  function setupTranscriptPinToBottom() {
+    subscribeRuntime('sessionChanged', () => {
+      scheduleTranscriptPinToBottom('sessionChanged');
+    });
+    // Already-mounted container (webview reloaded mid-session / first open).
+    if (findTranscriptScroller()) {
+      scheduleTranscriptPinToBottom('init');
+    } else if (typeof MutationObserver === 'function' && document.body) {
+      // Wait once for the host messages container to appear.
+      const mo = new MutationObserver(() => {
+        if (!findTranscriptScroller()) return;
+        try { mo.disconnect(); } catch (_) {}
+        scheduleTranscriptPinToBottom('messages-mount');
+      });
+      try {
+        mo.observe(document.body, { childList: true, subtree: true });
+      } catch (_) { /* ignore */ }
+    }
+    reportHealth('legacy.transcript_pin_bottom', 'ok');
+  }
+
   function setupChangeReviewFileReview() {
     setupChangeReviewChannel();
     reportHealth('legacy.change_review', 'ok');
-    scheduleChangeReviewIdentityUpdate(0);
-    // Old sessions: host may answer identity before the transcript DOM is
-    // ready. One short delayed paint is enough; mount-retry covers the rest.
+    // Defer identity/paint on cold start so opening a long prior session is
+    // not competing with pin-to-bottom + tool chrome. 0ms identity used to
+    // race the host transcript mount and retry up to 8 full paints.
+    scheduleChangeReviewIdentityUpdate(800);
     setTimeout(() => {
       if (changeReviewTurns().length && !changeReviewBusySafe()) {
         scheduleChangeReviewTurnBlocksRender();
       }
-    }, 350);
+    }, 1200);
     subscribeRuntime('sessionChanged', () => {
       changeReviewPayload = null;
       changeReviewStartedTurnKey = '';
@@ -5523,13 +6763,12 @@ function setupContinueButton() {
         changeReviewMountRetryTimer = 0;
       }
       cancelChangeReviewTurnStarted();
-      scheduleChangeReviewIdentityUpdate(0);
-      if (!changeReviewBusySafe()) scheduleChangeReviewTurnBlocksRender();
+      scheduleChangeReviewIdentityUpdate(800);
       setTimeout(() => {
         if (changeReviewTurns().length && !changeReviewBusySafe()) {
           scheduleChangeReviewTurnBlocksRender();
         }
-      }, 350);
+      }, 1200);
     });
     subscribeRuntime('messagesChanged', () => {
       // Identity only — never paint mid-stream. Finalize / busy-idle /
@@ -7374,8 +8613,104 @@ function setupContinueButton() {
   // (task-notification continuations, system-reminder rows, slash-command
   // bookkeeping). The raw XML is never user prose — surface a compact
   // status card and tuck the original payload under "show raw".
+  //
+  // Insert the card INSIDE the bubble only. An earlier path fell back to
+  // `content = bubbleEl` and `content.parentElement.insertBefore(card, content)`,
+  // which parked the card as a *sibling* of the bubble. Idempotent lookup
+  // (`bubbleEl.querySelector('[data-incipit-protocol-card]')`) then always
+  // missed, re-armed on every transcript scan, and stacked infinite /MODEL
+  // (and other slash-command) cards when opening a session — most visible
+  // when reloading a long prior transcript (full-container scan on attach).
+  function isProtocolCardHosted(card) {
+    if (!card || card.nodeType !== 1) return false;
+    // Legitimate homes: inside a user bubble, or as the overlay of a tool
+    // OUT cell marked protocol-out.
+    if (card.closest && card.closest(SEL.userBubble)) return true;
+    if (card.closest && card.closest('[data-incipit-protocol-out="1"]')) return true;
+    const parent = card.parentElement;
+    return !!(parent && parent.getAttribute &&
+      parent.getAttribute('data-incipit-protocol-out') === '1');
+  }
+
+  // Scope-wide sweep used when opening/switching sessions. Removes every
+  // protocol card that is not hosted inside a user bubble / tool OUT cell
+  // (the sibling-stack failure mode leaves them floating under the
+  // messages container).
+  function pruneDetachedProtocolCards(scope) {
+    const root = scope && scope.querySelectorAll ? scope : document;
+    if (!root.querySelectorAll) return;
+    // When scope itself is a card (MO can re-enter on our insert), walk up.
+    if (root.nodeType === 1 && root.hasAttribute &&
+        root.hasAttribute('data-incipit-protocol-card') &&
+        !isProtocolCardHosted(root)) {
+      root.remove();
+      return;
+    }
+    const cards = root.querySelectorAll
+      ? root.querySelectorAll('[data-incipit-protocol-card]')
+      : [];
+    for (const card of cards) {
+      if (!isProtocolCardHosted(card)) card.remove();
+    }
+  }
+
+  function pruneOrphanProtocolCards(bubbleEl) {
+    if (!bubbleEl || bubbleEl.nodeType !== 1) return;
+    // Cards incorrectly parked as previous *or* next siblings of the bubble.
+    let sib = bubbleEl.previousElementSibling;
+    while (sib && sib.hasAttribute && sib.hasAttribute('data-incipit-protocol-card')) {
+      const doomed = sib;
+      sib = sib.previousElementSibling;
+      doomed.remove();
+    }
+    sib = bubbleEl.nextElementSibling;
+    while (sib && sib.hasAttribute && sib.hasAttribute('data-incipit-protocol-card')) {
+      const doomed = sib;
+      sib = sib.nextElementSibling;
+      doomed.remove();
+    }
+    // Keep at most one card inside the bubble.
+    const inside = bubbleEl.querySelectorAll('[data-incipit-protocol-card]');
+    for (let i = 1; i < inside.length; i++) inside[i].remove();
+  }
+
+  function hideProtocolRawInBubble(bubbleEl, content) {
+    if (content && content !== bubbleEl && bubbleEl.contains(content)) {
+      content.setAttribute('data-incipit-protocol-raw-hidden', '');
+      return;
+    }
+    // No dedicated content node — hide host-owned children so the card is
+    // the only visible surface, without display:none on the bubble shell
+    // (that would also hide any card we insert inside it).
+    for (const child of Array.from(bubbleEl.children || [])) {
+      if (!child || child.nodeType !== 1) continue;
+      if (child.hasAttribute('data-incipit-protocol-card')) continue;
+      if (child.classList && (
+        child.classList.contains('claude-user-copy-btn-row') ||
+        child.classList.contains('claude-show-more-row') ||
+        child.classList.contains('incipit-transcript-action-row')
+      )) continue;
+      child.setAttribute('data-incipit-protocol-raw-hidden', '');
+    }
+  }
+
+  function insertProtocolCardInBubble(bubbleEl, content, card) {
+    if (
+      content &&
+      content !== bubbleEl &&
+      bubbleEl.contains(content) &&
+      content.parentElement &&
+      bubbleEl.contains(content.parentElement)
+    ) {
+      content.parentElement.insertBefore(card, content);
+      return;
+    }
+    bubbleEl.insertBefore(card, bubbleEl.firstChild);
+  }
+
   function decorateProtocolLeakBubble(bubbleEl, record) {
     if (!bubbleEl || bubbleEl.nodeType !== 1) return;
+    pruneOrphanProtocolCards(bubbleEl);
     if (bubbleEl.dataset.incipitProtocolDecorated === '1') {
       // React may remount the content and drop our card; re-arm if missing.
       if (bubbleEl.querySelector('[data-incipit-protocol-card]')) return;
@@ -7392,23 +8727,20 @@ function setupContinueButton() {
     const parsed = parseProtocolText(text);
     if (!parsed || !parsed.dominant) return;
 
-    const content = userBubbleContentElement(bubbleEl) || bubbleEl;
-    // Hide the host-rendered raw XML (React owns the nodes; do not delete).
-    content.setAttribute('data-incipit-protocol-raw-hidden', '');
+    // Never fall back to the bubble shell as `content`: hiding it would
+    // display:none the whole bubble (and any in-bubble card), and inserting
+    // relative to it would place the card outside the bubble.
+    const content = userBubbleContentElement(bubbleEl);
+    hideProtocolRawInBubble(bubbleEl, content);
 
     let card = bubbleEl.querySelector('[data-incipit-protocol-card]');
     if (!card) {
       card = buildProtocolCard(parsed, text);
-      // Prefer placing the card just above the content node so the action
-      // row (sibling of content) keeps its layout.
-      if (content.parentElement) {
-        content.parentElement.insertBefore(card, content);
-      } else {
-        bubbleEl.insertBefore(card, bubbleEl.firstChild);
-      }
+      insertProtocolCardInBubble(bubbleEl, content, card);
     } else {
       refreshProtocolCard(card, parsed, text);
     }
+    pruneOrphanProtocolCards(bubbleEl);
     bubbleEl.dataset.incipitProtocolDecorated = '1';
     bubbleEl.setAttribute('data-incipit-protocol-kind', parsed.kind);
   }
@@ -8108,10 +9440,40 @@ function setupContinueButton() {
   function scanAssistantTranscriptActions(root) {
     const scope = root || document.body;
     if (!scope) return;
-    if (scope.matches && scope.matches(SEL.markdownRoot)) reconcileAssistantTranscriptActions(scope);
+    if (scope.matches && scope.matches(SEL.markdownRoot)) {
+      reconcileAssistantTranscriptActions(scope);
+    }
     if (scope.querySelectorAll) {
-      const markdownRoots = scope.querySelectorAll(SEL.markdownRoot);
-      for (const markdownRoot of markdownRoots) reconcileAssistantTranscriptActions(markdownRoot);
+      const markdownRoots = Array.from(scope.querySelectorAll(SEL.markdownRoot));
+      // Session open / body-wide settle used to walk every markdown root and
+      // fiber-pierce each one — freezes long prior sessions. Prefer the tail
+      // (latest turns) + anything near the viewport; off-screen history waits
+      // until the user scrolls (host remounts or a later local scan).
+      const large = markdownRoots.length > 10 ||
+        scope === document.body ||
+        (scope.className && String(scope.className).indexOf('messagesContainer') !== -1);
+      if (!large) {
+        for (const markdownRoot of markdownRoots) {
+          reconcileAssistantTranscriptActions(markdownRoot);
+        }
+      } else {
+        const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+        const margin = Math.max(200, Math.min(320, vh * 0.35));
+        const tailStart = Math.max(0, markdownRoots.length - 8);
+        for (let i = 0; i < markdownRoots.length; i++) {
+          const markdownRoot = markdownRoots[i];
+          let near = i >= tailStart;
+          if (!near) {
+            try {
+              const rect = markdownRoot.getBoundingClientRect();
+              if (rect.height > 0 || rect.width > 0) {
+                near = rect.bottom >= -margin && rect.top <= vh + margin;
+              }
+            } catch (_) { near = false; }
+          }
+          if (near) reconcileAssistantTranscriptActions(markdownRoot);
+        }
+      }
     }
     if (!conversationIsBusy()) {
       // Final text rows can miss the normal DOM→fiber record lookup: React may
@@ -8128,6 +9490,11 @@ function setupContinueButton() {
   function scanAndAddCopyButtons(root, options = {}) {
     const scope = root || document.body;
     if (!scope) return;
+    // Opening an old session attaches a full messagesContainer and runs this
+    // scan once per mounted subtree. Clear any protocol cards left outside
+    // their host bubble first — otherwise a single prior bad insert turns
+    // into a growing stack as each bubble re-decorates.
+    pruneDetachedProtocolCards(scope);
     const assistantActions = options.assistantActions !== false;
     const handle = (bubble) => {
       // Interrupted messages are not real user input.
@@ -8138,10 +9505,38 @@ function setupContinueButton() {
       addUserCopyButton(bubble);
       classifyUserBubble(bubble);
     };
-    if (scope.matches && scope.matches(SEL.userBubble)) handle(scope);
-    if (!scope.querySelectorAll) return;
-    const userBubbles = scope.querySelectorAll(SEL.userBubble);
-    for (const bubble of userBubbles) handle(bubble);
+    if (scope.matches && scope.matches(SEL.userBubble)) {
+      handle(scope);
+    } else if (scope.querySelectorAll) {
+      const userBubbles = Array.from(scope.querySelectorAll(SEL.userBubble));
+      // Large transcript scopes (session open): only decorate bubbles near
+      // the viewport + a tail of the list. Off-screen rows wait for the
+      // bubble IntersectionObserver when the user scrolls up.
+      const largeScope = userBubbles.length > 16 ||
+        (scope.className && String(scope.className).indexOf('messagesContainer') !== -1) ||
+        scope === document.body;
+      if (!largeScope) {
+        for (const bubble of userBubbles) handle(bubble);
+      } else {
+        const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+        const margin = Math.max(200, Math.min(320, vh * 0.35));
+        const tailStart = Math.max(0, userBubbles.length - 12);
+        for (let i = 0; i < userBubbles.length; i++) {
+          const bubble = userBubbles[i];
+          let near = i >= tailStart;
+          if (!near) {
+            try {
+              const rect = bubble.getBoundingClientRect();
+              if (rect.height > 0 || rect.width > 0) {
+                near = rect.bottom >= -margin && rect.top <= vh + margin;
+              }
+            } catch (_) { near = false; }
+          }
+          if (near) handle(bubble);
+          else observeUserBubbleForLaterDecorate(bubble);
+        }
+      }
+    }
     if (assistantActions) {
       scanAssistantTranscriptActions(scope);
     } else if (options.sweepBusyState !== false) {
@@ -8150,6 +9545,51 @@ function setupContinueButton() {
       // mutation flush. Cheap: applyButtonBusyState early-returns on no-op.
       sweepStreamingDisableState();
     }
+  }
+
+  // Progressive user-bubble decoration: protocol card + copy/action row only
+  // when the bubble enters the viewport (session open skips off-screen work).
+  let userBubbleViewportIO = null;
+  const userBubbleObserved = new WeakSet();
+
+  function observeUserBubbleForLaterDecorate(bubble) {
+    if (!bubble || bubble.nodeType !== 1) return;
+    if (userBubbleObserved.has(bubble)) return;
+    if (bubble.querySelector && bubble.querySelector('.claude-user-copy-btn-row, [data-incipit-protocol-card]')) {
+      return; // already decorated
+    }
+    if (typeof IntersectionObserver !== 'function') {
+      // No IO — decorate immediately rather than drop chrome forever.
+      try {
+        const record = transcriptRecordForElement(bubble) ||
+          transcriptRecordForElement(findUserMessageHost(bubble) || bubble);
+        decorateProtocolLeakBubble(bubble, record);
+        addUserCopyButton(bubble);
+        classifyUserBubble(bubble);
+      } catch (_) {}
+      return;
+    }
+    if (!userBubbleViewportIO) {
+      userBubbleViewportIO = new IntersectionObserver((entries) => {
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          if (!entry || !entry.isIntersecting) continue;
+          const el = entry.target;
+          try { userBubbleViewportIO.unobserve(el); } catch (_) {}
+          if (!el || !el.isConnected) continue;
+          try {
+            if (el.querySelector(SEL.interruptedMessage)) continue;
+            const record = transcriptRecordForElement(el) ||
+              transcriptRecordForElement(findUserMessageHost(el) || el);
+            decorateProtocolLeakBubble(el, record);
+            addUserCopyButton(el);
+            classifyUserBubble(el);
+          } catch (_) {}
+        }
+      }, { root: null, rootMargin: '160px 0px', threshold: 0 });
+    }
+    userBubbleObserved.add(bubble);
+    try { userBubbleViewportIO.observe(bubble); } catch (_) {}
   }
 
   function transcriptActionRecordSummary(record) {
@@ -8912,10 +10352,14 @@ function setupContinueButton() {
       });
       scheduleDiffSideBars();
       try {
+        // Line-info arrived — redecorate only the matching toolUse once so
+        // island line numbers refresh. Use closest toolUse (not the island
+        // itself): enqueueAffectedToolUses on an island node with no
+        // targetInsideToolUse flag would no-op.
         document.querySelectorAll('[data-incipit-diff-island]').forEach(node => {
-          if (node.dataset && node.dataset.incipitDiffLineInfoKey === key) {
-            enqueueAffectedToolUses(node);
-          }
+          if (!(node.dataset && node.dataset.incipitDiffLineInfoKey === key)) return;
+          const tool = node.closest && node.closest('[class*="toolUse_"]');
+          if (tool) pendingToolUseRoots.add(tool);
         });
         if (pendingToolUseRoots.size) scheduleRescan();
       } catch (_) { /* best-effort line number refresh */ }
@@ -9310,7 +10754,20 @@ function setupContinueButton() {
       });
     }
 
+    function markToolFoldAnim(el) {
+      if (!el) return;
+      try {
+        el.dataset.incipitToolFoldAnim = '1';
+        // Drop anim flag after transition so scroll-in decorate stays transition-free.
+        clearTimeout(el.__incipitFoldAnimTimer);
+        el.__incipitFoldAnimTimer = setTimeout(() => {
+          try { delete el.dataset.incipitToolFoldAnim; } catch (_) {}
+        }, 280);
+      } catch (_) {}
+    }
+
     function animateExpandTargets(el, targets) {
+      markToolFoldAnim(el);
       targets = targets.filter(Boolean);
       if (!targets.length) {
         el.dataset.incipitToolCollapsed = 'false';
@@ -9346,6 +10803,7 @@ function setupContinueButton() {
     }
 
     function animateCollapseTargets(el, targets) {
+      markToolFoldAnim(el);
       targets = targets.filter(Boolean);
       if (!targets.length) {
         el.dataset.incipitToolCollapsed = 'true';
@@ -10995,14 +12453,69 @@ function setupContinueButton() {
 
     registerChangeReviewWriteDiffRenderer(openWriteDiffModal, languageClassForFilePath);
 
+    // O(text length) line count — never LCS. Used on session-open / collapsed
+    // paths so opening a long Edit-heavy transcript stays interactive.
+    function countTextLines(text) {
+      if (typeof text !== 'string' || text === '') return 0;
+      let n = 1;
+      for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) === 10) n++;
+      }
+      return n;
+    }
+
+    // Cheap +N/−M for collapsed tool cards. Over-approximates pure replacements
+    // as full remove+add; exact LCS numbers land on expand via computeStatsCached.
+    function cheapToolStats(block) {
+      if (!block || !block.input) return null;
+      const name = block.name;
+      const input = block.input;
+      if (name === 'Write' && typeof input.content === 'string') {
+        return { added: countTextLines(input.content), removed: 0, cheap: true };
+      }
+      if (
+        (name === 'Edit' || name === 'MultiEdit') &&
+        typeof input.old_string === 'string' &&
+        typeof input.new_string === 'string'
+      ) {
+        return {
+          added: countTextLines(input.new_string),
+          removed: countTextLines(input.old_string),
+          cheap: true,
+        };
+      }
+      return null;
+    }
+
+    // Clipped preview decision without building the full LCS row list.
+    function estimateWriteDiffClipped(payload, stats) {
+      if (stats && typeof stats.added === 'number' && typeof stats.removed === 'number') {
+        if (stats.added + stats.removed > WRITE_DIFF_FULL_BELOW_LINES) return true;
+      }
+      if (!payload) return false;
+      const oldN = countTextLines(payload.oldText || '');
+      const newN = countTextLines(payload.newText || '');
+      return oldN + newN > WRITE_DIFF_FULL_BELOW_LINES;
+    }
+
     function ensureWriteDiffPreviewControls(diff, payload, block, stats, languageClass, lineInfo) {
-      const clipped = buildIncipitDiffRows(payload).length > WRITE_DIFF_FULL_BELOW_LINES;
-      diff.style.setProperty(
-        '--incipit-write-diff-preview-max-height',
-        (WRITE_DIFF_PREVIEW_LINES * 1.55) + 'em'
-      );
-      if (clipped) diff.dataset.incipitWriteDiffClipped = '1';
-      else delete diff.dataset.incipitWriteDiffClipped;
+      // Never call buildIncipitDiffRows here — that is a second full LCS on
+      // every decorate and was a primary freeze source on old-session open.
+      const clipped = estimateWriteDiffClipped(payload, stats);
+      // Only touch style/dataset when the value would change — unconditional
+      // setProperty on every redecorate fires host_probe's style attribute
+      // observer across every Write/Edit row when a long session opens.
+      const wantMaxH = (WRITE_DIFF_PREVIEW_LINES * 1.55) + 'em';
+      if (diff.style.getPropertyValue('--incipit-write-diff-preview-max-height') !== wantMaxH) {
+        diff.style.setProperty('--incipit-write-diff-preview-max-height', wantMaxH);
+      }
+      if (clipped) {
+        if (diff.dataset.incipitWriteDiffClipped !== '1') {
+          diff.dataset.incipitWriteDiffClipped = '1';
+        }
+      } else if (diff.dataset.incipitWriteDiffClipped) {
+        delete diff.dataset.incipitWriteDiffClipped;
+      }
 
       let gradient = findDirectChildByAttr(diff, 'data-incipit-write-diff-gradient');
       let button = findDirectChildByAttr(diff, 'data-incipit-write-diff-expand');
@@ -11032,32 +12545,15 @@ function setupContinueButton() {
       }
       const buttonText = clipped ? 'Click to expand' : 'Open';
       if (button.textContent !== buttonText) button.textContent = buttonText;
+      // Closure refresh only — no DOM mutation.
       button.__incipitOpenWriteDiff = () => openWriteDiffModal(payload, block, stats, languageClass, lineInfo);
     }
 
-    function ensureWriteDiffBody(el, body, block, stats) {
-      const payload = incipitDiffPayload(block);
-      if (!payload || !body || !body.querySelector) {
-        cleanupWriteDiffBody(el, body);
-        return;
-      }
-
-      if (el.dataset.incipitToolWriteDiff !== '1') el.dataset.incipitToolWriteDiff = '1';
-      if (el.dataset.incipitToolDiffIsland !== '1') el.dataset.incipitToolDiffIsland = '1';
-
-      let diff = body.querySelector(':scope > [data-incipit-write-diff]');
-      if (!diff) {
-        diff = document.createElement('div');
-        diff.setAttribute('data-incipit-diff-island', '');
-        diff.setAttribute('data-incipit-write-diff', '');
-        body.insertBefore(diff, body.firstChild);
-      }
-
-      updateDiffHeader(diff, block, stats || { added: 0, removed: 0 });
-      const lineInfoKey = ensureDiffLineInfo(diff, block);
-      const lineInfo = lineInfoKey ? diffLineInfoByKey.get(lineInfoKey) : null;
-
-      const languageClass = languageClassForFilePath(payload.filePath);
+    // Full island (LCS rows + hljs + char ranges + line-info).
+    // Session-open decorate never reaches this for collapsed cards.
+    // Triggers: user expand (immediate), or viewport+idle progressive warm.
+    function materializeWriteDiffIsland(diff, payload, block, stats, languageClass, lineInfo) {
+      if (!diff || !payload) return;
       const lineSig = lineInfo
         ? [lineInfo.status, lineInfo.oldStartLine || '', lineInfo.newStartLine || '', lineInfo.startLine || ''].join(':')
         : '';
@@ -11065,7 +12561,6 @@ function setupContinueButton() {
         payload.oldText + '\n---\n' + payload.newText;
       if (diff.__incipitWriteDiffSig === sig) {
         ensureWriteDiffPreviewControls(diff, payload, block, stats || { added: 0, removed: 0 }, languageClass, lineInfo);
-        highlightDiffIsland(diff);
         return;
       }
       diff.__incipitWriteDiffSig = sig;
@@ -11080,6 +12575,119 @@ function setupContinueButton() {
       fillWriteDiffBody(bodyEl, payload, languageClass, lineInfo);
       ensureWriteDiffPreviewControls(diff, payload, block, stats || { added: 0, removed: 0 }, languageClass, lineInfo);
       highlightDiffIsland(diff);
+      if (diff.dataset) delete diff.dataset.incipitWriteDiffDeferred;
+    }
+
+    // ---- Write-diff progressive policy ----
+    // Earlier we pre-built islands under the fold on viewport entry (idle warm).
+    // That still ran LCS + hundreds of row nodes while the user scrolled up,
+    // which briefly expanded host IN/OUT bodies and made history feel like
+    // every tool was opening. Click-to-draw only: stamp deferred, never warm.
+    function observeWriteDiffDeferred(el) {
+      if (!el || el.nodeType !== 1) return;
+      if (el.dataset.incipitWriteDiffDeferred !== '1') return;
+      // Intentionally no IntersectionObserver / idle materialise.
+    }
+
+    function unobserveWriteDiff(el) {
+      if (!el) return;
+      if (el.dataset) delete el.dataset.incipitWriteDiffObserved;
+    }
+
+    function enqueueWriteDiffIdle(/* el, priority */) {
+      // No-op: scroll must not build islands. Expand click materialises.
+    }
+
+    function scheduleWriteDiffIdle() {}
+
+    function ensureWriteDiffBody(el, body, block, stats, options = {}) {
+      const payload = incipitDiffPayload(block);
+      if (!payload || !body || !body.querySelector) {
+        cleanupWriteDiffBody(el, body);
+        return;
+      }
+
+      if (el.dataset.incipitToolWriteDiff !== '1') el.dataset.incipitToolWriteDiff = '1';
+      if (el.dataset.incipitToolDiffIsland !== '1') el.dataset.incipitToolDiffIsland = '1';
+
+      // While collapsed and not forced: zero heavy work. Stamp deferred +
+      // observe for viewport/idle progressive warm.
+      const force = options.force === true;
+      const isExpanded = el.dataset.incipitToolCollapsed === 'false';
+      if (!isExpanded && !force) {
+        el.dataset.incipitWriteDiffDeferred = '1';
+        let diff = body.querySelector(':scope > [data-incipit-write-diff]');
+        if (diff) {
+          diff.dataset.incipitWriteDiffDeferred = '1';
+          const bodyEl = findDirectChildByAttr(diff, 'data-incipit-write-diff-body');
+          if (bodyEl && bodyEl.childNodes.length) {
+            bodyEl.textContent = '';
+            delete diff.__incipitWriteDiffSig;
+          }
+        }
+        observeWriteDiffDeferred(el);
+        return;
+      }
+
+      let diff = body.querySelector(':scope > [data-incipit-write-diff]');
+      if (!diff) {
+        diff = document.createElement('div');
+        diff.setAttribute('data-incipit-diff-island', '');
+        diff.setAttribute('data-incipit-write-diff', '');
+        body.insertBefore(diff, body.firstChild);
+      }
+
+      updateDiffHeader(diff, block, stats || { added: 0, removed: 0 });
+      const languageClass = languageClassForFilePath(payload.filePath);
+      const lineInfoKey = ensureDiffLineInfo(diff, block);
+      const lineInfo = lineInfoKey ? diffLineInfoByKey.get(lineInfoKey) : null;
+      materializeWriteDiffIsland(diff, payload, block, stats, languageClass, lineInfo);
+      if (el.dataset.incipitWriteDiffDeferred) delete el.dataset.incipitWriteDiffDeferred;
+      if (diff.dataset && diff.dataset.incipitWriteDiffDeferred) {
+        delete diff.dataset.incipitWriteDiffDeferred;
+      }
+      unobserveWriteDiff(el);
+    }
+
+    function refreshToolStatsSpans(el, stats) {
+      if (!el || !stats) return;
+      const statsEl = el.querySelector('[data-incipit-tool-stats]');
+      if (!statsEl) return;
+      const addedSpan = statsEl.querySelector('[data-incipit-tool-added]');
+      const removedSpan = statsEl.querySelector('[data-incipit-tool-removed]');
+      const wantAdded = '+' + stats.added;
+      const wantRemoved = '\u2212' + stats.removed;
+      if (addedSpan && addedSpan.textContent !== wantAdded) addedSpan.textContent = wantAdded;
+      if (removedSpan && removedSpan.textContent !== wantRemoved) removedSpan.textContent = wantRemoved;
+      if (addedSpan && addedSpan.style.display === 'none') addedSpan.style.display = '';
+      if (removedSpan && removedSpan.style.display === 'none') removedSpan.style.display = '';
+      el.dataset.incipitToolHasStats = '1';
+    }
+
+    // Draw write-diff now. options.keepCollapsed=true → warm under the fold
+    // (viewport/idle). Default → expand (user click).
+    function materializeWriteDiffForTool(el, options = {}) {
+      if (!el || !el.isConnected) return;
+      if (el.dataset.incipitWriteDiffMaterializing === '1') return;
+      const body = el.querySelector('[class*="toolBody_"]');
+      if (!body) return;
+      const data = readToolUseBlock(el);
+      if (!data || !data.block) return;
+      if (!incipitDiffPayload(data.block)) return;
+
+      el.dataset.incipitWriteDiffMaterializing = '1';
+      try {
+        const stats = computeStatsCached(data.block);
+        if (!options.keepCollapsed) {
+          if (el.dataset.incipitToolCollapsed !== 'false') {
+            el.dataset.incipitToolCollapsed = 'false';
+          }
+        }
+        ensureWriteDiffBody(el, body, data.block, stats, { force: true });
+        refreshToolStatsSpans(el, stats);
+      } finally {
+        try { delete el.dataset.incipitWriteDiffMaterializing; } catch (_) {}
+      }
     }
 
     function normalizePathForMatch(value) {
@@ -12361,14 +13969,16 @@ function setupContinueButton() {
     // Stats used to live inside the host title wrap (inlineHost), which
     // made "+66 −5 Edit file.js" read as one piled blob and could push the
     // icon out of the visible flex line. Keep chrome as direct children of
-    // summary and re-pin every decorate.
+    // summary. Only move nodes when parent/order is wrong — unconditional
+    // insertBefore every decorate would re-fire the tool MutationObserver
+    // and burn CPU on long sessions.
     function pinToolHeaderOrder(summary, icon, stats, statusEl) {
       if (!summary) return;
       icon = icon || summary.querySelector('[data-incipit-tool-icon]');
       stats = stats || summary.querySelector('[data-incipit-tool-stats]');
       statusEl = statusEl || summary.querySelector('[data-incipit-tool-status-dot]');
 
-      // Attach missing nodes first, then enforce order.
+      // Attach missing nodes first, then enforce order only if needed.
       if (icon && icon.parentElement !== summary) {
         summary.insertBefore(icon, summary.firstChild);
       }
@@ -12382,8 +13992,14 @@ function setupContinueButton() {
         summary.insertBefore(icon, summary.firstChild);
       }
       if (stats) {
-        if (statusEl) summary.insertBefore(stats, statusEl);
-        else if (summary.lastChild !== stats) summary.appendChild(stats);
+        if (statusEl) {
+          // stats should sit immediately before the status dot.
+          if (stats.nextElementSibling !== statusEl) {
+            summary.insertBefore(stats, statusEl);
+          }
+        } else if (summary.lastChild !== stats) {
+          summary.appendChild(stats);
+        }
       }
       if (statusEl && summary.lastChild !== statusEl) {
         summary.appendChild(statusEl);
@@ -12438,6 +14054,14 @@ function setupContinueButton() {
     }
 
     function decorateToolUse(el) {
+      // Collapse BEFORE any body mutation. Scroll-in decoration used to build
+      // IN/OUT truncation / write-diff rows while the card was still open, so
+      // history "auto-expanded" and the scroller jumped for hundreds of ms.
+      if (!el.dataset.incipitToolCollapsed) {
+        snapInitialCollapse(el);
+      }
+      const stayCollapsed = el.dataset.incipitToolCollapsed !== 'false';
+
       // Path truncation runs regardless of fiber/status — it is a pure
       // display concern and should apply to failed / pending calls too.
       const summary = el.querySelector('[class*="toolSummary"]');
@@ -12473,56 +14097,100 @@ function setupContinueButton() {
       // summary. Adding a chevron to those would lie about expandability.
       const body = el.querySelector('[class*="toolBody_"]');
       if (!body || body.children.length === 0) return;
+      // Ensure CSS collapse selector hits even if host_probe lagged.
+      if (!body.hasAttribute('data-incipit-tool-body')) {
+        body.setAttribute('data-incipit-tool-body', '');
+      }
 
       const data = grepData;
       if (!data) return;
 
-      // Protocol-XML OUT (task-notification from Monitor/Read of .output)
-      // must still collapse on error/pending rows — those are exactly the
-      // statuses where a failed background task shows up as a blue code block.
-      // Only run the protocol detector here; generic line truncation stays
-      // on the success path so we don't change failed-Bash OUT behaviour.
-      const protocolGrid = body.querySelector('[class*="toolBodyGrid"]');
-      if (protocolGrid) {
-        const rows = protocolGrid.querySelectorAll('[class*="toolBodyRow"]');
-        for (const row of rows) {
-          const content = row.querySelector('[class*="toolBodyRowContent"]');
-          if (content) decorateProtocolToolResult(content);
+      // Collapsed (default, including first scroll-in): light chrome only.
+      // Do NOT walk IN/OUT rows, truncate previews, build protocol cards, or
+      // even create a write-diff shell — any of that reflows under the fold
+      // and reads as "scrolling up opens every tool".
+      if (stayCollapsed) {
+        // Already light-decorated: skip re-work when host remounts / MO force.
+        if (el.dataset.incipitToolCard === '1' && el.dataset.incipitToolBound === '1') {
+          return;
+        }
+        if (!summary) return;
+        const titleWrap = summary.firstElementChild;
+        if (!titleWrap) return;
+        // Cheap +N/−M only for Edit/Write; never LCS / island on scroll-in.
+        const useIncipitDiff = !!incipitDiffPayload(data.block);
+        if (useIncipitDiff) {
+          el.dataset.incipitToolWriteDiff = '1';
+          el.dataset.incipitWriteDiffDeferred = '1';
+        }
+        // Fall through to shared chrome (icon/stats/click) only.
+      } else {
+        // Protocol-XML OUT (task-notification from Monitor/Read of .output)
+        // must still collapse on error/pending rows — those are exactly the
+        // statuses where a failed background task shows up as a blue code block.
+        // Only run the protocol detector here; generic line truncation stays
+        // on the success path so we don't change failed-Bash OUT behaviour.
+        const protocolGrid = body.querySelector('[class*="toolBodyGrid"]');
+        if (protocolGrid) {
+          const rows = protocolGrid.querySelectorAll('[class*="toolBodyRow"]');
+          for (const row of rows) {
+            const content = row.querySelector('[class*="toolBodyRowContent"]');
+            if (content) decorateProtocolToolResult(content);
+          }
+        }
+
+        // Blacklist only the terminal failure states. An allowlist on 'success'
+        // would silently break if Claude Code introduces a new status name
+        // (e.g. 'succeeded', 'ok', 'completed') in a minor version — stats and
+        // the chevron would disappear across the board for no visible reason.
+        if (data.status === 'error' || data.status === 'pending') return;
+
+        if (!summary) return;
+
+        // Append stats inside the same inline host as the tool name, not as a
+        // sibling of the outer title wrapper. The host summary is a flex row,
+        // and some tools (Agent / Task-like rows) wrap name + secondary text in
+        // an inner block div; landing after that block pushes the chevron onto a
+        // second line. The inline host keeps name, fingerprint, stats, chevron
+        // in one text flow.
+        const titleWrap = summary.firstElementChild;
+        if (!titleWrap) return;
+
+        // Click-to-draw for Edit/Write: collapsed (default on session open) uses
+        // cheap O(n) line counts only. Exact LCS + island build wait for expand.
+        const useIncipitDiff = !!incipitDiffPayload(data.block);
+        const stats = useIncipitDiff
+          ? computeStatsCached(data.block)
+          : computeStatsCached(data.block);
+        if (useIncipitDiff) {
+          ensureWriteDiffBody(el, body, data.block, stats);
+        } else {
+          cleanupWriteDiffBody(el, body);
+          decorateInlineDiffHeader(body, data.block, stats);
+          // Generic IN/OUT truncation for tools using the host's
+          // `toolBodyGrid` template. Edit/MultiEdit/Write use incipit's own
+          // diff island when their tool input is readable, so they bypass
+          // this. Grep already returned.
+          // Idempotent across re-decorates.
+          const grid = body.querySelector('[class*="toolBodyGrid"]');
+          if (grid) applyToolBodyTruncation(grid, data.block.name);
         }
       }
 
-      // Blacklist only the terminal failure states. An allowlist on 'success'
-      // would silently break if Claude Code introduces a new status name
-      // (e.g. 'succeeded', 'ok', 'completed') in a minor version — stats and
-      // the chevron would disappear across the board for no visible reason.
-      if (data.status === 'error' || data.status === 'pending') return;
-
+      // Shared collapsed/expanded tail: need titleWrap + stats again if we
+      // took the collapsed early path (locals scoped inside branches).
       if (!summary) return;
-
-      // Append stats inside the same inline host as the tool name, not as a
-      // sibling of the outer title wrapper. The host summary is a flex row,
-      // and some tools (Agent / Task-like rows) wrap name + secondary text in
-      // an inner block div; landing after that block pushes the chevron onto a
-      // second line. The inline host keeps name, fingerprint, stats, chevron
-      // in one text flow.
-      const titleWrap = summary.firstElementChild;
-      if (!titleWrap) return;
-
-      const stats = computeStatsCached(data.block);
-      const useIncipitDiff = !!incipitDiffPayload(data.block);
-      if (useIncipitDiff) {
-        ensureWriteDiffBody(el, body, data.block, stats);
-      } else {
-        cleanupWriteDiffBody(el, body);
-        decorateInlineDiffHeader(body, data.block, stats);
-        // Generic IN/OUT truncation for tools using the host's
-        // `toolBodyGrid` template. Edit/MultiEdit/Write use incipit's own
-        // diff island when their tool input is readable, so they bypass
-        // this. Grep already returned.
-        // Idempotent across re-decorates.
-        const grid = body.querySelector('[class*="toolBodyGrid"]');
-        if (grid) applyToolBodyTruncation(grid, data.block.name);
-      }
+      const titleWrapShared = summary.firstElementChild;
+      if (!titleWrapShared) return;
+      // Recompute stats for the chrome row when collapsed early-return path
+      // already produced them only inside the branch — re-read cheaply.
+      const useIncipitDiffShared = !!incipitDiffPayload(data.block);
+      // Collapsed: never LCS. Non-Edit tools leave stats empty on scroll-in.
+      const stats = stayCollapsed
+        ? (useIncipitDiffShared ? cheapToolStats(data.block) : null)
+        : computeStatsCached(data.block);
+      // Alias for the rest of the function which historically used titleWrap.
+      const titleWrap = titleWrapShared;
 
       if (el.dataset.incipitToolBound !== '1') {
         el.addEventListener('click', evt => {
@@ -12539,13 +14207,30 @@ function setupContinueButton() {
             el.dataset.incipitToolCollapsed = collapsed ? 'false' : 'true';
             return;
           }
-          if (collapsed) animateExpandBody(el, body);
-          else           animateCollapseBody(el, body);
+          if (collapsed) {
+            // Expand first, then run the heavy body path that was skipped while
+            // collapsed (IN/OUT truncation, write-diff island, protocol OUT).
+            animateExpandBody(el, body);
+            requestAnimationFrame(() => {
+              try {
+                if (
+                  el.dataset.incipitToolWriteDiff === '1' ||
+                  el.dataset.incipitWriteDiffDeferred === '1' ||
+                  body.querySelector(':scope > [data-incipit-write-diff]')
+                ) {
+                  try { unobserveWriteDiff(el); } catch (_) {}
+                  materializeWriteDiffForTool(el, { keepCollapsed: false });
+                } else {
+                  // Bash/etc.: apply preview truncation only after expand.
+                  decorateToolUse(el);
+                }
+              } catch (_) {}
+            });
+          } else {
+            animateCollapseBody(el, body);
+          }
         });
         el.dataset.incipitToolBound = '1';
-        if (!el.dataset.incipitToolCollapsed) {
-          snapInitialCollapse(el);
-        }
       }
 
       // Granular create-once / textContent-only-on-change DOM updates.
@@ -12699,24 +14384,152 @@ function setupContinueButton() {
     // sessions.
     const pendingToolUseRoots = new Set();
     let rescanScheduled = false;
+    // Opening a long prior session can enqueue hundreds of toolUse nodes.
+    // Decorating every Write/Edit island (diff rows + hljs) in one rAF freezes
+    // the webview on the loading spinner. Budget work across frames.
+    const TOOL_DECORATE_FRAME_BUDGET_MS = 8;
+    const TOOL_DECORATE_MIN_PER_FRAME = 2;
+    // Session-open policy: only decorate tools near the chat viewport (or the
+    // last few in DOM order as a bottom-of-thread fallback). Off-screen tools
+    // wait for IntersectionObserver so scrolling up paints earlier history
+    // progressively instead of "decorate everything → then fold".
+    // Keep margin tight: 900px used to pre-decorate ~2 screens of tools while
+    // scrolling up, each reflowing chrome and feeling like "tools opening".
+    const TOOL_VIEWPORT_MARGIN_PX = 120;
+    const TOOL_SEED_TAIL_COUNT = 12;
+    let toolUseViewportIO = null;
+    const toolUsePendingObserve = new WeakSet();
+
+    function messagesScrollerEl() {
+      const candidates = [
+        document.querySelector(SEL.messagesContainer),
+        ...document.querySelectorAll('[class*="messagesContainer_"]'),
+      ].filter(Boolean);
+      for (const candidate of candidates) {
+        if (candidate.scrollHeight > candidate.clientHeight + 1) return candidate;
+      }
+      return candidates[0] || null;
+    }
+
+    function toolUseNearViewport(el, marginPx) {
+      if (!el || !el.getBoundingClientRect) return false;
+      try {
+        const rect = el.getBoundingClientRect();
+        // Pre-layout (0×0): do NOT treat as near — session open used to
+        // decorate every toolUse before pin-to-bottom finished layout.
+        // Tail seed + IntersectionObserver cover those nodes instead.
+        if (rect.width <= 0 && rect.height <= 0) return false;
+        const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+        const m = typeof marginPx === 'number' ? marginPx : TOOL_VIEWPORT_MARGIN_PX;
+        return rect.bottom >= -m && rect.top <= vh + m;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function ensureToolUseViewportObserver() {
+      if (toolUseViewportIO) return toolUseViewportIO;
+      if (typeof IntersectionObserver !== 'function') return null;
+      toolUseViewportIO = new IntersectionObserver((entries) => {
+        let dirty = false;
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          if (!entry || !entry.isIntersecting) continue;
+          const el = entry.target;
+          if (!el || !el.isConnected) continue;
+          if (el.dataset && el.dataset.incipitToolCard === '1') {
+            try { toolUseViewportIO.unobserve(el); } catch (_) {}
+            continue;
+          }
+          pendingToolUseRoots.add(el);
+          dirty = true;
+          try { toolUseViewportIO.unobserve(el); } catch (_) {}
+        }
+        if (dirty) scheduleRescan();
+      }, {
+        root: null,
+        rootMargin: TOOL_VIEWPORT_MARGIN_PX + 'px 0px',
+        threshold: 0,
+      });
+      return toolUseViewportIO;
+    }
+
+    function stampToolCollapsedDefault(el) {
+      // Instant CSS fold before decorate ever runs — host bodies otherwise
+      // paint full-height until the IO callback fires.
+      if (!el || el.nodeType !== 1) return;
+      if (!el.dataset.incipitToolCollapsed) {
+        el.dataset.incipitToolCollapsed = 'true';
+      }
+    }
+
+    function observeToolUseForLaterDecorate(el) {
+      if (!el || el.nodeType !== 1) return;
+      if (el.dataset && el.dataset.incipitToolCard === '1') return;
+      stampToolCollapsedDefault(el);
+      if (toolUsePendingObserve.has(el)) return;
+      const io = ensureToolUseViewportObserver();
+      if (!io) {
+        // No IO (rare) — fall back to immediate queue so tools still decorate.
+        pendingToolUseRoots.add(el);
+        return;
+      }
+      toolUsePendingObserve.add(el);
+      try { io.observe(el); } catch (_) {
+        pendingToolUseRoots.add(el);
+      }
+    }
+
+    function enqueueToolUseForDecorate(el, opts) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.dataset && el.dataset.incipitToolCard === '1') return false;
+      stampToolCollapsedDefault(el);
+      const force = opts && opts.force === true;
+      if (!force && !toolUseNearViewport(el)) {
+        observeToolUseForLaterDecorate(el);
+        return false;
+      }
+      pendingToolUseRoots.add(el);
+      return true;
+    }
+
     function scheduleRescan() {
       if (rescanScheduled) return;
       rescanScheduled = true;
       requestAnimationFrame(() => {
         rescanScheduled = false;
         if (!pendingToolUseRoots.size) return;
-        const tools = Array.from(pendingToolUseRoots);
-        pendingToolUseRoots.clear();
-        for (const t of tools) {
-          if (!t.isConnected) continue;
+        const start = (typeof performance !== 'undefined' && performance.now)
+          ? performance.now()
+          : Date.now();
+        let processed = 0;
+        while (pendingToolUseRoots.size) {
+          const t = pendingToolUseRoots.values().next().value;
+          pendingToolUseRoots.delete(t);
+          if (!t || !t.isConnected) continue;
           try { decorateToolUse(t); }
           catch (e) { try { console.warn('[incipit] decorateToolUse failed:', e); } catch (_) {} }
+          processed++;
+          if (
+            pendingToolUseRoots.size &&
+            processed >= TOOL_DECORATE_MIN_PER_FRAME
+          ) {
+            const now = (typeof performance !== 'undefined' && performance.now)
+              ? performance.now()
+              : Date.now();
+            if (now - start >= TOOL_DECORATE_FRAME_BUDGET_MS) {
+              scheduleRescan();
+              return;
+            }
+          }
         }
       });
     }
 
     function enqueueAffectedToolUses(node, targetInsideToolUse) {
       if (!node || node.nodeType !== 1) return false;
+      // Never re-queue because we mutated our own chrome under a toolUse.
+      if (isIncipitOwnedToolChrome(node)) return false;
       let queued = false;
       // Case A: the added subtree IS a toolUse, or sits INSIDE one.
       // Covers React rebuilding the summary subtree mid-stream — the rebuilt
@@ -12724,25 +14537,103 @@ function setupContinueButton() {
       // re-decorated because our injected stats span was wiped.
       if (targetInsideToolUse) {
         const ancestor = node.closest && node.closest('[class*="toolUse_"]');
-        if (ancestor) {
-          pendingToolUseRoots.add(ancestor);
+        if (ancestor && enqueueToolUseForDecorate(ancestor, { force: true })) {
           queued = true;
         }
       }
       if (elementClassText(node).indexOf('toolUse_') !== -1) {
-        pendingToolUseRoots.add(node);
-        queued = true;
+        if (enqueueToolUseForDecorate(node, { force: true })) queued = true;
       }
       // Case B: the added subtree CONTAINS toolUse descendants (e.g. a fresh
       // assistant message landing with a tool call inside).
       if (node.firstElementChild && node.querySelectorAll) {
         const inners = node.querySelectorAll('[class*="toolUse_"]');
         for (const t of inners) {
-          pendingToolUseRoots.add(t);
-          queued = true;
+          // Host may mount a whole transcript chunk at once when opening a
+          // prior session. Only force-queue tools near the viewport; the rest
+          // wait for IntersectionObserver when the user scrolls up.
+          if (enqueueToolUseForDecorate(t)) queued = true;
         }
       }
       return queued;
+    }
+
+    // Incipit-owned tool chrome. Inserts of these must not re-enqueue the
+    // same toolUse (decorate → insert icon/stats/dot/write-diff → MO →
+    // decorate…). Host rebuilds still enqueue because they add non-owned
+    // nodes. CRITICAL: write-diff / diff-island used to be missing here —
+    // opening a prior session with many Edit/Write tools re-decorated every
+    // toolUse on every island-row insert and froze the webview on loading.
+    const INCIPIT_TOOL_OWNED_SELECTOR = [
+      '[data-incipit-tool-icon]',
+      '[data-incipit-tool-status-dot]',
+      '[data-incipit-tool-stats]',
+      '[data-incipit-tool-filepath]',
+      '[data-incipit-tool-grep-filename]',
+      '[data-incipit-tool-fingerprint-aux]',
+      '[data-incipit-tool-grep-chevron]',
+      '[data-incipit-tool-grep-expansion]',
+      '[data-incipit-tool-out-more]',
+      '[data-incipit-tool-grep-more]',
+      '[data-incipit-protocol-card]',
+      '[data-incipit-write-diff]',
+      '[data-incipit-diff-island]',
+      '[data-incipit-diff-header]',
+      '[data-incipit-diff-bars]',
+      '[data-incipit-diff-line-numbers]',
+    ].join(',');
+
+    // Subtrees we fully own — any descendant insert (diff rows, char spans,
+    // expand button, gradient, hljs tokens under the island) must not re-arm
+    // decorateToolUse. Prefer a small closest() set over enumerating every
+    // leaf attr; hljs injects plain .hljs-* spans with no data-incipit-*.
+    const INCIPIT_TOOL_OWNED_CLOSEST_SELECTOR = [
+      '[data-incipit-tool-grep-expansion]',
+      '[data-incipit-protocol-card]',
+      '[data-incipit-write-diff]',
+      '[data-incipit-diff-island]',
+      '[data-incipit-diff-header]',
+      '[data-incipit-diff-bars]',
+      '[data-incipit-diff-line-numbers]',
+      '[data-incipit-tool-stats]',
+      '[data-incipit-write-diff-expand]',
+      '[data-incipit-write-diff-gradient]',
+    ].join(', ');
+
+    function isIncipitOwnedToolChrome(node) {
+      let el = node;
+      if (el && el.nodeType !== 1) el = el.parentElement;
+      if (!el) return false;
+      // Fast path: already under a fully-owned subtree (covers hljs token
+      // spans and other unmarked descendants of write-diff / grep expansion).
+      if (el.closest && el.closest(INCIPIT_TOOL_OWNED_CLOSEST_SELECTOR)) return true;
+      if (el.matches && el.matches(INCIPIT_TOOL_OWNED_SELECTOR)) return true;
+      // Leaf chrome we stamp directly (icon, status-dot, filepath, …) even
+      // when not under the closest set above.
+      if (typeof el.getAttributeNames === 'function') {
+        const names = el.getAttributeNames();
+        for (let i = 0; i < names.length; i++) {
+          const a = names[i];
+          if (
+            a === 'data-incipit-tool-icon' ||
+            a === 'data-incipit-tool-status-dot' ||
+            a === 'data-incipit-tool-stats' ||
+            a === 'data-incipit-tool-filepath' ||
+            a === 'data-incipit-tool-grep-filename' ||
+            a === 'data-incipit-tool-fingerprint-aux' ||
+            a === 'data-incipit-tool-grep-chevron' ||
+            a === 'data-incipit-tool-out-more' ||
+            a === 'data-incipit-tool-grep-more' ||
+            a === 'data-incipit-protocol-card' ||
+            a === 'data-incipit-write-diff' ||
+            a === 'data-incipit-diff-island' ||
+            a === 'data-incipit-diff-header' ||
+            a === 'data-incipit-diff-bars' ||
+            a === 'data-incipit-diff-line-numbers'
+          ) return true;
+        }
+      }
+      return false;
     }
 
     // Local body observer is the primary path again. An earlier attempt
@@ -12757,11 +14648,17 @@ function setupContinueButton() {
         const m = muts[i];
         if (m.type !== 'childList' || !m.addedNodes.length) continue;
         if (mutationInsideFocusedEditor(m)) continue;
+        // Inserts into our owned subtrees (write-diff body, stats, …) never
+        // re-arm decoration — even when the added node itself is unmarked
+        // (hljs token span). Checking the mutation target first is cheaper
+        // than walking every added node when React streams into a tool body.
+        if (m.target && isIncipitOwnedToolChrome(m.target)) continue;
         const targetInsideToolUse = !!(
           m.target &&
           (m.target.nodeType === 1 ? m.target : m.target.parentElement)?.closest?.('[class*="toolUse_"]')
         );
         for (const node of m.addedNodes) {
+          if (isIncipitOwnedToolChrome(node)) continue;
           if (enqueueAffectedToolUses(node, targetInsideToolUse)) dirty = true;
         }
       }
@@ -12769,16 +14666,35 @@ function setupContinueButton() {
     });
     mo.observe(document.body, { childList: true, subtree: true });
 
-    // Seed the queue with everything already on the page so the first frame
-    // decorates the same set the old `scheduleRescan()` initial call did.
+    // Seed only tools near the current viewport (after we pin scroll to the
+    // bottom of an opened session). A long prior transcript can contain
+    // hundreds of toolUse nodes; decorating all of them before fold was the
+    // "open everything then collapse" freeze. Tail fallback covers the
+    // pre-layout race where getBoundingClientRect is still empty.
     const initialRoot = document.querySelector(SEL.messagesContainer) ||
       document.querySelector('[class*="messagesContainer_"]') ||
       document.body;
     if (initialRoot) {
-      const initial = initialRoot.querySelectorAll('[class*="toolUse_"]');
-      for (const t of initial) pendingToolUseRoots.add(t);
-      scheduleRescan();
+      const initial = Array.from(initialRoot.querySelectorAll('[class*="toolUse_"]'));
+      const tailStart = Math.max(0, initial.length - TOOL_SEED_TAIL_COUNT);
+      for (let i = 0; i < initial.length; i++) {
+        const t = initial[i];
+        if (i >= tailStart || toolUseNearViewport(t)) {
+          pendingToolUseRoots.add(t);
+        } else {
+          observeToolUseForLaterDecorate(t);
+        }
+      }
+      if (pendingToolUseRoots.size) scheduleRescan();
     }
+
+    // Pin-to-bottom reseed + external callers (session open) use these hooks.
+    try {
+      window.__incipitEnqueueToolUse = (el) => {
+        if (enqueueToolUseForDecorate(el, { force: false })) scheduleRescan();
+      };
+      window.__incipitScheduleToolRescan = () => scheduleRescan();
+    } catch (_) { /* ignore */ }
   }
 
   function flushDeferredCodeHighlightsIfReady() {
@@ -12855,6 +14771,8 @@ function setupContinueButton() {
     setupSurfaceStateBanners();
     setupAuthLoginGuard();
     setupContinueButton();
+    setupStreamStallWatch();
+    setupTranscriptPinToBottom();
     setupCommandMenuTransientSelectionCleanup();
     setupCustomModelPicker();
     setupGatewayModelPicker();

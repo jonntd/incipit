@@ -1344,31 +1344,63 @@ pre.incipit-mermaid-source {
 /* Tool body collapse animation. CSS owns the resting collapsed state and the
    timing curve; `setupToolFold` suppresses the first decorate snap in JS and
    writes inline `max-height` only while a user-triggered fold is in flight. */
-[data-incipit-tool-use] [data-incipit-tool-body] {
+[data-incipit-tool-use] [data-incipit-tool-body],
+[class*="toolUse_"] [class*="toolBody_"],
+[class*="toolUse_"] [class*="toolBodyWrapper"] {
   /* Claude Code hides `.toolBodyWrapper_*` below 500px. Since incipit now owns
      the fold state, keep the body in layout and let max-height perform the
      collapse; otherwise the chevron can open while the diff stays display:none. */
   display: block !important;
   overflow: hidden;
   padding: 0 10px 8px !important;
+  /* No transition on first paint / scroll-in — only animate after a user
+     click sets data-incipit-tool-fold-anim. Transition on every decorate
+     made history scroll feel like tools were "opening". */
+  transition: none;
+}
+[data-incipit-tool-use][data-incipit-tool-fold-anim] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-fold-anim] [class*="toolBody_"],
+[class*="toolUse_"][data-incipit-tool-fold-anim] [class*="toolBody_"],
+[class*="toolUse_"][data-incipit-tool-fold-anim] [class*="toolBodyWrapper"] {
   transition: max-height 0.22s ease,
               margin-top 0.22s ease,
               margin-bottom 0.22s ease,
               padding-top 0.22s ease,
               padding-bottom 0.22s ease;
 }
-[data-incipit-tool-use][data-incipit-tool-collapsed="true"] [data-incipit-tool-body] {
-  max-height: 0;
-  /* Grid / flex children default to `min-height: auto` which can refuse to
-     shrink past their content's intrinsic size — force 0 so `max-height: 0`
-     actually wins. Same for any host-imposed border the container drew. */
-  min-height: 0;
-  margin-top: 0;
-  margin-bottom: 0;
+
+/* DEFAULT COLLAPSED: every tool row starts folded, even before decorate
+   stamps data-incipit-tool-collapsed. Without this, undecoated host tools
+   render full IN/OUT while scrolling history, then snap shut — feels like
+   "scrolling opens tools". Opt out only with collapsed="false" (user open). */
+[class*="toolUse_"]:not([data-incipit-tool-collapsed="false"]) [class*="toolBody_"],
+[class*="toolUse_"]:not([data-incipit-tool-collapsed="false"]) [class*="toolBodyWrapper"],
+[class*="toolUse_"]:not([data-incipit-tool-collapsed="false"]) [data-incipit-tool-body],
+[class*="toolUse_"]:not([data-incipit-tool-collapsed="false"]) [data-incipit-tool-grep-expansion],
+[data-incipit-tool-use]:not([data-incipit-tool-collapsed="false"]) [class*="toolBody_"],
+[data-incipit-tool-use]:not([data-incipit-tool-collapsed="false"]) [data-incipit-tool-body],
+[data-incipit-tool-use]:not([data-incipit-tool-collapsed="false"]) [data-incipit-tool-grep-expansion] {
+  max-height: 0 !important;
+  min-height: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
   padding-top: 0 !important;
   padding-bottom: 0 !important;
-  border-top-width: 0;
-  border-bottom-width: 0;
+  border-top-width: 0 !important;
+  border-bottom-width: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Explicit expanded (user click). Prefer this over "not collapsed" alone so
+   animateExpand's inline max-height can win during the open transition. */
+[class*="toolUse_"][data-incipit-tool-collapsed="false"] [class*="toolBody_"],
+[class*="toolUse_"][data-incipit-tool-collapsed="false"] [class*="toolBodyWrapper"],
+[class*="toolUse_"][data-incipit-tool-collapsed="false"] [data-incipit-tool-body],
+[data-incipit-tool-use][data-incipit-tool-collapsed="false"] [class*="toolBody_"],
+[data-incipit-tool-use][data-incipit-tool-collapsed="false"] [data-incipit-tool-body] {
+  max-height: none;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Hide the host `secondaryLine` ("Modified" / "Added N lines") only when we

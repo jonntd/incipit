@@ -27,6 +27,9 @@ const DEFAULT_FEATURES = Object.freeze({
   math: true,
   sessionUsage: true,
   editorSelectionOverlay: false,
+  // Per-hunk editorInsets review. Off by default: expensive (workspace
+  // watch + private git + insets). Session Edits panel covers Keep/Discard.
+  hunkwise: false,
 });
 
 // User-adjustable visual knobs. `bodyFontSize` must match one of the
@@ -160,6 +163,7 @@ function getFeatures() {
     editorSelectionOverlay: typeof raw.editorSelectionOverlay === 'boolean'
       ? raw.editorSelectionOverlay
       : DEFAULT_FEATURES.editorSelectionOverlay,
+    hunkwise: typeof raw.hunkwise === 'boolean' ? raw.hunkwise : DEFAULT_FEATURES.hunkwise,
   };
 }
 

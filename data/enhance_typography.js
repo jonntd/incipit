@@ -491,8 +491,34 @@ const HOST_DIFF_MODAL_CONTENT_SELECTOR = '[class*="diffEditorContainer"], .monac
 // rebuilds must not wake the legacy transcript action settle scanner, or a
 // review render can feed back into action-row placement and back into review
 // render again.
+//
+// Keep this list aligned with the tool-use MO's INCIPIT_TOOL_OWNED_SELECTOR
+// in enhance_legacy.js (plus transcript action rows / protocol / review).
+// Opening a long prior session decorates every toolUse in one wave; if those
+// icon/stats/diff inserts re-enter this observer, noteTranscriptActionMutation
+// never goes quiet and the settle scanner re-walks the whole transcript.
 const TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR = [
   '[data-incipit-change-review-turn]',
+  '[data-incipit-protocol-card]',
+  '[data-incipit-tool-icon]',
+  '[data-incipit-tool-status-dot]',
+  '[data-incipit-tool-stats]',
+  '[data-incipit-tool-filepath]',
+  '[data-incipit-tool-grep-filename]',
+  '[data-incipit-tool-fingerprint-aux]',
+  '[data-incipit-tool-grep-chevron]',
+  '[data-incipit-tool-grep-expansion]',
+  '[data-incipit-tool-out-more]',
+  '[data-incipit-tool-grep-more]',
+  '[data-incipit-write-diff]',
+  '[data-incipit-diff-island]',
+  '[data-incipit-diff-header]',
+  '[data-incipit-diff-bars]',
+  '[data-incipit-diff-line-numbers]',
+  '.claude-user-copy-btn-row',
+  '.claude-show-more-row',
+  '.incipit-transcript-action-row',
+  '.incipit-assistant-action-row',
 ].join(', ');
 
 function isDiffSurfaceNode(node) {
@@ -1302,14 +1328,31 @@ function setupObserver() {
       subtree: true,
       characterData: true,
     });
+    // Prefer segments near the viewport (after session pin-to-bottom the
+    // visible region is the tail). Full-tree SEG_SELECTOR on a long prior
+    // transcript was a major open-session cost; off-screen work arrives via
+    // handleMutations as the user scrolls up and React/virtualisation mounts
+    // more nodes, or via the cheap full-root pendingRoots pass below which
+    // only queues copy/hljs without walking every p/li text node for math.
+    const vh = (typeof window !== 'undefined' && window.innerHeight) || 800;
+    const margin = Math.max(600, vh);
+    let seeded = 0;
     for (const s of root.querySelectorAll(SEG_SELECTOR)) {
       if (s.isContentEditable) continue;
       if (isDiffSurfaceNode(s)) continue;
+      try {
+        const rect = s.getBoundingClientRect();
+        if (rect.height > 0 || rect.width > 0) {
+          if (rect.bottom < -margin || rect.top > vh + margin) continue;
+        }
+      } catch (_) { /* seed anyway */ }
       pendingSegments.add(s);
+      seeded++;
+      // Hard cap first paint: remaining segments join as mutations fire.
+      if (seeded >= 120) break;
     }
-    // Seed the localized hljs / copy-button pass for everything already
-    // mounted under this messages root. Subsequent growth is handled by
-    // `handleMutations` adding individual subtrees to `pendingRoots`.
+    // Still seed one root pass for copy buttons / protocol cards so the
+    // visible tail gets action chrome without waiting for settle.
     pendingRoots.add(root);
     noteTranscriptActionMutation();
     schedule();
@@ -1518,6 +1561,13 @@ function highlightOneCodeBlock(block, options = {}) {
   }
 
   if (isDiffIsland) {
+    // Already tokenized: only ensure char-range markup, never strip/rebuild.
+    // Stripping on every re-entry used to mutate DOM under a toolUse and
+    // re-arm the tool MutationObserver → freeze on long Edit/Write sessions.
+    if (block.classList && block.classList.contains('hljs')) {
+      applyIncipitDiffCharRangesToCode(block);
+      return;
+    }
     if (block.dataset) delete block.dataset.incipitDiffCharsApplied;
     // If char spans were applied before highlight.js loaded, strip that
     // markup back to plain text before hljs tokenizes. The original text is
@@ -1529,7 +1579,11 @@ function highlightOneCodeBlock(block, options = {}) {
     delete block.dataset.incipitHljsDeferred;
   }
   if (hljsCanHighlightBlock(block)) {
-    try { window.hljs.highlightElement(block); } catch (e) { /* ignore */ }
+    try { window.hljs.highlightElement(block); } catch (e) {
+      // Guarantee the :not(.hljs) gate trips even if highlightElement throws
+      // before stamping the class — otherwise write-diff redecorate loops.
+      try { if (block.classList) block.classList.add('hljs'); } catch (_) {}
+    }
   }
   if (isDiffIsland) applyIncipitDiffCharRangesToCode(block);
 }

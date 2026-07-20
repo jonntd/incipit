@@ -490,6 +490,7 @@ function formatApplyConfigInline(features, theme) {
     `${t('configure.feature_math')} ${features && features.math ? on : off}`,
     `${t('configure.feature_session')} ${features && features.sessionUsage ? on : off}`,
     `${t('configure.feature_editor_overlay')} ${features && features.editorSelectionOverlay ? on : off}`,
+    `${t('configure.feature_hunkwise')} ${features && features.hunkwise ? on : off}`,
     `${t('configure.param_body_size')} ${theme && theme.bodyFontSize ? theme.bodyFontSize : DEFAULT_THEME.bodyFontSize} px`,
     paletteDisplayLabel(theme || DEFAULT_THEME),
     `${t('configure.param_body_font')} ${bodyFontLabel}`,
@@ -871,7 +872,7 @@ async function handleConfigure() {
         math: t('configure.feature_math'),
         sessionUsage: t('configure.feature_session'),
         experimental: t('configure.experimental'),
-        experimentalValue: features.editorSelectionOverlay
+        experimentalValue: (features.editorSelectionOverlay || features.hunkwise)
           ? t('configure.experimental_value_on')
           : t('configure.experimental_value_off'),
         bodyFontSize: t('configure.param_body_size'),
@@ -993,6 +994,16 @@ async function handleExperimentalFeatures() {
         t('configure.experimental_overlay_desc_why'),
         t('configure.experimental_overlay_desc_restore'),
       ],
+    }, {
+      mark: '2.',
+      key: 'hunkwise',
+      label: t('configure.feature_hunkwise'),
+      enabled: features.hunkwise === true,
+      description: [
+        t('configure.experimental_hunkwise_desc_what'),
+        t('configure.experimental_hunkwise_desc_why'),
+        t('configure.experimental_hunkwise_desc_restore'),
+      ],
     }];
   };
 
@@ -1032,9 +1043,7 @@ async function handleExperimentalFeatures() {
       if (key.name === 'space' || str === ' ' ||
           key.name === 'return' || key.name === 'enter') {
         if (index < rows.length) {
-          if (rows[index].key === 'editorSelectionOverlay') {
-            toggleEditorSelectionOverlayFeature();
-          }
+          toggleExperimentalFeature(rows[index].key);
           return;
         }
         return { done: true, result: { action: 'back' } };
@@ -1042,9 +1051,7 @@ async function handleExperimentalFeatures() {
       const n = parseInt(str, 10);
       if (Number.isFinite(n) && n >= 1 && n <= rows.length) {
         index = n - 1;
-        if (rows[index].key === 'editorSelectionOverlay') {
-          toggleEditorSelectionOverlayFeature();
-        }
+        toggleExperimentalFeature(rows[index].key);
         return;
       }
     },
@@ -1052,8 +1059,13 @@ async function handleExperimentalFeatures() {
 }
 
 function toggleEditorSelectionOverlayFeature() {
+  toggleExperimentalFeature('editorSelectionOverlay');
+}
+
+function toggleExperimentalFeature(key) {
+  if (key !== 'editorSelectionOverlay' && key !== 'hunkwise') return;
   const features = getFeatures();
-  setFeature('editorSelectionOverlay', !features.editorSelectionOverlay);
+  setFeature(key, !features[key]);
   invalidateScreenSession();
 }
 

@@ -477,6 +477,31 @@ function tagStaticSelectors(root) {
       if (!element.isContentEditable) ensureAttr(element, attr);
     });
   }
+  // Instant-collapse every tool row as soon as host_probe sees it — do not
+  // wait for enhance_legacy decorate. Undecoated host tools otherwise paint
+  // full IN/OUT while the user scrolls history, then snap shut.
+  collapseUndecoratedToolUses(root);
+}
+
+function collapseUndecoratedToolUses(root) {
+  if (!root || root.nodeType !== 1) return;
+  const stamp = (el) => {
+    if (!el || el.nodeType !== 1) return;
+    const isTool =
+      el.hasAttribute?.(ATTR.toolUse) ||
+      (typeof el.className === 'string' && el.className.indexOf('toolUse_') !== -1) ||
+      (el.getAttribute && String(el.getAttribute('class') || '').indexOf('toolUse_') !== -1);
+    if (!isTool) return;
+    // Never override a user-expanded card.
+    if (el.getAttribute('data-incipit-tool-collapsed') === 'false') return;
+    if (!el.getAttribute('data-incipit-tool-collapsed')) {
+      el.setAttribute('data-incipit-tool-collapsed', 'true');
+    }
+  };
+  stamp(root);
+  try {
+    root.querySelectorAll?.(`[${ATTR.toolUse}], [class*="toolUse_"]`).forEach(stamp);
+  } catch (_) { /* ignore */ }
 }
 
 function elementClassText(node) {

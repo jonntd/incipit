@@ -54,6 +54,7 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'enhance_legacy.js'), 'enhance_legacy.js'],
   [path.join('data', 'host_probe.js'), 'host_probe.js'],
   [path.join('data', 'host-badge.cjs'), 'host-badge.cjs'],
+  [path.join('data', 'checkpoint_timeline.cjs'), 'checkpoint_timeline.cjs'],
   [path.join('data', 'markdown_preprocess.js'), 'markdown_preprocess.js'],
   [path.join('data', 'protocol_tags.js'), 'protocol_tags.js'],
   [path.join('data', 'math_tokens.js'), 'math_tokens.js'],
@@ -1828,8 +1829,11 @@ function patchExtensionJs(content) {
   [updated, statusAtMention] = patchAtMentionCommand(updated);
   statusLines.push(record('install.atMentionCommand', statusAtMention));
 
-  // --- Hunkwise: inject into activate ---
-  if (updated.includes('exports.activate = function(__hunkwiseCtx)')) {
+  // --- Hunkwise: inject into activate (optional; off by default) ---
+  const hunkwiseEnabled = getFeatures().hunkwise === true;
+  if (!hunkwiseEnabled) {
+    statusLines.push(`${padLabel('Hunkwise 注入')}: 已跳过 (feature off)`);
+  } else if (updated.includes('exports.activate = function(__hunkwiseCtx)')) {
     statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在`);
   } else if (updated.includes("require('./webview/hunkwise_bundle.js').activate(")) {
     statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在 (inline)`);
@@ -2809,14 +2813,18 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     try {
       const pkg = JSON.parse(pkgText);
       let pkgModified = false;
-      if (!pkg.enabledApiProposals) pkg.enabledApiProposals = [];
-      if (!pkg.enabledApiProposals.includes("editorInsets")) {
-        pkg.enabledApiProposals.push("editorInsets");
-        pkgModified = true;
+      const hunkwiseEnabled = getFeatures().hunkwise === true;
+      if (hunkwiseEnabled) {
+        if (!pkg.enabledApiProposals) pkg.enabledApiProposals = [];
+        if (!pkg.enabledApiProposals.includes("editorInsets")) {
+          pkg.enabledApiProposals.push("editorInsets");
+          pkgModified = true;
+        }
       }
 
-      const contribSources = [
-        {
+      const contribSources = [];
+      if (hunkwiseEnabled) {
+        contribSources.push({
           label: 'hunkwise',
           rel: path.join('data', 'hunkwise_package.json'),
           rewriteIcon: (icon) => (
@@ -2824,13 +2832,13 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
               ? icon.replace('media/', 'webview/hunkwise_media/')
               : icon
           ),
-        },
-        {
-          label: 'commit-message',
-          rel: path.join('data', 'commit_message_package.json'),
-          rewriteIcon: null,
-        },
-      ];
+        });
+      }
+      contribSources.push({
+        label: 'commit-message',
+        rel: path.join('data', 'commit_message_package.json'),
+        rewriteIcon: null,
+      });
       const mergedLabels = [];
 
       for (const source of contribSources) {

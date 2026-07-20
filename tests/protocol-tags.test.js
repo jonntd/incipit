@@ -157,6 +157,32 @@ function ok(name) {
         legacy.includes("data.status === 'error' || data.status === 'pending'"),
       'error/pending tools must still run protocol OUT collapse',
     );
+    // Card must never be inserted relative to the bubble shell as content —
+    // that parks it as a sibling outside bubbleEl.querySelector reach and
+    // stacks infinite /MODEL (slash-command) cards on session open.
+    assert.ok(legacy.includes('function insertProtocolCardInBubble'));
+    assert.ok(legacy.includes('function pruneOrphanProtocolCards'));
+    assert.ok(legacy.includes('function hideProtocolRawInBubble'));
+    assert.ok(legacy.includes('function pruneDetachedProtocolCards'));
+    assert.ok(legacy.includes('function isProtocolCardHosted'));
+    assert.ok(
+      legacy.includes('pruneDetachedProtocolCards(scope)'),
+      'scanAndAddCopyButtons must sweep detached protocol cards before decorate',
+    );
+    // The decorate body must call userBubbleContentElement without
+    // `|| bubbleEl` (edit path may still use that fallback).
+    const decorateBody = legacy.slice(
+      legacy.indexOf('function decorateProtocolLeakBubble'),
+      legacy.indexOf('function buildProtocolCard'),
+    );
+    assert.ok(
+      decorateBody.includes('userBubbleContentElement(bubbleEl)'),
+      'decorate must resolve content element',
+    );
+    assert.ok(
+      !/userBubbleContentElement\(bubbleEl\)\s*\|\|\s*bubbleEl/.test(decorateBody),
+      'must not fall back to bubbleEl as protocol content anchor',
+    );
     ok('enhance_legacy wires protocol decorators');
   })();
 

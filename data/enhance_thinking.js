@@ -154,6 +154,31 @@ export function initThinking() {
     }
   };
 
+  // Drop map entries for thinking keys no longer mounted. Live timing keeps a
+  // short remount grace (same window as noteThinkingSummaryDetached) so a
+  // streaming replace does not reset the wall clock. Done timings and open
+  // intent for vanished keys would otherwise grow unbounded across long
+  // sessions / session switches.
+  const pruneStaleThinkingState = (seenKeys) => {
+    const now = nowMs();
+    for (const key of Array.from(thinkingTimingByKey.keys())) {
+      if (seenKeys.has(key)) continue;
+      const entry = thinkingTimingByKey.get(key);
+      if (
+        entry &&
+        entry.durationMs == null &&
+        entry.pendingRemountUntilMs > 0 &&
+        now <= entry.pendingRemountUntilMs
+      ) {
+        continue;
+      }
+      thinkingTimingByKey.delete(key);
+    }
+    for (const key of Array.from(intentOpen)) {
+      if (!seenKeys.has(key)) intentOpen.delete(key);
+    }
+  };
+
   const currentlyMountedObservedSummaries = () => {
     const seen = new Set();
     for (const summary of thinkingSummaryObservers.keys()) {
@@ -204,6 +229,7 @@ export function initThinking() {
     const all = document.querySelectorAll(SEL.thinking);
     if (!all.length) {
       cleanupThinkingSummaryObservers(new Set());
+      pruneStaleThinkingState(new Set());
       return;
     }
     cleanupThinkingSummaryObservers(currentlyMountedObservedSummaries());
@@ -221,6 +247,7 @@ export function initThinking() {
       for (let j = 0; j < ts.length; j++) tIdxOf.set(ts[j], j);
     }
     const seenSummaries = new Set();
+    const seenKeys = new Set();
     for (let i = 0; i < all.length; i++) {
       const d = all[i];
       d.__claudeFrozen = true;
@@ -231,6 +258,7 @@ export function initThinking() {
       const ti = tIdxOf.get(d);
       if (ti == null) continue;
       const k = `m${mi}t${ti}`;
+      seenKeys.add(k);
       const summary = d.querySelector(':scope > summary');
       if (summary) {
         seenSummaries.add(summary);
@@ -250,6 +278,7 @@ export function initThinking() {
       }
     }
     cleanupThinkingSummaryObservers(seenSummaries);
+    pruneStaleThinkingState(seenKeys);
   };
   reconcileAll();
 

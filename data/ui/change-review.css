@@ -1,22 +1,336 @@
-/* ui/change-review.css — per-turn file review cards (P2 module split)
-   Layout rules remain in theme.css for now; this file holds additive
-   session-aware chrome and status token aliases. */
+/* ui/change-review.css — turn cards + Session Edits floating panel
+   (lightweight: no overlay on the transcript — avoids scroll jumps) */
 
+/* ── Per-turn review cards (transcript) ── */
 [data-incipit-change-review-turn] {
   font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
   font-size: var(--incipit-type-ui, 12px) !important;
 }
 
 [data-incipit-change-review-turn-title] [data-incipit-tool-added],
-[data-incipit-change-review-counts] [data-incipit-tool-added] {
-  color: var(--incipit-status-success, #3dd68c) !important;
+[data-incipit-change-review-counts] [data-incipit-tool-added],
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-added],
+[data-incipit-session-edits-summary] [data-incipit-tool-added] {
+  color: var(--vscode-charts-green, #3fb950) !important;
 }
 [data-incipit-change-review-turn-title] [data-incipit-tool-removed],
-[data-incipit-change-review-counts] [data-incipit-tool-removed] {
-  color: var(--incipit-status-error, #f2555a) !important;
+[data-incipit-change-review-counts] [data-incipit-tool-removed],
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-removed],
+[data-incipit-session-edits-summary] [data-incipit-tool-removed] {
+  color: var(--vscode-charts-red, #f85149) !important;
 }
 
 [data-incipit-change-review-reject-turn],
 [data-incipit-change-review-reject-file] {
   color: var(--incipit-status-accent, #d97757) !important;
+}
+
+/* ── Edits chip on composer rail ── */
+[data-incipit-session-edits-toggle] {
+  align-self: flex-end !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin: 0 0 2px !important;
+  padding: 3px 8px !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: var(--vscode-foreground, #ccc) !important;
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: 12px !important;
+  line-height: 1.3 !important;
+  cursor: pointer !important;
+  opacity: 0.85 !important;
+}
+[data-incipit-session-edits-toggle]:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)) !important;
+  opacity: 1 !important;
+}
+[data-incipit-session-edits-toggle][data-open="1"] {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)) !important;
+  opacity: 1 !important;
+}
+[data-incipit-session-edits-toggle][hidden] {
+  display: none !important;
+}
+[data-incipit-session-edits-toggle-label] {
+  font-weight: 500 !important;
+}
+[data-incipit-session-edits-toggle-icon] {
+  display: inline-flex !important;
+  width: 14px !important;
+  height: 14px !important;
+  flex: 0 0 auto !important;
+  opacity: 0.85 !important;
+}
+[data-incipit-session-edits-toggle-counts],
+[data-incipit-session-edits-summary] {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-added],
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-removed],
+[data-incipit-session-edits-summary] [data-incipit-tool-added],
+[data-incipit-session-edits-summary] [data-incipit-tool-removed] {
+  padding: 0 5px !important;
+  border-radius: 999px !important;
+  line-height: 1.45 !important;
+}
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-added],
+[data-incipit-session-edits-summary] [data-incipit-tool-added] {
+  background: color-mix(in srgb, var(--vscode-charts-green, #3fb950) 18%, transparent) !important;
+}
+[data-incipit-session-edits-toggle-counts] [data-incipit-tool-removed],
+[data-incipit-session-edits-summary] [data-incipit-tool-removed] {
+  background: color-mix(in srgb, var(--vscode-charts-red, #f85149) 18%, transparent) !important;
+}
+
+/* ── Floating panel (body-mounted, no transcript overlay) ── */
+[data-incipit-session-edits-panel] {
+  position: fixed !important;
+  z-index: 2147483001 !important;
+  pointer-events: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--vscode-panel-border, #3c3c3c) !important;
+  border-radius: 8px !important;
+  background: var(--vscode-editor-background, #1e1e1e) !important;
+  color: var(--vscode-foreground, #ccc) !important;
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: 12px !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35) !important;
+  overflow: hidden !important;
+}
+[data-incipit-session-edits-panel][hidden] {
+  display: none !important;
+}
+[data-incipit-session-edits-inner] {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+
+/* Sticky Discard / Keep */
+[data-incipit-session-edits-header] {
+  display: block !important;
+  flex-shrink: 0 !important;
+  padding: 10px 12px 8px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border, #3c3c3c) 80%, transparent) !important;
+  background: inherit !important;
+}
+[data-incipit-session-edits-actions] {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+}
+[data-incipit-session-edits-discard-all],
+[data-incipit-session-edits-keep-all] {
+  flex: 1 1 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  min-height: 28px !important;
+  padding: 6px 10px !important;
+  border-radius: 6px !important;
+  border: 0 !important;
+  font: inherit !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+}
+[data-incipit-session-edits-discard-all] {
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 10%, transparent) !important;
+  color: var(--vscode-foreground, #ccc) !important;
+}
+[data-incipit-session-edits-discard-all]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 16%, transparent) !important;
+}
+[data-incipit-session-edits-keep-all] {
+  background: color-mix(in srgb, var(--vscode-button-background, #0e639c) 90%, #000) !important;
+  color: var(--vscode-button-foreground, #fff) !important;
+}
+[data-incipit-session-edits-keep-all]:hover:not(:disabled) {
+  filter: brightness(1.08) !important;
+}
+[data-incipit-session-edits-discard-all]:disabled,
+[data-incipit-session-edits-keep-all]:disabled {
+  opacity: 0.4 !important;
+  cursor: default !important;
+}
+
+/* List */
+[data-incipit-session-edits-list] {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding: 4px 6px 10px !important;
+}
+[data-incipit-session-edits-empty] {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  padding: 28px 16px !important;
+  text-align: center !important;
+  opacity: 0.8 !important;
+}
+[data-incipit-session-edits-empty-title] {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+[data-incipit-session-edits-empty-body] {
+  font-size: 12px !important;
+  opacity: 0.65 !important;
+  max-width: 260px !important;
+}
+[data-incipit-session-edits-return] {
+  margin-top: 6px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  padding: 6px 12px !important;
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 10%, transparent) !important;
+  color: inherit !important;
+  font: inherit !important;
+  cursor: pointer !important;
+}
+
+/* File row */
+[data-incipit-session-edits-file] {
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-height: 28px !important;
+  padding: 5px 8px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+  color: inherit !important;
+  font: inherit !important;
+}
+[data-incipit-session-edits-file]:hover,
+[data-incipit-session-edits-file][data-focused="1"] {
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)) !important;
+}
+[data-incipit-session-edits-file-info] {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: hidden !important;
+}
+[data-incipit-session-edits-file-icon] {
+  display: inline-flex !important;
+  width: 14px !important;
+  height: 14px !important;
+  flex: 0 0 auto !important;
+  opacity: 0.75 !important;
+}
+[data-incipit-session-edits-file-name] {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 12px !important;
+}
+[data-incipit-session-edits-file][data-deleted="1"] [data-incipit-session-edits-file-name] {
+  text-decoration: line-through !important;
+  opacity: 0.65 !important;
+}
+[data-incipit-session-edits-file-controls] {
+  display: none !important;
+  align-items: center !important;
+  gap: 2px !important;
+  flex-shrink: 0 !important;
+}
+[data-incipit-session-edits-file]:hover [data-incipit-session-edits-file-controls],
+[data-incipit-session-edits-file][data-focused="1"] [data-incipit-session-edits-file-controls] {
+  display: inline-flex !important;
+}
+[data-incipit-session-edits-open],
+[data-incipit-session-edits-undo] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 22px !important;
+  height: 22px !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: inherit !important;
+  cursor: pointer !important;
+  opacity: 0.8 !important;
+  padding: 0 !important;
+}
+[data-incipit-session-edits-open]:hover,
+[data-incipit-session-edits-undo]:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--vscode-foreground, #fff) 10%, transparent) !important;
+}
+[data-incipit-session-edits-open]:disabled,
+[data-incipit-session-edits-undo]:disabled {
+  opacity: 0.3 !important;
+  cursor: default !important;
+}
+[data-incipit-session-edits-file-side] {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex: 0 0 auto !important;
+}
+
+/* Icons */
+[data-incipit-session-edits-toggle-icon] svg,
+[data-incipit-session-edits-file-icon] svg,
+[data-incipit-session-edits-icon] svg,
+[data-incipit-session-edits-btn-icon] svg,
+[data-incipit-session-edits-discard-all] > span[data-incipit-session-edits-btn-icon] svg,
+[data-incipit-session-edits-keep-all] > span[data-incipit-session-edits-btn-icon] svg,
+[data-incipit-session-edits-open] svg,
+[data-incipit-session-edits-undo] svg,
+[data-incipit-session-edits-discard-all] svg,
+[data-incipit-session-edits-keep-all] svg {
+  width: 14px !important;
+  height: 14px !important;
+  display: block !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 2 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+/* Modal must sit above the edits panel */
+[data-incipit-change-review-modal] {
+  z-index: 2147483600 !important;
+}
+
+/* Origin chip: only for user / mixed pending windows */
+[data-incipit-session-edits-source] {
+  flex: 0 0 auto !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  opacity: 0.55 !important;
+  padding: 0 5px !important;
+  border-radius: 999px !important;
+  background: color-mix(in srgb, var(--vscode-foreground, #ccc) 8%, transparent) !important;
+  white-space: nowrap !important;
+}
+[data-incipit-session-edits-source="mixed"] {
+  opacity: 0.65 !important;
 }

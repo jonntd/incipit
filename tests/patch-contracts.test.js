@@ -449,6 +449,51 @@ function assertRuntimeSourceContracts() {
       legacy.includes('const result = toolUseBlockCap.read(el)'),
     'readToolUseBlock must go through the runtime.fiber.toolUseBlock capability without changing its public return shape',
   );
+  assert(
+    legacy.includes('function isIncipitOwnedToolChrome(node)') &&
+      legacy.includes('if (isIncipitOwnedToolChrome(node)) continue;') &&
+      legacy.includes('[data-incipit-tool-icon]') &&
+      legacy.includes('[data-incipit-tool-status-dot]') &&
+      legacy.includes('[data-incipit-write-diff]') &&
+      legacy.includes('[data-incipit-diff-island]') &&
+      legacy.includes('INCIPIT_TOOL_OWNED_CLOSEST_SELECTOR') &&
+      legacy.includes('TOOL_DECORATE_FRAME_BUDGET_MS') &&
+      legacy.includes('if (m.target && isIncipitOwnedToolChrome(m.target)) continue;') &&
+      legacy.includes('stats.nextElementSibling !== statusEl'),
+    'tool-use MutationObserver must ignore owned chrome (incl. write-diff subtrees), skip mutations whose target is owned, budget decorateToolUse across frames, and pinToolHeaderOrder must no-op when order is already correct',
+  );
+  // Typography's settle-scanner ignore list must cover the same owned chrome
+  // the tool MO skips — otherwise opening a long session re-arms
+  // noteTranscriptActionMutation on every icon/stats/diff insert.
+  assert(
+    typography.includes('TRANSCRIPT_ACTION_MUTATION_IGNORED_SELECTOR') &&
+      typography.includes('[data-incipit-tool-icon]') &&
+      typography.includes('[data-incipit-tool-status-dot]') &&
+      typography.includes('[data-incipit-tool-stats]') &&
+      typography.includes('[data-incipit-tool-grep-expansion]') &&
+      typography.includes('[data-incipit-write-diff]') &&
+      typography.includes('[data-incipit-diff-island]') &&
+      typography.includes('[data-incipit-protocol-card]') &&
+      typography.includes('[data-incipit-change-review-turn]'),
+    'typography mutation ignore list must cover tool chrome + protocol + change-review so old-session decorate waves do not re-arm settle scan',
+  );
+  assert(
+    legacy.includes('if (diff.__incipitWriteDiffSig === sig)') &&
+      /if \(diff\.__incipitWriteDiffSig === sig\) \{[\s\S]*?return;\s*\}/.test(legacy) &&
+      !/if \(diff\.__incipitWriteDiffSig === sig\) \{[\s\S]*?highlightDiffIsland\(diff\)/.test(
+        legacy.slice(
+          legacy.indexOf('if (diff.__incipitWriteDiffSig === sig)'),
+          legacy.indexOf('if (diff.__incipitWriteDiffSig === sig)') + 500,
+        ),
+      ),
+    'write-diff redecorate must not call highlightDiffIsland when payload signature is unchanged',
+  );
+  assert(
+    typography.includes('block.classList.contains(\'hljs\')') &&
+      typography.includes('// Already tokenized: only ensure char-range markup') &&
+      typography.includes('block.classList.add(\'hljs\')'),
+    'diff-island highlight must short-circuit when already .hljs and stamp .hljs even if highlightElement throws',
+  );
   for (const name of [
     'runtime.fiber.connection',
     'runtime.fiber.sessionsManager',
@@ -816,19 +861,22 @@ function assertRuntimeSourceContracts() {
       kernel.includes('function compositeBusyState(state = hostState)') &&
       kernel.includes('const COMPOSITE_BUSY_RECHECK_MS = 160;') &&
       kernel.includes('const COMPOSITE_BUSY_RECHECK_MAX_MS = 8000;') &&
+      kernel.includes('const PARTIAL_TAIL_BUSY_TTL_MS = 12000;') &&
       kernel.includes('let lastCompositeBusy = null;') &&
       kernel.includes('function maintainCompositeBusyRecheck(compositeBusy, reason)') &&
       kernel.includes('if (state && state.pendingInput === true) return true;') &&
       kernel.includes("const domState = sendButtonDomState();") &&
       kernel.includes("if (domState === 'stop') return true;") &&
       kernel.includes("if (domState === 'send' && nowMs() - lastRuntimeDirtyAt > 1500) return false;") &&
-      kernel.includes('if (state && state.partialTail === true) return true;') &&
+      kernel.includes('if (state && state.partialTail === true)') &&
+      kernel.includes('PARTIAL_TAIL_BUSY_TTL_MS') &&
+      kernel.includes('export function streamQuietForMs') &&
       kernel.includes('const compositeChanged = !sessionChanged') &&
       kernel.includes('if (compositeChanged)') &&
       kernel.includes('rawBusy: hostState.busy') &&
       kernel.includes('previousCompositeBusy: prevCompositeBusy') &&
       kernel.includes("emit('assistantTurnFinalized'"),
-    'runtime kernel finalized/busy events must use composite busy transitions: bridge true/pending, DOM stop, stable-send, partial tail, registered feature probes, and low-frequency idle recheck',
+    'runtime kernel finalized/busy events must use composite busy transitions: bridge true/pending, DOM stop, stable-send, TTL-bounded partial tail, registered feature probes, stall quiet clock, and low-frequency idle recheck',
   );
   assert(
     !kernel.includes('setupMutationBus') &&
@@ -898,8 +946,11 @@ function assertRuntimeSourceContracts() {
       thinking.includes('thinkingTimingByKey.delete(key);') &&
       thinking.includes('formatThoughtDuration(timing.durationMs)') &&
       thinking.includes('observer.observe(summary, { childList: true, subtree: true, characterData: true });') &&
-      thinking.includes('cleanupThinkingSummaryObservers(seenSummaries)'),
-    'thinking duration must be measured only from an observed live summary to its done transition; missed historical/virtualized transitions must not synthesize wall-clock durations',
+      thinking.includes('cleanupThinkingSummaryObservers(seenSummaries)') &&
+      thinking.includes('const pruneStaleThinkingState = (seenKeys) =>') &&
+      thinking.includes('pruneStaleThinkingState(seenKeys)') &&
+      thinking.includes('pruneStaleThinkingState(new Set())'),
+    'thinking duration must be measured only from an observed live summary to its done transition; missed historical/virtualized transitions must not synthesize wall-clock durations; unmounted keys must be pruned',
   );
   assert(
     footerBadge.includes('function nodeInsideFocusedEditor(node)') &&

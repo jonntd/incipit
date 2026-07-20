@@ -402,10 +402,11 @@ function cssRuleBody(selector) {
     runtime.includes('function maintainCompositeBusyRecheck(compositeBusy, reason)') &&
     runtime.includes('const compositeChanged = !sessionChanged') &&
     runtime.includes("if (state && state.pendingInput === true) return true;") &&
-    runtime.includes("if (state && state.partialTail === true) return true;") &&
+    runtime.includes("if (state && state.partialTail === true)") &&
+    runtime.includes('PARTIAL_TAIL_BUSY_TTL_MS') &&
     runtime.includes("emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);") &&
     runtime.includes("emit('assistantTurnFinalized'"),
-    'bridge busy=false must not by itself mark the assistant turn complete; kernel + legacy share composite stop/partial probes and emit settle only after composite transition');
+    'bridge busy=false must not by itself mark the assistant turn complete; kernel + legacy share composite stop/TTL-bounded partial probes and emit settle only after composite transition');
   assert.ok(typography.includes('conversationIsBusy as kernelConversationIsBusy') &&
     typography.includes('if (conversationIsBusy()) return; // streaming: settle event will re-trigger') &&
     typography.includes('if (conversationIsBusy()) return;') &&

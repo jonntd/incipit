@@ -167,10 +167,33 @@ function ok(name) {
   assert.ok(legacy.includes('rawSend.apply') && legacy.includes('CONTINUE_SEND_TEXT'));
   assert.ok(legacy.includes('data-incipit-continue-btn'));
   assert.ok(legacy.includes('setupContinueButton()'));
+  // Must share rerun's quiesce path — busy=false alone is not enough; the
+  // old continue path sent "继续" while the interrupted CLI still flushed
+  // and produced Mismatched content_block_delta text/thinking.
+  assert.ok(legacy.includes('quiesceOldStream'));
+  const cont = legacy.slice(
+    legacy.indexOf('async function sendContinueMessage'),
+    legacy.indexOf('function ensureContinueButton'),
+  );
+  assert.ok(cont.includes('quiesceOldStream'), 'continue must call quiesceOldStream when busy');
+  assert.ok(cont.includes('setHandoffLatch(true)'), 'continue must latch handoff');
+  assert.ok(
+    cont.includes('aborting send') || cont.includes('did not quiesce'),
+    'continue must abort on quiesce timeout instead of force-sending',
+  );
   assert.ok(theme.includes('[data-incipit-continue-btn]'));
   assert.ok(theme.includes('[data-incipit-continue-btn]::before'));
   assert.ok(warm.includes('[data-incipit-continue-btn]'));
   ok('continue button: force-stop then send "继续" as icon-only control');
+})();
+
+(function streamStallWatchPresent() {
+  assert.ok(legacy.includes('function setupStreamStallWatch'));
+  assert.ok(legacy.includes('function checkStreamStall'));
+  assert.ok(legacy.includes('STREAM_STALL_WARN_MS'));
+  assert.ok(legacy.includes('setupStreamStallWatch()'));
+  assert.ok(legacy.includes('kernelStreamQuietForMs'));
+  ok('stream stall watch: toast when busy with no output for long quiet');
 })();
 
 console.log('\nui-roadmap: ' + passed + ' checks PASSED');

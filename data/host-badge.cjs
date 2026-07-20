@@ -8,6 +8,7 @@ const http = require('http');
 const https = require('https');
 const { fileURLToPath } = require('url');
 const { StringDecoder } = require('string_decoder');
+const checkpointTimeline = require('./checkpoint_timeline.cjs');
 
 const GLOBAL_KEY = '__cceBadge';
 let vscodeApi = null;
@@ -154,6 +155,9 @@ function createState() {
     editGlobalScanAt: 0,
     changeReviewStates: new Map(),
     truncateRollbacks: new Map(),
+    checkpointSaveDisposable: null,
+    checkpointActiveSessions: new Set(),
+
     log(message) {
       const line = `[cceBadge] ${message}`;
       try { console.log(line); } catch (_) { }
@@ -268,6 +272,30 @@ function handleWebviewMessage(comm, state, message) {
     handleChangeReviewRejectRequest(comm, state, message);
     return;
   }
+  if (message.type === 'session_edits_keep_all_request') {
+    handleSessionEditsKeepAllRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'session_edits_keep_file_request') {
+    handleSessionEditsKeepFileRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'session_edits_discard_all_request') {
+    handleSessionEditsDiscardAllRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'session_edits_discard_file_request') {
+    handleSessionEditsDiscardFileRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'session_edits_open_file_request') {
+    handleSessionEditsOpenFileRequest(comm, state, message);
+    return;
+  }
+  if (message.type === 'session_edits_open_diff_request') {
+    handleSessionEditsOpenDiffRequest(comm, state, message);
+    return;
+  }
   if (message.type === 'conversation_mutation_request') {
     handleConversationMutationRequest(comm, state, message);
     return;
@@ -311,7 +339,13 @@ function isChangeReviewRuntimeMessage(type) {
     type === 'change_review_diff_request' ||
     type === 'change_review_turn_finalized' ||
     type === 'change_review_turn_started' ||
-    type === 'change_review_reject_request';
+    type === 'change_review_reject_request' ||
+    type === 'session_edits_keep_all_request' ||
+    type === 'session_edits_keep_file_request' ||
+    type === 'session_edits_discard_all_request' ||
+    type === 'session_edits_discard_file_request' ||
+    type === 'session_edits_open_file_request' ||
+    type === 'session_edits_open_diff_request';
 }
 
 // Prompt enhancer reuses Claude Code's own settings (~/.claude/settings.json
@@ -1558,6 +1592,7 @@ function handleChangeReviewIdentityUpdate(comm, state, message) {
     sendChangeReviewPayload(comm, emptyChangeReviewPayload(null, null));
     return;
   }
+  noteCheckpointSession(state, sessionId);
   const previous = state.commIdentities.get(comm);
   const incomingCwd = typeof message.cwd === 'string' && message.cwd ? message.cwd : null;
   const cwd = incomingCwd || (previous && previous.sessionId === sessionId ? previous.cwd : null);
@@ -3363,6 +3398,14 @@ function emptyEditActivityPayload(sessionId, target) {
   };
 }
 
+function emptySessionEditsPayload() {
+  return {
+    empty: true,
+    files: [],
+    totals: { files: 0, added: 0, removed: 0, hasLineStats: false, live: 0, created: 0, deleted: 0 },
+  };
+}
+
 function emptyChangeReviewPayload(sessionId, target) {
   return {
     empty: true,
@@ -3373,6 +3416,7 @@ function emptyChangeReviewPayload(sessionId, target) {
     latestTurn: null,
     turns: [],
     totals: { files: 0, added: 0, removed: 0 },
+    sessionEdits: emptySessionEditsPayload(),
   };
 }
 
@@ -4580,6 +4624,14 @@ function countChangeReviewTool(parser, item) {
     parser.changeReviewVersion += 1;
     parser.persistDirty = true;
     consumeChangeReviewSnapshotUpdatesForItem(parser, item);
+    // Augment-style timeline: record post-edit disk state for this path.
+    try {
+      recordAgentCheckpointFromReviewFile(parser, file, item);
+    } catch (err) {
+      try {
+        // non-fatal
+      } catch (_) {}
+    }
   }
 }
 
@@ -4972,7 +5024,10 @@ function buildChangeReviewPayload(parser, reviewState) {
     sum.removed += turn.totals && turn.totals.removed || 0;
     return sum;
   }, { files: 0, added: 0, removed: 0 });
+  const sessionEdits = buildSessionEditsPayload(parser, reviewState);
   return {
+    // `empty` remains "no finalized turn cards" so existing consumers/tests
+    // stay stable. Session Edits (incl. live mid-turn) is a separate surface.
     empty: turns.length === 0,
     sessionId: path.basename(parser.path, JSONL_SUFFIX),
     src: parser.path,
@@ -4981,6 +5036,7 @@ function buildChangeReviewPayload(parser, reviewState) {
     latestTurn,
     turns,
     totals,
+    sessionEdits,
   };
 }
 
@@ -5033,7 +5089,16 @@ function changeReviewFilesForTurn(turn, reviewState) {
   if (!turn || !turn.files) return [];
   const startedAt = changeReviewLifecycleStartedAt(reviewState, turn.turnKey);
   return Array.from(turn.files.values())
-    .filter(file => !startedAt || (Number.isFinite(file.lastSeenAt) && file.lastSeenAt >= startedAt));
+    .filter(file => !startedAt || (Number.isFinite(file.lastSeenAt) && file.lastSeenAt >= startedAt))
+    .filter(file => {
+      // Accepted (Keep) files leave the pending review surfaces but remain
+      // on disk; rejected files stay visible with a status chip.
+      const entry = reviewState && reviewState.files && file && file.id
+        ? reviewState.files[file.id]
+        : null;
+      if (entry && entry.status === 'accepted') return false;
+      return true;
+    });
 }
 
 function changeReviewSummaryForTurn(turn, reviewState) {
@@ -5289,7 +5354,7 @@ function captureChangeReviewGuards(parser, reviewState, options = {}) {
       }
       if (file.backupFileName === undefined) continue;
       const entry = changeReviewStateEntry(reviewState, file);
-      if (!entry || entry.status === 'rejected') continue;
+      if (!entry || entry.status === 'rejected' || entry.status === 'accepted') continue;
       const sig = guardSignatureForFile(file);
       if (!force &&
         entry.guard &&
@@ -5566,6 +5631,974 @@ function resolveChangeReviewTurnFinalized(state, comm, message) {
     ctx.sessionId,
     ctx.target
   );
+}
+
+function isChangeReviewFilePending(reviewState, file) {
+  const entry = reviewState && file && reviewState.files ? reviewState.files[file.id] : null;
+  const status = entry && typeof entry.status === 'string' ? entry.status : 'pending';
+  return status === 'pending' || status === 'stale';
+}
+
+function sessionEditTurnIsLive(parser, reviewState, turn) {
+  if (!turn || !turn.turnKey) return false;
+  if (isChangeReviewTurnFinalized(reviewState, turn.turnKey)) return false;
+  // Only the in-flight agent turn — not historical unfinalized leftovers.
+  if (parser && parser.changeReviewCurrentTurnKey === turn.turnKey) return true;
+  if (Number.isFinite(turn.lifecycleStartedAt) && turn.lifecycleStartedAt > 0) return true;
+  const entry = reviewState && reviewState.turns ? reviewState.turns[turn.turnKey] : null;
+  if (entry && entry.finalized !== true && Number.isFinite(entry.startedAt) && entry.startedAt > 0) return true;
+  return false;
+}
+
+function sessionEditTurnIsEligible(parser, reviewState, turn) {
+  if (!turn || !turn.turnKey) return false;
+  if (isChangeReviewTurnFinalized(reviewState, turn.turnKey)) return true;
+  return sessionEditTurnIsLive(parser, reviewState, turn);
+}
+
+function collectSessionEditFileGroups(parser, reviewState) {
+  const groups = new Map();
+  if (!parser || !parser.changeReviewTurns) return groups;
+  const turns = Array.from(parser.changeReviewTurns.values())
+    .filter(turn => sessionEditTurnIsEligible(parser, reviewState, turn))
+    .sort((a, b) => a.order - b.order);
+  for (const turn of turns) {
+    const live = sessionEditTurnIsLive(parser, reviewState, turn);
+    for (const file of changeReviewFilesForTurn(turn, reviewState)) {
+      if (!file || !file.filePath) continue;
+      if (!isChangeReviewFilePending(reviewState, file)) continue;
+      const key = changeReviewFileKey(file.filePath);
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          key,
+          filePath: file.filePath,
+          displayPath: file.displayPath || file.rawPath || file.filePath,
+          files: [],
+          first: file,
+          latest: file,
+          live: live,
+        };
+        groups.set(key, group);
+      }
+      group.files.push(file);
+      group.latest = file;
+      // Live if ANY contributing touch is still in-flight.
+      if (live) group.live = true;
+      if (file.displayPath) group.displayPath = file.displayPath;
+    }
+  }
+  return groups;
+}
+
+function sessionEditOriginalFile(group) {
+  if (!group || !group.files || !group.files.length) return null;
+  // Earliest finalized touch is the session baseline for this path.
+  return group.files[0] || null;
+}
+
+function sessionEditsDirPath(displayPath) {
+  const raw = typeof displayPath === 'string' ? displayPath.replace(/\\/g, '/') : '';
+  if (!raw) return '';
+  const idx = raw.lastIndexOf('/');
+  if (idx <= 0) return '.';
+  return raw.slice(0, idx);
+}
+
+function deriveSessionEditLineStats(group) {
+  const original = sessionEditOriginalFile(group);
+  const latest = group && group.latest;
+  if (!original || !latest) {
+    return { added: 0, removed: 0, hasLineStats: false, isCreated: false, isDeleted: false };
+  }
+  const isCreated = original.backupFileName === null;
+  try {
+    if (latest.backupFileName === undefined && original.backupFileName === undefined) {
+      const missing = !fs.existsSync(latest.filePath);
+      return {
+        added: safeTokenNumber(latest.added),
+        removed: safeTokenNumber(latest.removed),
+        hasLineStats: latest.hasLineStats === true,
+        isCreated,
+        isDeleted: missing && !isCreated,
+      };
+    }
+    if (!fs.existsSync(latest.filePath)) {
+      // Deleted on disk relative to a prior version.
+      if (isCreated) {
+        // Created then deleted again — treat as deleted (nothing left to keep).
+        return { added: 0, removed: 0, hasLineStats: true, isCreated: false, isDeleted: true };
+      }
+      const backupPath = original.backupFileName ? changeReviewBackupPath(original) : null;
+      if (!backupPath || !fs.existsSync(backupPath)) {
+        return {
+          added: 0,
+          removed: safeTokenNumber(latest.removed || original.removed),
+          hasLineStats: true,
+          isCreated: false,
+          isDeleted: true,
+        };
+      }
+      const oldText = changeReviewTextForStats(backupPath);
+      if (oldText == null) {
+        return { added: 0, removed: 0, hasLineStats: false, isCreated: false, isDeleted: true };
+      }
+      return {
+        added: 0,
+        removed: countTextLines(oldText),
+        hasLineStats: true,
+        isCreated: false,
+        isDeleted: true,
+      };
+    }
+    const currentText = changeReviewTextForStats(latest.filePath);
+    if (currentText == null) {
+      return {
+        added: safeTokenNumber(latest.added),
+        removed: safeTokenNumber(latest.removed),
+        hasLineStats: latest.hasLineStats === true,
+        isCreated,
+        isDeleted: false,
+      };
+    }
+    if (isCreated || original.backupFileName === null) {
+      return {
+        added: countTextLines(currentText),
+        removed: 0,
+        hasLineStats: true,
+        isCreated: true,
+        isDeleted: false,
+      };
+    }
+    const backupPath = changeReviewBackupPath(original);
+    if (!fs.existsSync(backupPath)) {
+      return {
+        added: safeTokenNumber(latest.added),
+        removed: safeTokenNumber(latest.removed),
+        hasLineStats: latest.hasLineStats === true,
+        isCreated: false,
+        isDeleted: false,
+      };
+    }
+    const oldText = changeReviewTextForStats(backupPath);
+    if (oldText == null) {
+      return { added: 0, removed: 0, hasLineStats: false, isCreated: false, isDeleted: false };
+    }
+    const stats = lineDiffStats(oldText, currentText);
+    return {
+      added: stats.added || 0,
+      removed: stats.removed || 0,
+      hasLineStats: true,
+      isCreated: false,
+      isDeleted: false,
+    };
+  } catch (_) {
+    return {
+      added: safeTokenNumber(latest.added),
+      removed: safeTokenNumber(latest.removed),
+      hasLineStats: latest.hasLineStats === true,
+      isCreated,
+      isDeleted: false,
+    };
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Checkpoint timeline bridge (Augment-style)
+// ---------------------------------------------------------------------------
+
+function sessionIdFromParser(parser) {
+  if (!parser || !parser.path) return '';
+  return path.basename(parser.path, JSONL_SUFFIX);
+}
+
+function displayPathForCwd(absPath, cwd) {
+  if (!absPath) return '';
+  if (cwd && absPath.startsWith(cwd)) {
+    const rel = absPath.slice(cwd.length).replace(/^[/\\]+/, '');
+    return rel || path.basename(absPath);
+  }
+  return absPath;
+}
+
+function recordAgentCheckpointFromReviewFile(parser, file, item) {
+  const sessionId = sessionIdFromParser(parser);
+  if (!sessionId || !file || !file.filePath) return;
+  try {
+    const st = globalThis[GLOBAL_KEY];
+    if (st) noteCheckpointSession(st, sessionId);
+  } catch (_) {}
+  let beforePath = null;
+  if (typeof file.backupFileName === 'string' && file.backupFileName) {
+    try {
+      beforePath = changeReviewBackupPath(file);
+    } catch (_) {
+      beforePath = null;
+    }
+  }
+  let beforeText = undefined;
+  if (file.backupFileName === null) {
+    beforeText = null; // created
+  } else if (beforePath && fs.existsSync(beforePath)) {
+    try {
+      beforeText = fs.readFileSync(beforePath, 'utf8');
+    } catch (_) {
+      beforeText = undefined;
+    }
+  }
+  // Prefer disk afterText (tool already wrote); before from Claude backup.
+  let afterText;
+  try {
+    if (fs.existsSync(file.filePath) && fs.statSync(file.filePath).isFile()) {
+      afterText = fs.readFileSync(file.filePath, 'utf8');
+    } else {
+      afterText = null;
+    }
+  } catch (_) {
+    afterText = undefined;
+  }
+  checkpointTimeline.recordAgentEdit(sessionId, file.filePath, {
+    beforeText,
+    afterText,
+    tool: (item && item.name) || file.tool || '',
+    turnKey: file.turnKey || (item && item.turnKey) || '',
+    timestamp: Date.now(),
+  });
+}
+
+function ensureCheckpointUserSaveWatch(state) {
+  if (!state || state.checkpointSaveDisposable) return;
+  let vscode;
+  try {
+    vscode = getVSCodeApi();
+  } catch (_) {
+    return;
+  }
+  if (!vscode || !vscode.workspace || typeof vscode.workspace.onDidSaveTextDocument !== 'function') {
+    return;
+  }
+  state.checkpointSaveDisposable = vscode.workspace.onDidSaveTextDocument(doc => {
+    try {
+      if (!doc || doc.uri && doc.uri.scheme && doc.uri.scheme !== 'file') return;
+      const absPath = doc.fileName || (doc.uri && doc.uri.fsPath);
+      if (!absPath) return;
+      // Only track saves for paths already on a session timeline OR any active session's project.
+      const sessions = state.checkpointActiveSessions;
+      if (!sessions || !sessions.size) return;
+      let text = null;
+      try {
+        text = doc.getText();
+      } catch (_) {
+        try {
+          text = fs.readFileSync(absPath, 'utf8');
+        } catch (__) {
+          return;
+        }
+      }
+      let recorded = false;
+      for (const sessionId of sessions) {
+        // Record user edits for sessions that already track this path, OR
+        // any path under an active conversation project.
+        // Only paths already on the session timeline (agent touched first).
+        // Avoid recording every project save — that is not Augment's intent.
+        if (checkpointTimeline.isPathTracked(sessionId, absPath)) {
+          checkpointTimeline.recordUserEdit(sessionId, absPath, text);
+          recorded = true;
+        }
+      }
+      if (!recorded) return;
+      // Bust change-review payload cache so webview gets fresh sessionEdits.
+      for (const target of resolveTargetFiles(state)) {
+        try {
+          const sessionId = path.basename(target, JSONL_SUFFIX);
+          if (!sessions.has(sessionId)) continue;
+          const parser = state.parsers.get(target);
+          if (!parser) continue;
+          parser.changeReviewVersion = (parser.changeReviewVersion || 0) + 1;
+          const cached = state.targetCache.get(target);
+          if (cached) {
+            cached.changeReviewVersion = undefined;
+            cached.changeReviewPayload = null;
+          }
+          const reviewState = loadChangeReviewState(state, sessionId);
+          const payload = annotateChangeReviewPayload(
+            buildChangeReviewPayload(parser, reviewState),
+            sessionId,
+            target
+          );
+          broadcastChangeReviewTarget(state, target, payload);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  });
+}
+
+function pathIsUnderAnyTrackedRoot(state, sessionId, absPath) {
+  // Active session: accept saves under the parser project cwd.
+  try {
+    for (const [target, parser] of state.parsers) {
+      if (path.basename(target, JSONL_SUFFIX) !== sessionId) continue;
+      const cwd = parser && parser.projectCwd;
+      if (cwd && absPath.startsWith(cwd)) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function noteCheckpointSession(state, sessionId) {
+  if (!state || !sessionId) return;
+  if (!state.checkpointActiveSessions) state.checkpointActiveSessions = new Set();
+  state.checkpointActiveSessions.add(sessionId);
+  ensureCheckpointUserSaveWatch(state);
+}
+
+function buildTimelineSessionEditsPayload(parser, reviewState) {
+  const sessionId = sessionIdFromParser(parser);
+  if (!sessionId) {
+    return {
+      empty: true,
+      files: [],
+      totals: { files: 0, added: 0, removed: 0, hasLineStats: false, live: 0, created: 0, deleted: 0 },
+      engine: 'checkpoint-timeline',
+    };
+  }
+  noteCheckpointSession(globalThis[GLOBAL_KEY] || null, sessionId);
+  // Best-effort: seed timeline from existing change-review turns if empty.
+  seedTimelineFromChangeReview(parser, reviewState, sessionId);
+  const cwd = (parser && parser.projectCwd) || '';
+  const result = checkpointTimeline.listPending(sessionId, {
+    displayPathFor: abs => displayPathForCwd(abs, cwd),
+  });
+  // Map to webview shape expected by enhance_legacy (id must work for open_diff).
+  // Overlay change-review *guard* status only (stale/unavailable).
+  // Do NOT overlay accepted/rejected onto timeline rows: Keep is owned by the
+  // timeline baseline/acceptedAt. After Keep + a new agent edit, the timeline
+  // re-lists the path as pending even if change-review still says accepted.
+  const statusByPath = new Map();
+  if (reviewState && reviewState.files && parser && parser.changeReviewTurns) {
+    for (const turn of parser.changeReviewTurns.values()) {
+      if (!turn || !turn.files) continue;
+      for (const file of turn.files.values()) {
+        if (!file || !file.filePath || !file.id) continue;
+        const entry = reviewState.files[file.id];
+        if (!entry || typeof entry.status !== 'string') continue;
+        if (entry.status !== 'stale' && entry.status !== 'unavailable') continue;
+        statusByPath.set(file.filePath, {
+          status: entry.status,
+          error: typeof entry.error === 'string' ? entry.error : undefined,
+        });
+      }
+    }
+  }
+  // Paths currently being written in an unfinalized agent turn.
+  const livePaths = new Map();
+  try {
+    const groups = collectSessionEditFileGroups(parser, reviewState);
+    for (const group of groups.values()) {
+      if (!group || !group.live || !group.filePath) continue;
+      livePaths.set(group.filePath, group);
+    }
+  } catch (_) {}
+
+  const seen = new Set();
+  result.files = (result.files || []).map(f => {
+    const overlay = statusByPath.get(f.filePath);
+    const displayPath = f.displayPath || f.filePath || '';
+    seen.add(f.filePath);
+    return {
+      ...f,
+      displayPath,
+      dirPath: f.dirPath || sessionEditsDirPath(displayPath),
+      live: livePaths.has(f.filePath),
+      status: overlay && overlay.status ? overlay.status : (f.status || 'pending'),
+      error: overlay && overlay.error ? overlay.error : f.error,
+    };
+  });
+
+  // Hybrid: live turn files not yet on the timeline still appear (agent mid-stream).
+  for (const [absPath, group] of livePaths) {
+    if (seen.has(absPath)) continue;
+    const stats = deriveSessionEditLineStats(group);
+    if (!stats.hasLineStats && stats.added <= 0 && stats.removed <= 0 && !stats.isCreated && !stats.isDeleted) {
+      // Still show a live row so the user knows work is in flight.
+    }
+    const latest = group.latest || group.first;
+    const displayPath = group.displayPath || absPath;
+    const overlay = statusByPath.get(absPath);
+    result.files.push({
+      id: latest && latest.id ? latest.id : ('live:' + absPath),
+      filePath: absPath,
+      displayPath,
+      dirPath: sessionEditsDirPath(displayPath),
+      isCreated: stats.isCreated === true,
+      isDeleted: stats.isDeleted === true,
+      added: stats.added || 0,
+      removed: stats.removed || 0,
+      hasLineStats: stats.hasLineStats === true,
+      status: overlay && overlay.status ? overlay.status : 'pending',
+      error: overlay && overlay.error,
+      live: true,
+      tool: latest && latest.tool ? latest.tool : '',
+      source: 'agent',
+    });
+  }
+
+  result.files.sort((a, b) => {
+    const da = String(a.dirPath || '');
+    const db = String(b.dirPath || '');
+    if (da !== db) return da.localeCompare(db);
+    return String(a.displayPath || a.filePath).localeCompare(String(b.displayPath || b.filePath));
+  });
+  result.empty = result.files.length === 0;
+  result.totals = result.totals || {};
+  result.totals.files = result.files.length;
+  let a = 0, r = 0;
+  let created = 0, deleted = 0, liveCount = 0;
+  for (const f of result.files) {
+    a += f.added || 0;
+    r += f.removed || 0;
+    if (f.isCreated) created += 1;
+    if (f.isDeleted) deleted += 1;
+    if (f.live) liveCount += 1;
+  }
+  result.totals.added = a;
+  result.totals.removed = r;
+  result.totals.created = created;
+  result.totals.deleted = deleted;
+  result.totals.live = liveCount;
+  return result;
+}
+
+function seedTimelineFromChangeReview(parser, reviewState, sessionId) {
+  if (!parser || !parser.changeReviewTurns) return;
+  const tl = checkpointTimeline.loadTimeline(sessionId);
+  // If timeline already has any checkpoints, do not reseed (would duplicate).
+  for (const rec of Object.values(tl.files || {})) {
+    if (rec && rec.checkpoints && rec.checkpoints.length) return;
+  }
+  const turns = Array.from(parser.changeReviewTurns.values())
+    .filter(t => t && isChangeReviewTurnFinalized(reviewState, t.turnKey))
+    .sort((a, b) => a.order - b.order);
+  for (const turn of turns) {
+    if (!turn.files) continue;
+    for (const file of turn.files.values()) {
+      if (!file || !file.filePath) continue;
+      // Only seed still-pending review files. Accepted ones are past baseline.
+      if (reviewState && !isChangeReviewFilePending(reviewState, file)) continue;
+      try {
+        recordAgentCheckpointFromReviewFile(parser, file, { name: file.tool, turnKey: file.turnKey });
+      } catch (_) {}
+    }
+  }
+}
+
+function buildSessionEditsPayload(parser, reviewState) {
+  // Prefer Augment-style checkpoint timeline when it has real history.
+  // Fall back to change-review aggregation for tests / sessions with only
+  // JSONL rows and no recorded timeline checkpoints yet.
+  let tlPayload = null;
+  try {
+    tlPayload = buildTimelineSessionEditsPayload(parser, reviewState);
+  } catch (_) {
+    tlPayload = null;
+  }
+  const sessionId = sessionIdFromParser(parser);
+  let hasTimelineHistory = false;
+  if (sessionId) {
+    try {
+      const tl = checkpointTimeline.loadTimeline(sessionId);
+      hasTimelineHistory = Object.values(tl.files || {}).some(
+        rec => rec && Array.isArray(rec.checkpoints) && rec.checkpoints.length > 0
+      );
+    } catch (_) {}
+  }
+  if (tlPayload && hasTimelineHistory) return tlPayload;
+  const groups = collectSessionEditFileGroups(parser, reviewState);
+  const files = [];
+  let added = 0;
+  let removed = 0;
+  let hasLineStats = false;
+  for (const group of groups.values()) {
+    const stats = deriveSessionEditLineStats(group);
+    if (!stats.hasLineStats && stats.added <= 0 && stats.removed <= 0) {
+      // Still list the path if we know it was touched and is pending.
+      if (!group.files.length) continue;
+    }
+    added += stats.added || 0;
+    removed += stats.removed || 0;
+    hasLineStats = hasLineStats || stats.hasLineStats === true;
+    const original = sessionEditOriginalFile(group);
+    const latest = group.latest;
+    let status = 'pending';
+    let error = '';
+    for (const f of group.files) {
+      const entry = reviewState && reviewState.files && f && f.id ? reviewState.files[f.id] : null;
+      if (!entry) continue;
+      if (entry.status === 'stale') status = 'stale';
+      if (entry.status === 'unavailable' && status !== 'stale') status = 'unavailable';
+      if (typeof entry.error === 'string' && entry.error) error = entry.error;
+    }
+    const isCreated = stats.isCreated === true || (original && original.backupFileName === null);
+    const isDeleted = stats.isDeleted === true;
+    const displayPath = group.displayPath || group.filePath;
+    files.push({
+      id: latest && latest.id ? latest.id : (original && original.id) || group.key,
+      filePath: group.filePath,
+      displayPath,
+      dirPath: sessionEditsDirPath(displayPath || group.filePath),
+      fileIds: group.files.map(f => f.id).filter(Boolean),
+      originalFileId: original && original.id ? original.id : null,
+      latestFileId: latest && latest.id ? latest.id : null,
+      isCreated: isCreated && !isDeleted,
+      isDeleted,
+      added: stats.added || 0,
+      removed: stats.removed || 0,
+      hasLineStats: stats.hasLineStats === true,
+      status,
+      live: group.live === true,
+      error: error || undefined,
+      tool: latest && typeof latest.tool === 'string' ? latest.tool : '',
+    });
+  }
+  files.sort((a, b) => {
+    const da = String(a.dirPath || '');
+    const db = String(b.dirPath || '');
+    if (da !== db) return da.localeCompare(db);
+    return String(a.displayPath || a.filePath).localeCompare(String(b.displayPath || b.filePath));
+  });
+  const liveCount = files.filter(f => f && f.live === true).length;
+  const createdCount = files.filter(f => f && f.isCreated === true).length;
+  const deletedCount = files.filter(f => f && f.isDeleted === true).length;
+  const legacy = {
+    empty: files.length === 0,
+    files,
+    totals: {
+      files: files.length,
+      added,
+      removed,
+      hasLineStats,
+      live: liveCount,
+      created: createdCount,
+      deleted: deletedCount,
+    },
+  };
+  // If legacy empty but timeline has a Keep-cleared empty list, prefer timeline
+  // so UI does not resurrect old change-review rows after Keep All.
+  if (legacy.empty && tlPayload && tlPayload.engine === 'checkpoint-timeline' && hasTimelineHistory) {
+    return tlPayload;
+  }
+  return legacy;
+}
+
+function markChangeReviewFileAccepted(reviewState, file) {
+  const entry = changeReviewStateEntry(reviewState, file);
+  if (!entry) return false;
+  if (entry.status === 'accepted') return false;
+  entry.status = 'accepted';
+  entry.acceptedAt = Date.now();
+  delete entry.error;
+  markChangeReviewStateDirty(reviewState);
+  // Keep change-review accept and timeline accept in lockstep so unit tests
+  // and turn-card Keep share Augment baseline semantics.
+  try {
+    if (file && file.sessionId && file.filePath) {
+      checkpointTimeline.acceptFile(file.sessionId, file.filePath);
+    }
+  } catch (_) {}
+  return true;
+}
+
+function sessionEditFilesFromMessage(parser, reviewState, message) {
+  const groups = collectSessionEditFileGroups(parser, reviewState);
+  if (message && typeof message.filePath === 'string' && message.filePath) {
+    const key = changeReviewFileKey(message.filePath);
+    const group = groups.get(key);
+    return group ? group.files.slice() : [];
+  }
+  if (message && typeof message.fileId === 'string' && message.fileId) {
+    for (const group of groups.values()) {
+      if (group.files.some(f => f.id === message.fileId)) return group.files.slice();
+    }
+    const one = findChangeReviewFile(parser, message.fileId);
+    return one ? [one] : [];
+  }
+  const all = [];
+  for (const group of groups.values()) all.push(...group.files);
+  return all;
+}
+
+function resolveSessionEditsKeepAll(state, comm, message) {
+  // Keep raises timeline baseline (no disk IO) — Augment accept-all semantics.
+  const ctx = changeReviewContext(state, comm, message);
+  noteCheckpointSession(state, ctx.sessionId);
+  let accepted = 0;
+  try {
+    const r = checkpointTimeline.acceptAll(ctx.sessionId);
+    accepted = 1;
+    // Also mark change-review entries accepted so turn cards clear.
+    captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: false });
+    const files = sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, { all: true });
+    for (const file of files) {
+      if (markChangeReviewFileAccepted(ctx.reviewState, file)) accepted += 1;
+    }
+  } catch (err) {
+    // Fallback: metadata-only accept on change-review state.
+    captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: false });
+    const files = sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, { all: true });
+    for (const file of files) {
+      if (markChangeReviewFileAccepted(ctx.reviewState, file)) accepted += 1;
+    }
+  }
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  const payload = annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+  return { ok: true, accepted, payload };
+}
+
+function resolveSessionEditsKeepFile(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  noteCheckpointSession(state, ctx.sessionId);
+  const filePath = typeof message.filePath === 'string' ? message.filePath : '';
+  let accepted = 0;
+  if (filePath) {
+    try {
+      checkpointTimeline.acceptFile(ctx.sessionId, filePath);
+      accepted += 1;
+    } catch (_) {}
+  }
+  captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: false });
+  const files = sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, message || {});
+  if (!files.length && !accepted) throw new Error('No matching pending file changes were found.');
+  for (const file of files) {
+    if (markChangeReviewFileAccepted(ctx.reviewState, file)) accepted += 1;
+  }
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  const payload = annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+  return { ok: true, accepted, payload };
+}
+
+function rejectSessionEditGroup(reviewState, group) {
+  const original = sessionEditOriginalFile(group);
+  if (!original) return [{ ok: false, error: 'No file group' }];
+  // Restore once from the earliest baseline, then mark every pending entry accepted/rejected.
+  const restoreTarget = {
+    id: original.id,
+    sessionId: original.sessionId,
+    turnKey: original.turnKey,
+    filePath: original.filePath,
+    displayPath: original.displayPath,
+    backupFileName: original.backupFileName,
+    version: original.version,
+  };
+  // Ensure guard is evaluated against current disk for the restore target.
+  const primary = rejectOneChangeReviewFile(reviewState, restoreTarget);
+  const results = [primary];
+  for (const file of group.files) {
+    if (file.id === restoreTarget.id) continue;
+    if (primary.ok) {
+      markChangeReviewFileStatus(reviewState, file, 'rejected');
+      results.push({ id: file.id, ok: true, status: 'rejected' });
+    } else {
+      markChangeReviewFileStatus(reviewState, file, primary.status || 'stale', { error: primary.error });
+      results.push({ id: file.id, ok: false, status: primary.status || 'stale', error: primary.error });
+    }
+  }
+  return results;
+}
+
+function resolveSessionEditsDiscardAll(state, comm, message) {
+  if (message.busy === true) throw new Error('Wait for the current reply to finish before discarding file changes.');
+  const ctx = changeReviewContext(state, comm, message);
+  noteCheckpointSession(state, ctx.sessionId);
+  try {
+    const groups = collectSessionEditFileGroups(ctx.parser, ctx.reviewState);
+    for (const g of groups.values()) {
+      if (g && g.live) throw new Error('Wait for the current reply to finish before discarding file changes.');
+    }
+  } catch (e) {
+    if (e && /Wait for the current reply/.test(e.message)) throw e;
+  }
+  // Timeline revert to baseline (Augment revertToTimestamp).
+  const tlResult = checkpointTimeline.revertToBaseline(ctx.sessionId);
+  // Sync change-review status so turn cards clear.
+  captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: true, force: true });
+  const groups = collectSessionEditFileGroups(ctx.parser, ctx.reviewState);
+  for (const group of groups.values()) {
+    for (const file of group.files) {
+      markChangeReviewFileStatus(ctx.reviewState, file, 'rejected');
+    }
+  }
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  const results = (tlResult.results || []).map(r => ({
+    id: r.path,
+    ok: r.ok,
+    status: r.status || (r.ok ? 'rejected' : 'stale'),
+    error: r.error,
+  }));
+  const payload = annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+  if (!results.length && !tlResult.ok) throw new Error('No pending file changes were found.');
+  return { ok: tlResult.ok, results, payload };
+}
+
+function resolveSessionEditsDiscardFile(state, comm, message) {
+  if (message.busy === true) throw new Error('Wait for the current reply to finish before discarding file changes.');
+  const ctx = changeReviewContext(state, comm, message);
+  noteCheckpointSession(state, ctx.sessionId);
+  const filePath = typeof message.filePath === 'string' && message.filePath
+    ? message.filePath
+    : (sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, message || {})[0] || {}).filePath;
+  if (!filePath) throw new Error('No matching pending file changes were found.');
+  const tlResult = checkpointTimeline.revertToBaseline(ctx.sessionId, filePath);
+  captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: true, force: true });
+  const files = sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, { filePath });
+  for (const file of files) markChangeReviewFileStatus(ctx.reviewState, file, 'rejected');
+  if (ctx.parser.persistDirty) saveUsageCacheParser(state, ctx.parser, ctx.stat);
+  if (ctx.reviewState.dirty) saveChangeReviewState(state, ctx.reviewState);
+  const results = (tlResult.results || []).map(r => ({
+    id: r.path,
+    ok: r.ok,
+    status: r.status || (r.ok ? 'rejected' : 'stale'),
+    error: r.error,
+  }));
+  const payload = annotateChangeReviewPayload(
+    buildChangeReviewPayload(ctx.parser, ctx.reviewState),
+    ctx.sessionId,
+    ctx.target
+  );
+  return { ok: tlResult.ok, results, payload };
+}
+
+async function resolveSessionEditsOpenFile(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  const filePath = typeof message.filePath === 'string' ? message.filePath : '';
+  if (!filePath) throw new Error('Missing file path.');
+  if (!fs.existsSync(filePath)) throw new Error('File does not exist on disk.');
+  const vscode = getVSCodeApi();
+  if (!vscode || !vscode.workspace || !vscode.window) throw new Error('VS Code API unavailable.');
+  const uri = vscode.Uri.file(filePath);
+  const doc = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+  return { ok: true, filePath };
+}
+
+function sessionEditDiffBaselineSource(group) {
+  const original = sessionEditOriginalFile(group);
+  if (!original) return { kind: 'missing' };
+  if (original.backupFileName === null) return { kind: 'created', original };
+  if (typeof original.backupFileName === 'string' && original.backupFileName) {
+    try {
+      const backupPath = changeReviewBackupPath(original);
+      if (fs.existsSync(backupPath)) return { kind: 'backup', original, backupPath };
+    } catch (_) {}
+  }
+  return { kind: 'missing', original };
+}
+
+
+/** Open VS Code native diff in unified/inline (single-column) mode when possible.
+ *
+ * vscode.diff has no per-call layout option — it always reads
+ * `diffEditor.renderSideBySide`. We force that to false *before* opening so
+ * Session Edits reviews land as one pane (red/green lines stacked), matching
+ * the common "one-column" review UX. Scope is Workspace when a folder is open
+ * (does not rewrite the user's global default); otherwise Global as last resort.
+ * The user can still switch back from the diff editor toolbar / command palette.
+ */
+async function openSessionEditsNativeDiff(vscode, leftUri, rightUri, title) {
+  try {
+    const cfg = vscode.workspace.getConfiguration('diffEditor');
+    if (cfg.get('renderSideBySide') === true) {
+      const hasFolder = !!(vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length);
+      const target = hasFolder
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await cfg.update('renderSideBySide', false, target);
+    }
+  } catch (_) {
+    // Config write may be blocked in restricted mode — still open the diff.
+  }
+  await vscode.commands.executeCommand(
+    'vscode.diff',
+    leftUri,
+    rightUri,
+    title,
+    { preview: true, preserveFocus: false }
+  );
+}
+
+async function resolveSessionEditsOpenDiff(state, comm, message) {
+  const ctx = changeReviewContext(state, comm, message);
+  noteCheckpointSession(state, ctx.sessionId);
+  let filePath = typeof message.filePath === 'string' ? message.filePath : '';
+  const fileId = typeof message.fileId === 'string' ? message.fileId : '';
+  if (!filePath && fileId && fileId.startsWith('tl:')) {
+    filePath = fileId.slice(3);
+  }
+  if (!filePath && fileId) {
+    const one = findChangeReviewFile(ctx.parser, fileId);
+    if (one) filePath = one.filePath;
+  }
+  if (!filePath) throw new Error('Missing file path.');
+
+  const vscode = getVSCodeApi();
+  if (!vscode || !vscode.workspace || !vscode.window || !vscode.commands) {
+    throw new Error('VS Code API unavailable.');
+  }
+
+  const sides = checkpointTimeline.getDiffSides(ctx.sessionId, filePath);
+  const display = displayPathForCwd(filePath, ctx.parser && ctx.parser.projectCwd) || path.basename(filePath);
+  const title = `${display} (Session Edits)`;
+
+  // Prefer timeline sides; fall back to Claude backup aggregate if needed.
+  let leftText = sides && !sides.leftUnavailable ? (sides.left || '') : null;
+  let rightText = sides && !sides.rightUnavailable ? (sides.right || '') : null;
+  let leftMissing = sides ? sides.leftMissing : false;
+  let rightMissing = sides ? sides.rightMissing : false;
+
+  if (!sides) {
+    // Legacy fallback: earliest change-review backup
+    const groups = collectSessionEditFileGroups(ctx.parser, ctx.reviewState);
+    const group = groups.get(changeReviewFileKey(filePath));
+    if (!group) throw new Error('No matching file change was found.');
+    const baseline = sessionEditDiffBaselineSource(group);
+    if (baseline.kind === 'created') {
+      leftText = '';
+      leftMissing = true;
+    } else if (baseline.kind === 'backup' && baseline.backupPath) {
+      leftText = fs.readFileSync(baseline.backupPath, 'utf8');
+    }
+    rightMissing = !fs.existsSync(filePath);
+    rightText = rightMissing ? '' : fs.readFileSync(filePath, 'utf8');
+  }
+
+  if (leftMissing && !rightMissing) {
+    const rightDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+    const empty = await vscode.workspace.openTextDocument({
+      content: '',
+      language: rightDoc.languageId || 'plaintext',
+    });
+    await openSessionEditsNativeDiff(
+      vscode, empty.uri, rightDoc.uri, `${display} (new) · Session Edits`
+    );
+    return { ok: true, mode: 'diff-created', filePath };
+  }
+  if (rightMissing) {
+    const leftDoc = await vscode.workspace.openTextDocument({
+      content: leftText || '',
+      language: 'plaintext',
+    });
+    const empty = await vscode.workspace.openTextDocument({ content: '', language: leftDoc.languageId || 'plaintext' });
+    await openSessionEditsNativeDiff(
+      vscode, leftDoc.uri, empty.uri, `${display} (deleted) · Session Edits`
+    );
+    return { ok: true, mode: 'diff-deleted', filePath };
+  }
+
+  // Both sides present: left from timeline baseline (virtual doc), right from disk.
+  const rightDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+  const leftDoc = await vscode.workspace.openTextDocument({
+    content: leftText == null ? '' : leftText,
+    language: rightDoc.languageId || 'plaintext',
+  });
+  await openSessionEditsNativeDiff(vscode, leftDoc.uri, rightDoc.uri, title);
+  return { ok: true, mode: 'diff', filePath };
+}
+
+function handleSessionEditsOpenDiffRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'session_edits_open_diff_response',
+        requestId,
+        payload,
+      });
+    } catch (_) { }
+  };
+  resolveSessionEditsOpenDiff(state, comm, message || {})
+    .then(payload => reply(payload))
+    .catch(error => {
+      state.log(`session edits open diff error: ${error && error.message ? error.message : error}`);
+      reply({ ok: false, error: String(error && error.message ? error.message : error) });
+    });
+}
+
+function replySessionEditsAction(comm, state, message, type, resolveFn) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type,
+        requestId,
+        payload,
+      });
+    } catch (_) { }
+  };
+  Promise.resolve()
+    .then(() => resolveFn(state, comm, message || {}))
+    .then(payload => {
+      reply(payload);
+      if (payload && payload.payload && payload.payload.src) {
+        sendChangeReviewTarget(state, payload.payload.src, payload.payload.sessionId || message.sessionId);
+      }
+    })
+    .catch(error => {
+      state.log(`session edits error: ${error && error.message ? error.message : error}`);
+      reply({ ok: false, error: String(error && error.message ? error.message : error) });
+    });
+}
+
+function handleSessionEditsKeepAllRequest(comm, state, message) {
+  replySessionEditsAction(comm, state, message, 'session_edits_keep_all_response', resolveSessionEditsKeepAll);
+}
+
+function handleSessionEditsKeepFileRequest(comm, state, message) {
+  replySessionEditsAction(comm, state, message, 'session_edits_keep_file_response', resolveSessionEditsKeepFile);
+}
+
+function handleSessionEditsDiscardAllRequest(comm, state, message) {
+  replySessionEditsAction(comm, state, message, 'session_edits_discard_all_response', resolveSessionEditsDiscardAll);
+}
+
+function handleSessionEditsDiscardFileRequest(comm, state, message) {
+  replySessionEditsAction(comm, state, message, 'session_edits_discard_file_response', resolveSessionEditsDiscardFile);
+}
+
+function handleSessionEditsOpenFileRequest(comm, state, message) {
+  const requestId = message.requestId;
+  const reply = payload => {
+    try {
+      comm.webview.postMessage({
+        __incipit: true,
+        type: 'session_edits_open_file_response',
+        requestId,
+        payload,
+      });
+    } catch (_) { }
+  };
+  resolveSessionEditsOpenFile(state, comm, message || {})
+    .then(payload => reply(payload))
+    .catch(error => {
+      state.log(`session edits open error: ${error && error.message ? error.message : error}`);
+      reply({ ok: false, error: String(error && error.message ? error.message : error) });
+    });
 }
 
 function rejectOneChangeReviewFile(reviewState, file) {
@@ -6769,6 +7802,15 @@ module.exports.__test = {
   buildChangeReviewFullDiffRows,
   compactChangeReviewDiffRows,
   resolveChangeReviewReject,
+  buildSessionEditsPayload,
+  resolveSessionEditsKeepAll,
+  resolveSessionEditsKeepFile,
+  resolveSessionEditsDiscardAll,
+  resolveSessionEditsDiscardFile,
+  resolveSessionEditsOpenDiff,
+  checkpointTimeline,
+  buildTimelineSessionEditsPayload,
+  markChangeReviewFileAccepted,
   captureChangeReviewGuards,
   changeReviewEntryId,
   resolveChangeReviewPath,

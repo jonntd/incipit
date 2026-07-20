@@ -24,6 +24,11 @@ const STREAM_SETTLED_QUIET_MS = 360;
 const SEND_BUTTON_DOM_CACHE_MS = 32;
 const COMPOSITE_BUSY_RECHECK_MS = 160;
 const COMPOSITE_BUSY_RECHECK_MAX_MS = 8000;
+// After interrupt / mid-tool, host may leave `partial:true` on a trailing
+// assistant block forever while SessionState.busy is already false. Treating
+// partialTail alone as busy forever freezes send/action UI until the user
+// force-stops. Only honour a recent partial tail as live work.
+const PARTIAL_TAIL_BUSY_TTL_MS = 12000;
 // How recently the bridge object must have been produced for its busy=false
 // to vouch for "idle" when every other probe missed. Producer writes
 // `updatedAt` with Date.now() (see install.js buildHostStateBridgePreamble),
@@ -311,7 +316,15 @@ function compositeBusyState(state = hostState) {
 
   const probeState = runBusyProbes();
   if (probeState === true) return true;
-  if (state && state.partialTail === true) return true;
+
+  // partialTail is a liveness *hint*, not a permanent lock. A sticky
+  // interrupted-thinking / tool_use partial block used to keep composite
+  // busy=true indefinitely after the CLI had already stopped.
+  if (state && state.partialTail === true) {
+    const quietFor = lastRuntimeDirtyAt ? (nowMs() - lastRuntimeDirtyAt) : 0;
+    if (quietFor < PARTIAL_TAIL_BUSY_TTL_MS) return true;
+  }
+
   if (probeState === 'legacy-false') return false;
 
   const domState = sendButtonDomState();
@@ -481,6 +494,11 @@ export function refreshHostState(reason = 'refresh') {
   }
   if (prevMessagesVersion !== hostState.messagesVersion ||
       prevPartialTail !== hostState.partialTail) {
+    // Live appends / partial-tail flips count as stream activity so stall
+    // detection does not fire while the model is still producing records.
+    if (hostState.busy === true || hostState.partialTail === true) {
+      lastRuntimeDirtyAt = nowMs();
+    }
     emit('messagesChanged', { ...hostState, reason });
   }
   if (rawBusyChanged || compositeChanged) {
@@ -493,6 +511,11 @@ export function refreshHostState(reason = 'refresh') {
       previousCompositeBusy: prevCompositeBusy,
       reason,
     };
+    // Stamp activity when a turn becomes live so stall detection has a
+    // baseline even if no DOM/markdown dirty arrived yet.
+    if (compositeBusy === true && prevCompositeBusy !== true) {
+      lastRuntimeDirtyAt = nowMs();
+    }
     emit('busyChanged', payload);
     if (compositeChanged) {
       emit(compositeBusy ? 'streamStarted' : 'streamSettled', payload);
@@ -536,6 +559,13 @@ export function conversationIsBusy() {
     return false;
   }
   throw new Error('host state bridge unavailable');
+}
+
+// Milliseconds since the last stream activity signal (dirty root, turn start).
+// null when no activity has been recorded yet this session.
+export function streamQuietForMs() {
+  if (!lastRuntimeDirtyAt) return null;
+  return Math.max(0, nowMs() - lastRuntimeDirtyAt);
 }
 
 export function initRuntimeKernel() {
