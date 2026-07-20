@@ -334,3 +334,18 @@
 [data-incipit-session-edits-source="mixed"] {
   opacity: 0.65 !important;
 }
+
+[data-incipit-session-edits-source="live"],
+[data-incipit-session-edits-live] {
+  color: var(--vscode-charts-green, #3fb950) !important;
+  background: color-mix(in srgb, var(--vscode-charts-green, #3fb950) 14%, transparent) !important;
+  opacity: 0.9 !important;
+  text-transform: lowercase !important;
+}
+[data-incipit-session-edits-file][data-live="1"] {
+  /* quiet cue — no heavy outline */
+  opacity: 0.95 !important;
+}
+[data-incipit-session-edits-toggle][data-live="1"] {
+  opacity: 1 !important;
+}

@@ -2627,6 +2627,15 @@ import {
 
   function noteTranscriptActionMutation() {
     lastTranscriptMutationAt = nowMs();
+    // Streaming token batches re-armed settle every few frames (via typography
+    // mutations). Fiber walks during stream = UI jank. Defer while busy;
+    // busyChanged / assistantTurnFinalized re-scan once settled.
+    let busy = false;
+    try { busy = conversationIsBusy(); } catch (_) { busy = false; }
+    if (busy) {
+      scheduleTranscriptActionSettleScan(Math.max(TRANSCRIPT_ACTION_QUIET_MS, 900));
+      return;
+    }
     scheduleTranscriptActionSettleScan();
   }
 
@@ -4979,45 +4988,77 @@ import {
     });
   }
 
+  function sessionEditsChipSignature(totals, hasPending, staleCount) {
+    return [
+      hasPending ? 1 : 0,
+      sessionEditsPanelOpen ? 1 : 0,
+      staleCount || 0,
+      totals.live || 0,
+      totals.added || 0,
+      totals.removed || 0,
+      totals.files || 0,
+      totals.hasLineStats ? 1 : 0,
+    ].join('|');
+  }
+
+  function updateSessionEditsToggleChip(toggle, totals, hasPending, staleCount) {
+    if (!toggle) return;
+    const sig = sessionEditsChipSignature(totals, hasPending, staleCount);
+    if (toggle.getAttribute('data-incipit-chip-sig') === sig) {
+      // Only ensure visibility / open flags if signature unchanged.
+      toggle.hidden = !hasPending && !sessionEditsPanelOpen;
+      return;
+    }
+    toggle.setAttribute('data-incipit-chip-sig', sig);
+    toggle.hidden = !hasPending && !sessionEditsPanelOpen;
+    // Rebuild chip contents only when numbers / state actually change.
+    toggle.textContent = '';
+    toggle.appendChild(sessionEditsSvgIcon('file-diff', 'data-incipit-session-edits-toggle-icon'));
+    const label = document.createElement('span');
+    label.setAttribute('data-incipit-session-edits-toggle-label', '');
+    label.textContent = changeReviewText('editsTab');
+    toggle.appendChild(label);
+    if (hasPending) {
+      const counts = document.createElement('span');
+      counts.setAttribute('data-incipit-session-edits-toggle-counts', '');
+      if (totals.hasLineStats || totals.added || totals.removed) {
+        if (totals.added > 0) {
+          const add = document.createElement('span');
+          add.setAttribute('data-incipit-tool-added', '');
+          add.textContent = '+' + totals.added;
+          counts.appendChild(add);
+        }
+        if (totals.removed > 0) {
+          const del = document.createElement('span');
+          del.setAttribute('data-incipit-tool-removed', '');
+          del.textContent = '-' + totals.removed;
+          counts.appendChild(del);
+        }
+      } else {
+        counts.textContent = String(totals.files);
+      }
+      toggle.appendChild(counts);
+    }
+    toggle.setAttribute('data-open', sessionEditsPanelOpen ? '1' : '0');
+    toggle.setAttribute('data-stale', staleCount > 0 ? '1' : '0');
+    toggle.setAttribute('data-live', totals.live > 0 ? '1' : '0');
+    toggle.setAttribute('aria-expanded', sessionEditsPanelOpen ? 'true' : 'false');
+  }
+
   function renderSessionEditsChrome() {
     const totals = sessionEditsTotals();
     const files = sessionEditsFiles();
     const hasPending = files.length > 0;
     const staleCount = files.filter(f => f && f.status === 'stale').length;
     const toggle = ensureSessionEditsToggle();
-    if (toggle) {
-      toggle.hidden = !hasPending && !sessionEditsPanelOpen;
-      toggle.textContent = '';
-      toggle.appendChild(sessionEditsSvgIcon('file-diff', 'data-incipit-session-edits-toggle-icon'));
-      const label = document.createElement('span');
-      label.setAttribute('data-incipit-session-edits-toggle-label', '');
-      label.textContent = changeReviewText('editsTab');
-      toggle.appendChild(label);
-      if (hasPending) {
-        const counts = document.createElement('span');
-        counts.setAttribute('data-incipit-session-edits-toggle-counts', '');
-        if (totals.hasLineStats || totals.added || totals.removed) {
-          if (totals.added > 0) {
-            const add = document.createElement('span');
-            add.setAttribute('data-incipit-tool-added', '');
-            add.textContent = '+' + totals.added;
-            counts.appendChild(add);
-          }
-          if (totals.removed > 0) {
-            const del = document.createElement('span');
-            del.setAttribute('data-incipit-tool-removed', '');
-            del.textContent = '-' + totals.removed;
-            counts.appendChild(del);
-          }
-        } else {
-          counts.textContent = String(totals.files);
-        }
-        toggle.appendChild(counts);
+    updateSessionEditsToggleChip(toggle, totals, hasPending, staleCount);
+
+    // Closed panel: never touch list DOM / panel children — chip only.
+    if (!sessionEditsPanelOpen) {
+      if (sessionEditsPanelEl && sessionEditsPanelEl.isConnected) {
+        sessionEditsPanelEl.hidden = true;
       }
-      toggle.setAttribute('data-open', sessionEditsPanelOpen ? '1' : '0');
-      toggle.setAttribute('data-stale', staleCount > 0 ? '1' : '0');
-      toggle.setAttribute('data-live', totals.live > 0 ? '1' : '0');
-      toggle.setAttribute('aria-expanded', sessionEditsPanelOpen ? 'true' : 'false');
+      return;
     }
 
     const panel = ensureSessionEditsPanel();
@@ -5028,11 +5069,7 @@ import {
         el.removeAttribute('data-incipit-session-edits-open');
       });
     } catch (_) {}
-    panel.hidden = !sessionEditsPanelOpen;
-    if (!sessionEditsPanelOpen) {
-      // Closed: only the chip was updated above. Do not rebuild list.
-      return;
-    }
+    panel.hidden = false;
 
     const busy = changeReviewBusySafe();
     const focusedPath = hasPending ? sessionEditsClampFocus(sessionEditsFocusedPath) : (sessionEditsFocusedPath = '', '');
@@ -5048,8 +5085,9 @@ import {
       const discardAll = document.createElement('button');
       discardAll.type = 'button';
       discardAll.setAttribute('data-incipit-session-edits-discard-all', '');
-      discardAll.title = busy ? changeReviewText('liveHint') : changeReviewText('discardAllHint');
-      discardAll.disabled = busy || !hasPending;
+      const hasLive = (totals.live || 0) > 0;
+      discardAll.title = (busy || hasLive) ? changeReviewText('liveHint') : changeReviewText('discardAllHint');
+      discardAll.disabled = busy || hasLive || !hasPending;
       discardAll.textContent = '';
       discardAll.appendChild(sessionEditsSvgIcon('trash-2', 'data-incipit-session-edits-btn-icon'));
       const discardLabel = document.createElement('span');
@@ -5117,8 +5155,16 @@ import {
         name.setAttribute('data-incipit-session-edits-file-name', '');
         name.textContent = file.displayPath || file.filePath || '';
         info.appendChild(name);
-        // Subtle origin chip when user (or mixed) edits are in the pending window.
-        if (file.source === 'user' || file.source === 'mixed') {
+        // Live chip while agent turn is in-flight for this path.
+        if (file.live === true) {
+          const live = document.createElement('span');
+          live.setAttribute('data-incipit-session-edits-source', 'live');
+          live.setAttribute('data-incipit-session-edits-live', '');
+          live.textContent = changeReviewText('liveBadge');
+          live.title = changeReviewText('liveHint');
+          info.appendChild(live);
+        } else if (file.source === 'user' || file.source === 'mixed') {
+          // Subtle origin chip when user (or mixed) edits are in the pending window.
           const src = document.createElement('span');
           src.setAttribute('data-incipit-session-edits-source', file.source);
           src.textContent = file.source === 'user'
@@ -14387,8 +14433,9 @@ function setupContinueButton() {
     // Opening a long prior session can enqueue hundreds of toolUse nodes.
     // Decorating every Write/Edit island (diff rows + hljs) in one rAF freezes
     // the webview on the loading spinner. Budget work across frames.
-    const TOOL_DECORATE_FRAME_BUDGET_MS = 8;
-    const TOOL_DECORATE_MIN_PER_FRAME = 2;
+    // MIN=1 so one expensive tool never pins a whole frame before yield.
+    const TOOL_DECORATE_FRAME_BUDGET_MS = 6;
+    const TOOL_DECORATE_MIN_PER_FRAME = 1;
     // Session-open policy: only decorate tools near the chat viewport (or the
     // last few in DOM order as a bottom-of-thread fallback). Off-screen tools
     // wait for IntersectionObserver so scrolling up paints earlier history
@@ -14535,14 +14582,26 @@ function setupContinueButton() {
       // Covers React rebuilding the summary subtree mid-stream — the rebuilt
       // children come in as added nodes whose closest toolUse needs to be
       // re-decorated because our injected stats span was wiped.
+      // Streaming: host rebuilds the active tool body constantly. Force-
+      // enqueue on every childList → decorate per token → jank. While busy,
+      // only light-observe; force full decorate when idle or for new mounts.
+      let busy = false;
+      try { busy = conversationIsBusy(); } catch (_) { busy = false; }
       if (targetInsideToolUse) {
         const ancestor = node.closest && node.closest('[class*="toolUse_"]');
-        if (ancestor && enqueueToolUseForDecorate(ancestor, { force: true })) {
-          queued = true;
+        if (ancestor) {
+          if (busy) {
+            stampToolCollapsedDefault(ancestor);
+            if (ancestor.dataset.incipitToolCard !== '1') {
+              observeToolUseForLaterDecorate(ancestor);
+            }
+          } else if (enqueueToolUseForDecorate(ancestor, { force: true })) {
+            queued = true;
+          }
         }
       }
       if (elementClassText(node).indexOf('toolUse_') !== -1) {
-        if (enqueueToolUseForDecorate(node, { force: true })) queued = true;
+        if (enqueueToolUseForDecorate(node, { force: !busy })) queued = true;
       }
       // Case B: the added subtree CONTAINS toolUse descendants (e.g. a fresh
       // assistant message landing with a tool call inside).

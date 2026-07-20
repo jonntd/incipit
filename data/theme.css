@@ -425,15 +425,59 @@
 /* The host's thinking SVG is re-rendered during streaming and can drift out
    of sync with the frozen `<details>` state, so hide it and render our own
    arrow from a stable pseudo-element instead. */
-details[data-incipit-thinking] > summary[data-incipit-thinking-summary] svg[data-incipit-thinking-toggle] {
+details[data-incipit-thinking] > summary[data-incipit-thinking-summary] svg[data-incipit-thinking-toggle],
+details[class*="thinking"] > summary[class*="thinkingSummary"] svg[class*="thinkingToggle"],
+summary[data-incipit-thinking-summary] svg[data-incipit-thinking-toggle],
+summary[class*="thinkingSummary"] svg[class*="thinkingToggle"] {
   display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
 }
-details[data-incipit-thinking] > summary[data-incipit-thinking-summary]::after {
+
+/* Flex row so the live label ("Thinking...") is never painted under the
+   chevron / host icon. Without this, stream remounts often show a clipped
+   remnant like "tching..." next to a blank square icon. */
+details[data-incipit-thinking] > summary[data-incipit-thinking-summary],
+details[class*="thinking"] > summary[class*="thinkingSummary"],
+summary[data-incipit-thinking-summary],
+summary[class*="thinkingSummary"] {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+  white-space: nowrap !important;
+  box-sizing: border-box !important;
+}
+details[data-incipit-thinking] > summary[data-incipit-thinking-summary] > span,
+details[data-incipit-thinking] > summary[data-incipit-thinking-summary] > :not(svg):not([class*="thinkingToggle"]),
+details[class*="thinking"] > summary[class*="thinkingSummary"] > span,
+summary[data-incipit-thinking-summary] > span,
+summary[class*="thinkingSummary"] > span {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  order: 1 !important;
+}
+
+details[data-incipit-thinking] > summary[data-incipit-thinking-summary]::after,
+details[class*="thinking"] > summary[class*="thinkingSummary"]::after,
+summary[data-incipit-thinking-summary]::after,
+summary[class*="thinkingSummary"]::after {
   content: "";
   display: inline-block;
-  flex: 0 0 var(--incipit-icon-md);
-  width: var(--incipit-icon-md);
-  height: var(--incipit-icon-md);
+  flex: 0 0 var(--incipit-icon-md, 16px);
+  width: var(--incipit-icon-md, 16px);
+  height: var(--incipit-icon-md, 16px);
+  order: 2;
+  flex-shrink: 0;
   background-color: currentColor;
   opacity: 0.92;
   transform-origin: 50% 50%;
@@ -447,11 +491,45 @@ details[data-incipit-thinking] > summary[data-incipit-thinking-summary]::after {
   mask-position: center;
   mask-size: 16px 16px;
 }
-details[data-incipit-thinking][open] > summary[data-incipit-thinking-summary]::after {
+details[data-incipit-thinking][open] > summary[data-incipit-thinking-summary]::after,
+details[class*="thinking"][open] > summary[class*="thinkingSummary"]::after {
   transform: rotate(90deg);
 }
-details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summary]::after {
+details[data-incipit-thinking]:not([open]) > summary[data-incipit-thinking-summary]::after,
+details[class*="thinking"]:not([open]) > summary[class*="thinkingSummary"]::after {
   transform: none;
+}
+
+/* Spinner / live status row: keep icon + label on one line so status text
+   ("Thinking...", "Working...") is not painted under the spinner glyph. */
+[data-incipit-spinner-row],
+[class*="spinnerRow"] {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+[data-incipit-spinner-row] [data-incipit-spinner-container],
+[class*="spinnerRow"] [class*="container_"] {
+  display: inline-flex !important;
+  flex: 0 0 auto !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+[data-incipit-spinner-row] [data-incipit-spinner-icon],
+[class*="spinnerRow"] [class*="icon_"] {
+  flex: 0 0 auto !important;
+  width: var(--incipit-icon-md, 16px) !important;
+  height: var(--incipit-icon-md, 16px) !important;
+}
+/* Any text sibling of the spinner icon gets room to show full status. */
+[data-incipit-spinner-row] span,
+[class*="spinnerRow"] span {
+  min-width: 0 !important;
+  overflow: visible !important;
+  white-space: nowrap !important;
 }
 
 
@@ -5791,33 +5869,49 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   height: var(--incipit-icon-md);
 }
 
+/* Non-blocking notices. Never cover the composer (bottom) or primary
+   transcript column center — sit as a slim top strip, clicks pass through. */
 [data-incipit-transcript-toast] {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 5000;
-  max-width: min(420px, calc(100vw - 36px));
-  padding: 9px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(248,246,240,0.12);
-  background: #2c2c2a;
-  color: #f8f8f6;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.28);
-  font-family: var(--incipit-body-font);
-  font-size: var(--incipit-body-size, 13px);
-  line-height: 1.5;
+  top: 10px;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  z-index: 40;
+  max-width: min(520px, calc(100vw - 48px));
+  width: max-content;
+  max-height: 3.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(248,246,240,0.14);
+  background: rgba(36, 36, 34, 0.92);
+  color: #e8e4dc;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.22);
+  font-family: var(--incipit-ui-font, system-ui, sans-serif);
+  font-size: 12px;
+  line-height: 1.35;
   opacity: 0;
-  transform: translateY(6px);
-  pointer-events: none;
+  transform: translate(-50%, -4px);
+  pointer-events: none !important;
+  user-select: none;
   transition: opacity 0.16s, transform 0.16s;
 }
 [data-incipit-transcript-toast][data-visible="1"] {
   opacity: 1;
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 [data-incipit-transcript-toast][data-kind="error"] {
   border-color: rgba(201,106,106,0.42);
   color: #ffd2cd;
+}
+[data-incipit-transcript-toast][data-kind="warn"] {
+  border-color: rgba(229, 165, 75, 0.4);
+  color: #f0d9a8;
+  /* Stall warnings are informational — keep even lighter so streaming UI
+     stays readable underneath. */
+  background: rgba(40, 36, 28, 0.88);
 }
 
 /* ============================================================

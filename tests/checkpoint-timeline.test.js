@@ -400,4 +400,37 @@ function ok(msg) {
   }
 }
 
+
+
+{
+  const sid = tmpSession();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-'));
+  const filePath = path.join(dir, 'big.js');
+  try {
+    const body = 'line\n'.repeat(200);
+    fs.writeFileSync(filePath, body + 'extra\n');
+    TL.recordAgentEdit(sid, filePath, { beforeText: body, afterText: body + 'extra\n', tool: 'Edit' });
+    const list = TL.listPending(sid);
+    assert.strictEqual(list.files.length, 1);
+    assert.strictEqual(list.files[0].baselineText, undefined);
+    assert.ok(!('baselineText' in list.files[0]));
+    ok('baselineText stripped from list payload');
+
+    // Second listPending should hit stats cache (same mtime) and stay correct
+    const list2 = TL.listPending(sid);
+    assert.strictEqual(list2.files[0].added, list.files[0].added);
+    assert.strictEqual(list2.files[0].removed, list.files[0].removed);
+    ok('listPending stats cache reuses counts');
+
+    // Diff still works without baselineText on list rows
+    const sides = TL.getDiffSides(sid, filePath);
+    assert.ok(sides && typeof sides.left === 'string');
+    assert.ok(sides.right.includes('extra'));
+    ok('getDiffSides still loads full baseline for native diff');
+  } finally {
+    cleanup(sid);
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
 console.log('checkpoint-timeline tests passed');

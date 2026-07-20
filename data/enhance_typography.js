@@ -1276,7 +1276,11 @@ function handleMutations(mutations) {
       if (m.addedNodes.length) dirty = true;
     }
   }
-  if (dirty) noteTranscriptActionMutation();
+  if (dirty && !busy) noteTranscriptActionMutation();
+  // During streaming, do not arm the settle scanner on every token batch —
+  // that was a major source of UI jank (fiber walks over the whole
+  // transcript while the model is still writing). streamSettled /
+  // assistantTurnFinalized re-run the settle path once the turn is idle.
   if (workQueued || pendingSegments.size || pendingRoots.size) schedule();
 }
 

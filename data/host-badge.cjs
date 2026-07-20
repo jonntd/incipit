@@ -5639,6 +5639,24 @@ function isChangeReviewFilePending(reviewState, file) {
   return status === 'pending' || status === 'stale';
 }
 
+function sessionEditsHasLivePaths(parser, reviewState, onlyPath) {
+  try {
+    const groups = collectSessionEditFileGroups(parser, reviewState);
+    for (const g of groups.values()) {
+      if (!g || !g.live) continue;
+      if (onlyPath && g.filePath !== onlyPath) continue;
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function assertSessionEditsNotLive(parser, reviewState, onlyPath) {
+  if (sessionEditsHasLivePaths(parser, reviewState, onlyPath)) {
+    throw new Error('Wait for the current reply to finish before discarding file changes.');
+  }
+}
+
 function sessionEditTurnIsLive(parser, reviewState, turn) {
   if (!turn || !turn.turnKey) return false;
   if (isChangeReviewTurnFinalized(reviewState, turn.turnKey)) return false;
@@ -6320,14 +6338,7 @@ function resolveSessionEditsDiscardAll(state, comm, message) {
   if (message.busy === true) throw new Error('Wait for the current reply to finish before discarding file changes.');
   const ctx = changeReviewContext(state, comm, message);
   noteCheckpointSession(state, ctx.sessionId);
-  try {
-    const groups = collectSessionEditFileGroups(ctx.parser, ctx.reviewState);
-    for (const g of groups.values()) {
-      if (g && g.live) throw new Error('Wait for the current reply to finish before discarding file changes.');
-    }
-  } catch (e) {
-    if (e && /Wait for the current reply/.test(e.message)) throw e;
-  }
+  assertSessionEditsNotLive(ctx.parser, ctx.reviewState);
   // Timeline revert to baseline (Augment revertToTimestamp).
   const tlResult = checkpointTimeline.revertToBaseline(ctx.sessionId);
   // Sync change-review status so turn cards clear.
@@ -6363,6 +6374,7 @@ function resolveSessionEditsDiscardFile(state, comm, message) {
     ? message.filePath
     : (sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, message || {})[0] || {}).filePath;
   if (!filePath) throw new Error('No matching pending file changes were found.');
+  assertSessionEditsNotLive(ctx.parser, ctx.reviewState, filePath);
   const tlResult = checkpointTimeline.revertToBaseline(ctx.sessionId, filePath);
   captureChangeReviewGuards(ctx.parser, ctx.reviewState, { onlyFinalized: true, force: true });
   const files = sessionEditFilesFromMessage(ctx.parser, ctx.reviewState, { filePath });

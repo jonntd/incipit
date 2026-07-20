@@ -31,6 +31,8 @@ const SOURCE = Object.freeze({
 
 // sessionId -> timeline object (mutable, dirty-tracked)
 const cache = new Map();
+// sessionId|fileKey|baseline|diskKey -> {added,removed,statsOk}  (avoid re-LCS)
+const statsCache = new Map();
 
 function safeSessionId(sessionId) {
   return String(sessionId || '').replace(/[^A-Za-z0-9_-]/g, '');
@@ -229,6 +231,7 @@ function recordCheckpoint(sessionId, absPath, meta) {
   }
   markDirty(tl);
   saveTimeline(tl);
+  invalidateStatsCache(sessionId, absPath);
   return cp;
 }
 
@@ -344,6 +347,37 @@ function readDiskText(absPath) {
   }
 }
 
+function diskFingerprint(absPath) {
+  try {
+    if (!fs.existsSync(absPath)) return 'missing';
+    const st = fs.statSync(absPath);
+    if (!st.isFile()) return 'not-file';
+    return st.size + ':' + Math.round(st.mtimeMs);
+  } catch (_) {
+    return 'err';
+  }
+}
+
+function statsCacheKey(sessionId, absPath, baseline, baseHash, diskKey) {
+  return [
+    safeSessionId(sessionId),
+    fileKey(absPath),
+    baseline || 0,
+    baseHash || '',
+    diskKey || '',
+  ].join('|');
+}
+
+function invalidateStatsCache(sessionId, absPath) {
+  const prefix = safeSessionId(sessionId) + '|' + (absPath ? fileKey(absPath) : '');
+  for (const k of statsCache.keys()) {
+    if (k.startsWith(prefix) || (!absPath && k.startsWith(safeSessionId(sessionId) + '|'))) {
+      statsCache.delete(k);
+    }
+  }
+}
+
+
 function countTextLines(text) {
   return text === '' ? 0 : String(text).split('\n').length;
 }
@@ -428,34 +462,68 @@ function listPending(sessionId, opts = {}) {
     if (!rec || !pathHasCheckpointsAfterBaseline(rec, baseline)) continue;
     const absPath = rec.path;
     const base = contentAtOrBefore(sessionId, rec, baseline);
-    const disk = readDiskText(absPath);
-
-    let isCreated = base.kind === 'missing';
-    let isDeleted = disk.kind === 'missing' && !isCreated;
+    // Lightweight disk probe first (mtime/size) so cache hits avoid reading file text.
+    const diskKey = diskFingerprint(absPath);
+    const cacheKey = statsCacheKey(sessionId, absPath, baseline, base.hash, diskKey);
     let added = 0;
     let removed = 0;
     let statsOk = false;
+    let isCreated = base.kind === 'missing';
+    let isDeleted = diskKey === 'missing' && !isCreated;
+    let status = base.kind === 'unavailable' ? 'unavailable' : 'pending';
+    let diskKind = diskKey === 'missing' ? 'missing' : (diskKey === 'not-file' || diskKey === 'err' ? 'unavailable' : 'content');
 
-    if (isCreated && disk.kind === 'content') {
-      added = countTextLines(disk.text);
-      removed = 0;
-      statsOk = true;
-    } else if (isDeleted && base.kind === 'content') {
-      added = 0;
-      removed = countTextLines(base.text);
-      statsOk = true;
-    } else if (base.kind === 'content' && disk.kind === 'content') {
-      if (base.hash && hashText(disk.text) === base.hash) {
-        // No net change vs baseline — skip (Keep-equivalent content).
+    const cached = statsCache.get(cacheKey);
+    if (cached && typeof cached === 'object') {
+      added = cached.added || 0;
+      removed = cached.removed || 0;
+      statsOk = cached.statsOk === true;
+      isCreated = cached.isCreated === true;
+      isDeleted = cached.isDeleted === true;
+      status = cached.status || status;
+      if (!isCreated && !isDeleted && added === 0 && removed === 0 && statsOk) continue;
+      if (isCreated && diskKind === 'missing') continue;
+      if (base.kind === 'missing' && diskKind === 'missing') continue;
+    } else {
+      // Cache miss: read disk once and compute.
+      const disk = readDiskText(absPath);
+      diskKind = disk.kind;
+      isCreated = base.kind === 'missing';
+      isDeleted = disk.kind === 'missing' && !isCreated;
+      if (isCreated && disk.kind === 'content') {
+        added = countTextLines(disk.text);
+        removed = 0;
+        statsOk = true;
+      } else if (isDeleted && base.kind === 'content') {
+        added = 0;
+        removed = countTextLines(base.text);
+        statsOk = true;
+      } else if (base.kind === 'content' && disk.kind === 'content') {
+        if (base.hash && hashText(disk.text) === base.hash) {
+          statsCache.set(cacheKey, {
+            added: 0, removed: 0, statsOk: true,
+            isCreated: false, isDeleted: false, status: 'pending',
+          });
+          continue;
+        }
+        const stats = lineDiffStats(base.text, disk.text);
+        added = stats.added || 0;
+        removed = stats.removed || 0;
+        statsOk = true;
+        if (added === 0 && removed === 0) {
+          statsCache.set(cacheKey, {
+            added: 0, removed: 0, statsOk: true,
+            isCreated: false, isDeleted: false, status: 'pending',
+          });
+          continue;
+        }
+      } else if (base.kind === 'missing' && disk.kind === 'missing') {
         continue;
       }
-      const stats = lineDiffStats(base.text, disk.text);
-      added = stats.added || 0;
-      removed = stats.removed || 0;
-      statsOk = true;
-      if (added === 0 && removed === 0) continue;
-    } else if (base.kind === 'missing' && disk.kind === 'missing') {
-      continue;
+      if (base.kind === 'unavailable' || disk.kind === 'unavailable') status = 'unavailable';
+      statsCache.set(cacheKey, {
+        added, removed, statsOk, isCreated, isDeleted, status,
+      });
     }
 
     totalAdded += added;
@@ -481,21 +549,20 @@ function listPending(sessionId, opts = {}) {
       ? (opts.displayPathFor(absPath) || absPath)
       : absPath;
 
+    // Lightweight list row — no baselineText payload (diff loads via getDiffSides).
     files.push({
       id: 'tl:' + fileKey(absPath),
       filePath: absPath,
       displayPath,
-      isCreated: isCreated && disk.kind === 'content',
+      isCreated: isCreated && diskKind === 'content',
       isDeleted,
       added,
       removed,
       hasLineStats: statsOk,
-      status: base.kind === 'unavailable' || disk.kind === 'unavailable' ? 'unavailable' : 'pending',
+      status,
       live: false,
       tool: last && last.tool ? last.tool : '',
       source,
-      // for native diff
-      baselineText: base.kind === 'content' ? base.text : (isCreated ? '' : null),
       baselineMissing: isCreated,
       currentMissing: isDeleted,
     });
@@ -533,6 +600,7 @@ function acceptAll(sessionId) {
   }
   markDirty(tl);
   saveTimeline(tl);
+  invalidateStatsCache(sessionId);
   return { ok: true, baselineTimestamp: next };
 }
 
@@ -555,6 +623,7 @@ function acceptFile(sessionId, absPath) {
   rec.acceptedAt = cp ? cp.ts : Date.now();
   markDirty(tl);
   saveTimeline(tl);
+  invalidateStatsCache(sessionId, absPath);
   return { ok: true, acceptedAt: rec.acceptedAt };
 }
 
@@ -695,8 +764,14 @@ function getBaselineTimestamp(sessionId) {
 }
 
 function clearCache(sessionId) {
-  if (sessionId) cache.delete(safeSessionId(sessionId));
-  else cache.clear();
+  if (sessionId) {
+    const id = safeSessionId(sessionId);
+    cache.delete(id);
+    invalidateStatsCache(id);
+  } else {
+    cache.clear();
+    statsCache.clear();
+  }
 }
 
 module.exports = {
@@ -722,6 +797,7 @@ module.exports = {
   writeBlob,
   hashText,
   clearCache,
+  invalidateStatsCache,
   fileKey,
   // test helpers
   __test: {

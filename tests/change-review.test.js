@@ -1639,6 +1639,8 @@ function sessionEditHarness(dir) {
   const css = fs.readFileSync(path.join(__dirname, '..', 'data', 'ui', 'change-review.css'), 'utf8');
   assert.ok(legacy.includes("document.body.appendChild(panel)"), 'body-mounted panel');
   assert.ok(legacy.includes('scheduleSessionEditsChrome'), 'debounced chrome');
+  assert.ok(legacy.includes('updateSessionEditsToggleChip'), 'cheap chip update');
+  assert.ok(legacy.includes('sessionEditsChipSignature'), 'chip signature');
   assert.ok(legacy.includes('openChangeReviewDiff'), 'modal diff path');
   assert.ok(legacy.includes('data-incipit-session-edits-keep-all'), 'keep all');
   assert.ok(legacy.includes('data-incipit-session-edits-discard-all'), 'discard all');
