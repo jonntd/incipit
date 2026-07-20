@@ -4645,30 +4645,94 @@ import {
       .filter(p => typeof p === 'string' && p);
   }
 
-  // Lucide-like 14px strokes used by Augment Edits tab (file-diff / trash-2 /
-  // check-check / external-link / undo-2 / file-plus / file-minus).
-  const SESSION_EDITS_ICONS = Object.freeze({
-    'file-diff': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 12h4"/><path d="M10 16h4"/><path d="M10 8h1"/>',
-    'trash-2': '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
-    'check-check': '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
-    'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
-    'undo-2': '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/>',
-    'file': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
-    'file-plus': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/>',
-    'file-minus': '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/>',
+  // Lucide-like 14px stroke icons (Augment Edits). Paths only — never rely on
+  // CSS alone for fill:none; host webview often sets `svg path { fill:
+  // currentColor !important }` which turns the external-link box into a solid
+  // white square. Build via createElementNS + per-path fill="none".
+  const SESSION_EDITS_ICON_PATHS = Object.freeze({
+    'file-diff': [
+      'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z',
+      'M14 2v4a2 2 0 0 0 2 2h4',
+      'M10 12h4',
+      'M10 16h4',
+      'M10 8h1',
+    ],
+    'trash-2': [
+      'M3 6h18',
+      'M8 6V4h8v2',
+      'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6',
+      'M10 11v6',
+      'M14 11v6',
+    ],
+    'check-check': [
+      'M18 6 7 17l-5-5',
+      'm22 10-7.5 7.5L13 16',
+    ],
+    // Open-in-editor: open strokes only. Avoid closed subpaths — host
+    // `path { fill: currentColor !important }` paints closed shapes solid.
+    'external-link': [
+      'M14 3h7v7',
+      'M10 14 21 3',
+      'M21 14v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h6',
+    ],
+    'undo-2': [
+      'M9 14 4 9l5-5',
+      'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11',
+    ],
+    'file': [
+      'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z',
+      'M14 2v4a2 2 0 0 0 2 2h4',
+    ],
+    'file-plus': [
+      'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z',
+      'M14 2v4a2 2 0 0 0 2 2h4',
+      'M9 15h6',
+      'M12 12v6',
+    ],
+    'file-minus': [
+      'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z',
+      'M14 2v4a2 2 0 0 0 2 2h4',
+      'M9 15h6',
+    ],
   });
 
   function sessionEditsSvgIcon(name, attr) {
     const el = document.createElement('span');
     if (attr) el.setAttribute(attr, '');
     else el.setAttribute('data-incipit-session-edits-icon', '');
-    const paths = SESSION_EDITS_ICONS[name] || SESSION_EDITS_ICONS.file;
-    // Explicit xmlns + fill/stroke on root — host styles often force svg fill
-    // and turn outline icons into solid white squares.
-    el.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" ' +
-      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
-      'stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths + '</svg>';
+    const dList = SESSION_EDITS_ICON_PATHS[name] || SESSION_EDITS_ICON_PATHS.file;
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '14');
+    svg.setAttribute('height', '14');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    // Inline style beats most host rules that are not !important.
+    svg.style.cssText =
+      'width:14px;height:14px;display:block;fill:none;stroke:currentColor;' +
+      'stroke-width:2;overflow:visible;background:transparent;';
+    for (let i = 0; i < dList.length; i++) {
+      const path = document.createElementNS(NS, 'path');
+      path.setAttribute('d', dList[i]);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', 'currentColor');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+      // Host `path { fill: currentColor !important }` still wins attributes —
+      // inline style with !important is not allowed, so also set via cssText
+      // and rely on our stylesheet path rule. For extra safety use
+      // fill="none" + paint-order and avoid closed shapes where possible.
+      path.style.cssText = 'fill:none;stroke:currentColor;stroke-width:2;';
+      svg.appendChild(path);
+    }
+    el.appendChild(svg);
     return el;
   }
 
@@ -5223,14 +5287,17 @@ import {
         openBtn.setAttribute('data-incipit-session-edits-open', '');
         openBtn.title = changeReviewText('openFile');
         openBtn.setAttribute('aria-label', changeReviewText('openFile'));
-        openBtn.appendChild(sessionEditsSvgIcon('external-link'));
+        // Glyph is CSS-mask (::before), not SVG — host webviews often force
+        // `path { fill: currentColor !important }` which turns outline SVGs
+        // into solid white squares (the bug users saw on Open).
+        openBtn.setAttribute('data-incipit-session-edits-icon-kind', 'external-link');
         openBtn.disabled = file.isDeleted === true;
         const undo = document.createElement('button');
         undo.type = 'button';
         undo.setAttribute('data-incipit-session-edits-undo', '');
+        undo.setAttribute('data-incipit-session-edits-icon-kind', 'undo-2');
         undo.title = file.live === true ? changeReviewText('liveHint') : changeReviewText('undoFile');
         undo.setAttribute('aria-label', changeReviewText('undoFile'));
-        undo.appendChild(sessionEditsSvgIcon('undo-2'));
         undo.disabled = busy || file.status === 'unavailable' || file.live === true;
         controls.appendChild(openBtn);
         controls.appendChild(undo);

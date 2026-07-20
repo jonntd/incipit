@@ -7,8 +7,11 @@
 
 /* ============================================================
    Design languages (do not mix inside one component)
-   - Transcript prose: reading face + narrow column
-   - Agent chrome: UI sans + tool cards / review / composer
+   - Transcript prose: Reading/Emphasis literary stack + narrow column
+   - Agent chrome (Trae + Augment):
+       · Trae  → semantic icon/status color (tool kind, success/warn/error)
+       · Augment → IDE panel density (UI sans, mono paths, soft +N/−M chips,
+                   hover file-row controls, composer Edits tab)
    See docs/ui-roadmap.md for P0/P1/P2 tokens and acceptance.
    ============================================================ */
 
@@ -5262,6 +5265,11 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   height: var(--incipit-icon-md);
   display: block;
 }
+/* Agent chrome action row — Augment/IDE density, never Reading serif. */
+.incipit-transcript-action-btn,
+.claude-user-copy-btn {
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+}
 .claude-user-copy-btn:hover {
   color: #F5F2E8;
   background: rgba(255,255,255,0.06);
@@ -5389,8 +5397,9 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   border-radius: 10px;
   box-shadow: 0 12px 36px rgba(0,0,0,0.55),
               0 2px 8px rgba(0,0,0,0.35);
-  font-family: var(--incipit-body-font) !important;
-  font-size: calc(var(--incipit-body-size, 13px) - 1px);
+  /* Agent chrome — Augment/IDE sans, never Reading/Emphasis. */
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
+  font-size: var(--incipit-type-ui, 12px);
   line-height: 1.45;
 }
 [data-incipit-action-dropdown-item] {
@@ -5399,13 +5408,13 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   gap: 8px;
   width: 100%;
   text-align: left;
-  min-height: 31px;
-  padding: 5px 8px;
+  min-height: 32px;
+  padding: 6px 8px;
   background: transparent;
   border: none;
   border-radius: 5px;
   color: inherit;
-  font-family: var(--incipit-emphasis-font) !important;
+  font-family: var(--incipit-ui-font, system-ui, sans-serif) !important;
   font-size: inherit;
   line-height: inherit;
   font-weight: 400;
@@ -5415,6 +5424,10 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-action-dropdown-item]:focus {
   background: #121212;
   outline: none;
+}
+[data-incipit-action-dropdown-item]:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -2px;
 }
 /* Disabled item: dim, kill hover, swallow clicks. Used for the
    rewind/fork dropdown rows during streaming, and for fork-with-rewind

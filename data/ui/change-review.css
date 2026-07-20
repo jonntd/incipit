@@ -511,3 +511,79 @@
   opacity: 0.7 !important;
   cursor: progress !important;
 }
+
+
+/* Session-edits icon nuclear override
+   Host webviews sometimes ship `svg, path { fill: currentColor !important }`.
+   Scope under the panel root so we win the cascade for our icons only. */
+[data-incipit-session-edits-panel] svg,
+[data-incipit-session-edits-panel] svg * {
+  fill: none !important;
+  stroke: currentColor !important;
+  color: inherit !important;
+  background: transparent !important;
+}
+[data-incipit-session-edits-panel] svg path,
+[data-incipit-session-edits-panel] path {
+  fill: none !important;
+  fill-opacity: 0 !important;
+  stroke: currentColor !important;
+  stroke-width: 2 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+  paint-order: stroke fill !important;
+}
+/* If SVG still fails, paint glyph via mask on the button itself. */
+[data-incipit-session-edits-open][data-incipit-session-edits-icon-kind="external-link"] > span,
+[data-incipit-session-edits-undo][data-incipit-session-edits-icon-kind="undo-2"] > span {
+  /* Prefer live SVG; mask is backup if child svg has zero visible stroke */
+  display: inline-flex !important;
+  width: 14px !important;
+  height: 14px !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+[data-incipit-session-edits-open],
+[data-incipit-session-edits-undo] {
+  /* Never paint a solid plate under the glyph */
+  background-color: transparent !important;
+  background-image: none !important;
+}
+[data-incipit-session-edits-open]:hover,
+[data-incipit-session-edits-undo]:hover {
+  background-color: color-mix(in srgb, var(--vscode-foreground, #fff) 12%, transparent) !important;
+  background-image: none !important;
+}
+
+
+/* Open / Undo glyphs via CSS mask — immune to host SVG path fill rules.
+   Inline data-URI SVGs use stroke only; mask paints with currentColor. */
+[data-incipit-session-edits-open][data-incipit-session-edits-icon-kind="external-link"]::before,
+[data-incipit-session-edits-undo][data-incipit-session-edits-icon-kind="undo-2"]::before {
+  content: "" !important;
+  display: block !important;
+  width: 14px !important;
+  height: 14px !important;
+  background-color: currentColor !important;
+  -webkit-mask-repeat: no-repeat !important;
+  mask-repeat: no-repeat !important;
+  -webkit-mask-position: center !important;
+  mask-position: center !important;
+  -webkit-mask-size: 14px 14px !important;
+  mask-size: 14px 14px !important;
+}
+/* Lucide external-link as mask (stroke paths, transparent fill). */
+[data-incipit-session-edits-open][data-incipit-session-edits-icon-kind="external-link"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") !important;
+}
+/* Lucide undo-2 as mask. */
+[data-incipit-session-edits-undo][data-incipit-session-edits-icon-kind="undo-2"]::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14 4 9l5-5'/%3E%3Cpath d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11'/%3E%3C/svg%3E") !important;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14 4 9l5-5'/%3E%3Cpath d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11'/%3E%3C/svg%3E") !important;
+}
+/* Hide any residual SVG children if present. */
+[data-incipit-session-edits-open] > span,
+[data-incipit-session-edits-undo] > span {
+  display: none !important;
+}

@@ -7,12 +7,24 @@
 
 ## 0. 设计立场（先定边界）
 
-| 层级 | 语言 | 用途 |
-|------|------|------|
-| **Transcript 正文** | 文学阅读（衬线可选 / 窄栏） | 助手散文、引用、标题 |
-| **Agent 工作面** | IDE 面板（UI 无衬线 / 全宽卡） | 工具卡、change-review、权限、composer chrome |
+| 层级 | 语言 | 参照 | 用途 |
+|------|------|------|------|
+| **Transcript 正文** | 文学阅读（衬线可选 / 窄栏） | 霞鹜文楷 + Plex Serif | 助手散文、引用、标题 |
+| **Agent 工作面** | IDE 面板（UI 无衬线 / 全宽卡） | **Trae**（语义色）+ **Augment**（密度与 Edits 面板） | 工具卡、change-review、Session Edits、权限、composer chrome |
 
-**规则**：两套语言可以并存，但**同一组件不得混用**。工具卡不出现 Reading 衬线标题；正文不出现彩虹状态点。
+### Trae × Augment 分工（Agent 工作面）
+
+| 来源 | 取什么 | 落到哪里 |
+|------|--------|----------|
+| **Trae** | 按语义着色：success/warn/error、工具 kind 图标色、codicon 语义、interactive accent | `--incipit-tool-icon-*`、`dotSuccess/Warning/Failure`、file-ref 图标 |
+| **Augment** | IDE 列表密度：UI sans、mono 路径、hover 文件行 Open/Undo、`+N/−M` soft chip、Edits 浮动面板 | `ui/change-review.css` Session Edits、transcript action 行、dropdown |
+
+**规则**：
+
+1. 两套语言可以并存，但**同一组件不得混用**。工具卡 / Edits / 权限不出现 Reading 衬线标题；正文不出现彩虹状态点。
+2. Agent chrome **一律** `--incipit-ui-font` / `--incipit-ui-mono`（跟随 VS Code），禁止 `Reading` / `Emphasis`。
+3. 状态色走 Trae 语义（绿/琥珀/红/slate），interactive 走 `--incipit-icon-accent`（紫罗兰）。
+4. Session Edits 行交互对齐 Augment：整行开 native diff；hover/focus 露出 Open + Undo；Keep 为唯一主 CTA。
 
 主 token 入口：
 
