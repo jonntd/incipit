@@ -361,11 +361,16 @@ function assertRuntimeSourceContracts() {
   assert(
     install.includes('incipit.claudeCode.insertAtMention') &&
       install.includes('incipit.claudeCode.hasVisibleWebview') &&
+      install.includes('__incipitAtMentionBag') &&
+      install.includes('buildInsertAtMentionFanout') &&
+      install.includes('buildInsertAtMentionCommand') &&
+      install.includes('allComms') &&
+      install.includes('panelTab.active') &&
       !install.includes("match.replace('async()=>{', 'async(__incipitMention)=>{')") &&
       !install.includes('AT_MENTION_COMMAND_LEGACY_PATCHED_PATTERN') &&
       companionSelectionReference.includes("const CLAUDE_INSERT_COMMAND = 'incipit.claudeCode.insertAtMention'") &&
       !companionSelectionReference.includes("const CLAUDE_INSERT_COMMAND = 'claude-vscode.insertAtMention'"),
-    'explicit editor references must use incipit private command bridge, not patch Claude Code official insertAtMention callback arguments',
+    'explicit editor references must use incipit private command bridge with multi-tab active-panel scoring, not patch Claude Code official insertAtMention callback arguments',
   );
   assert(
     install.includes("const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({") &&
@@ -1430,8 +1435,13 @@ function testFixture(root) {
   assertNoGracefulDegradation(`${root} extension.js`, extensionLines);
   assert(
     extensionPatched.includes('commands.registerCommand("incipit.claudeCode.insertAtMention"') &&
-      extensionPatched.includes('commands.registerCommand("incipit.claudeCode.hasVisibleWebview"'),
-    `${root}: extension must expose incipit private @ mention command bridge on known official hosts`,
+      extensionPatched.includes('commands.registerCommand("incipit.claudeCode.hasVisibleWebview"') &&
+      extensionPatched.includes('__incipitAtMentionBag') &&
+      extensionPatched.includes('type:"insert_at_mention"') &&
+      extensionPatched.includes('allComms') &&
+      /panelTab\.active/.test(extensionPatched) &&
+      /queueMicrotask/.test(extensionPatched),
+    `${root}: extension must expose incipit private @ mention command bridge and multi-tab active-panel scoring on known official hosts`,
   );
   extensionContracts.unshift(__test.buildHostRouteContract(
     { version: versionFromFixtureRoot(root) },

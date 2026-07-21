@@ -216,10 +216,38 @@ const MARKDOWN_CODE_COMPONENT_V1_PATCHED_PATTERN =
   /code:\(\{children:([A-Za-z_$][\w$]*),className:([A-Za-z_$][\w$]*)\}\)=>\{if\(\2\)\{let ([A-Za-z_$][\w$]*)=String\(\1\),__incipitHtml=window\.__INCIPIT_HIGHLIGHT_CODE_HTML__&&window\.__INCIPIT_HIGHLIGHT_CODE_HTML__\(\3,\2\);if\(__incipitHtml!==null&&__incipitHtml!==void 0\)return ([A-Za-z_$][\w$]*)\.default\.createElement\("code",\{className:\2\+" hljs",dangerouslySetInnerHTML:\{__html:__incipitHtml\}\}\);return \4\.default\.createElement\("code",\{className:\2\},\1\)\}let \3=String\(\1\);/g;
 const AT_MENTION_COMMAND_ANCHOR_PATTERN =
   /function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*),([A-Za-z_$][\w$]*)\)\{([\s\S]{0,900}?)(\2\.push\(([A-Za-z_$][\w$]*)\.commands\.registerCommand\("claude-vscode\.insertAtMention")/g;
+// v1: double-fire (80ms + 360ms). Kept so re-apply can upgrade.
+const AT_MENTION_COMMAND_V1_PATCHED_RE =
+  /commands\.registerCommand\("incipit\.claudeCode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(!([A-Za-z_$][\w$]*)\.hasVisibleWebview\(\)\)await ([A-Za-z_$][\w$]*)\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __incipitFire=\(\)=>(([A-Za-z_$][\w$]*)\.fire\(__incipitMention\));setTimeout\(__incipitFire,80\);setTimeout\(__incipitFire,360\);return!0\}return!1\}\)/;
+// v2: single fire + claim reset (still fans through shared EventEmitter).
+const AT_MENTION_COMMAND_V2_PATCHED_RE =
+  /commands\.registerCommand\("incipit\.claudeCode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(!([A-Za-z_$][\w$]*)\.hasVisibleWebview\(\)\)await ([A-Za-z_$][\w$]*)\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);try\{globalThis\.__incipitAtMentionClaimed=!1\}catch\(_\)\{\}(([A-Za-z_$][\w$]*)\.fire\(__incipitMention\));setTimeout\(\(\)=>\{try\{globalThis\.__incipitAtMentionClaimed=!1\}catch\(_\)\{\}\},0\);return!0\}return!1\}\)/;
+// v3: pick the best live Comm (active panel preferred) and send directly —
+// do NOT broadcast via EventEmitter.fire (that multi-tab fan-out is the bug).
 const AT_MENTION_COMMAND_PATCHED_RE =
-  /commands\.registerCommand\("incipit\.claudeCode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(![A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)await [A-Za-z_$][\w$]*\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __incipitFire=\(\)=>[A-Za-z_$][\w$]*\.fire\(__incipitMention\);setTimeout\(__incipitFire,80\);setTimeout\(__incipitFire,360\);return!0\}return!1\}\)/;
+  /commands\.registerCommand\("incipit\.claudeCode\.insertAtMention",async\(__incipitMention\)=>\{if\(typeof __incipitMention==="string"\)\{if\(![A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)await [A-Za-z_$][\w$]*\.commands\.executeCommand\("claude-vscode\.editor\.openLast"\);let __best=null,__bs=-1;try\{for\(let __c of [A-Za-z_$][\w$]*\.allComms\)\{let __sc=0;try\{if\(!\(__c\.isVisible&&__c\.isVisible\(\)\)\)continue;__sc\+=10\}catch\(_\)\{continue\}try\{if\(__c\.panelTab&&__c\.panelTab\.active\)__sc\+=100\}catch\(_\)\{\}try\{if\(__c\.isFullEditor\)__sc\+=1\}catch\(_\)\{\}if\(__sc>__bs\)\{__bs=__sc;__best=__c\}\}\}catch\(_\)\{\}if\(__best&&typeof __best\.send==="function"\)\{try\{__best\.send\(\{type:"request",channelId:"",requestId:"",request:\{type:"insert_at_mention",text:__incipitMention\}\}\);if\(__best\.panelTab\)__best\.panelTab\.reveal\(\)\}catch\(_\)\{[A-Za-z_$][\w$]*\.fire\(__incipitMention\)\}return!0\}[A-Za-z_$][\w$]*\.fire\(__incipitMention\);return!0\}return!1\}\)/;
 const CLAUDE_VISIBLE_COMMAND_PATCHED_RE =
   /commands\.registerCommand\("incipit\.claudeCode\.hasVisibleWebview",\(\)=>[A-Za-z_$][\w$]*\.hasVisibleWebview\(\)\)/;
+// Official Comm constructor fans the shared at-mention EventEmitter into EVERY
+// open Claude webview. Multi-tab then inserts the same @path into every session.
+// v3 fan-out: score candidates (active panel wins) and deliver once via microtask.
+const INSERT_AT_MENTION_FANOUT_PATTERN =
+  /([A-Za-z_$][\w$]*)\(\(([A-Za-z_$][\w$]*)\)=>\{if\(this\.send\(\{type:"request",channelId:"",requestId:"",request:\{type:"insert_at_mention",text:\2\}\}\),this\.panelTab\)this\.panelTab\.reveal\(\)\}\)/g;
+// Previous claim-only fan-out (v2) — upgrade in place.
+const INSERT_AT_MENTION_FANOUT_V2_PATTERN =
+  /([A-Za-z_$][\w$]*)\(\(([A-Za-z_$][\w$]*)\)=>\{if\(this\.isVisible&&this\.isVisible\(\)\)\{if\(globalThis\.__incipitAtMentionClaimed===true\)return;globalThis\.__incipitAtMentionClaimed=true;this\.send\(\{type:"request",channelId:"",requestId:"",request:\{type:"insert_at_mention",text:\2\}\}\);if\(this\.panelTab\)this\.panelTab\.reveal\(\)\}\}\)/g;
+const INSERT_AT_MENTION_FANOUT_PATCHED_RE =
+  /globalThis\.__incipitAtMentionBag/;
+function buildInsertAtMentionFanout(sub, textVar) {
+  // Score: active panel 100, merely visible 10, full-editor +1. Microtask
+  // flushes the winner once so simultaneous listeners cannot all send.
+  return `${sub}((${textVar})=>{if(!(this.isVisible&&this.isVisible()))return;let __sc=10;try{if(this.panelTab&&this.panelTab.active)__sc=100}catch(_){}try{if(this.isFullEditor)__sc+=1}catch(_){}let __bag=globalThis.__incipitAtMentionBag;if(!__bag||__bag.text!==${textVar}||__bag.done){__bag=globalThis.__incipitAtMentionBag={text:${textVar},score:-1,comm:null,done:!1};queueMicrotask(()=>{let w=globalThis.__incipitAtMentionBag;if(w&&w.comm&&!w.done){w.done=!0;try{w.comm.send({type:"request",channelId:"",requestId:"",request:{type:"insert_at_mention",text:w.text}});if(w.comm.panelTab)w.comm.panelTab.reveal()}catch(_){}}if(globalThis.__incipitAtMentionBag===w)globalThis.__incipitAtMentionBag=null})}if(__sc>__bag.score){__bag.score=__sc;__bag.comm=this}})`;
+}
+function buildInsertAtMentionCommand(webviews, vscodeApi, emitter) {
+  // Prefer direct send to the best Comm; fire is only a last-resort fallback
+  // for hosts that have not yet mounted any Comm into allComms.
+  return `${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __best=null,__bs=-1;try{for(let __c of ${webviews}.allComms){let __sc=0;try{if(!(__c.isVisible&&__c.isVisible()))continue;__sc+=10}catch(_){continue}try{if(__c.panelTab&&__c.panelTab.active)__sc+=100}catch(_){}try{if(__c.isFullEditor)__sc+=1}catch(_){}if(__sc>__bs){__bs=__sc;__best=__c}}}catch(_){}if(__best&&typeof __best.send==="function"){try{__best.send({type:"request",channelId:"",requestId:"",request:{type:"insert_at_mention",text:__incipitMention}});if(__best.panelTab)__best.panelTab.reveal()}catch(_){${emitter}.fire(__incipitMention)}return!0}${emitter}.fire(__incipitMention);return!0}return!1})`;
+}
 const IMPLICIT_SELECTION_SEND_BRANCH_PATTERN =
   /if\((?!\!1&&)([^;{}]*\bthis\.lastSentSelection\b[^;{}]*\bthis\.selection\.value\b[^;{}]*)\)([A-Za-z_$][\w$]*)=this\.selection\.value,this\.lastSentSelection=\2;/g;
 const IMPLICIT_SELECTION_SEND_PATCHED_BRANCH_RE =
@@ -2308,18 +2336,68 @@ function patchMarkdownCodeComponent(content) {
 }
 
 function patchAtMentionCommand(content) {
-  const hasInsert = AT_MENTION_COMMAND_PATCHED_RE.test(content);
-  const hasVisible = CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(content);
-  if (hasInsert && hasVisible) {
-    return [content, `${padLabel('@引用命令桥')}: 已存在`];
+  let updated = content;
+  const notes = [];
+
+  // 1) Upgrade fan-out: official → v3, or v2 claim-only → v3 scored bag.
+  if (!INSERT_AT_MENTION_FANOUT_PATCHED_RE.test(updated)) {
+    const v2 = updated.match(INSERT_AT_MENTION_FANOUT_V2_PATTERN) || [];
+    const official = updated.match(INSERT_AT_MENTION_FANOUT_PATTERN) || [];
+    if (v2.length === 1) {
+      updated = updated.replace(
+        INSERT_AT_MENTION_FANOUT_V2_PATTERN,
+        (_m, sub, textVar) => buildInsertAtMentionFanout(sub, textVar),
+      );
+      notes.push('fanout-v2→v3');
+    } else if (official.length === 1) {
+      updated = updated.replace(
+        INSERT_AT_MENTION_FANOUT_PATTERN,
+        (_m, sub, textVar) => buildInsertAtMentionFanout(sub, textVar),
+      );
+      notes.push('fanout');
+    } else if (v2.length === 0 && official.length === 0) {
+      notes.push('fanout-missing');
+    } else {
+      notes.push('fanout-ambiguous');
+    }
   }
 
-  const matches = content.match(AT_MENTION_COMMAND_ANCHOR_PATTERN) || [];
-  if (matches.length !== 1) {
-    return [content, `${padLabel('@引用命令桥')}: 降级 (未找到命令 setup 锚点; companion 引用不可用)`];
+  // 2) Upgrade private command: v1/v2 → v3 (direct best-Comm send).
+  if (!AT_MENTION_COMMAND_PATCHED_RE.test(updated)) {
+    if (AT_MENTION_COMMAND_V2_PATCHED_RE.test(updated)) {
+      updated = updated.replace(
+        AT_MENTION_COMMAND_V2_PATCHED_RE,
+        (_m, webviews, vscodeApi, _fireCall, emitter) =>
+          `commands.registerCommand("incipit.claudeCode.insertAtMention",async(__incipitMention)=>{if(typeof __incipitMention==="string"){if(!${buildInsertAtMentionCommand(webviews, vscodeApi, emitter)}`,
+      );
+      notes.push('cmd-v2→v3');
+    } else if (AT_MENTION_COMMAND_V1_PATCHED_RE.test(updated)) {
+      updated = updated.replace(
+        AT_MENTION_COMMAND_V1_PATCHED_RE,
+        (_m, webviews, vscodeApi, _fireCall, emitter) =>
+          `commands.registerCommand("incipit.claudeCode.insertAtMention",async(__incipitMention)=>{if(typeof __incipitMention==="string"){if(!${buildInsertAtMentionCommand(webviews, vscodeApi, emitter)}`,
+      );
+      notes.push('cmd-v1→v3');
+    }
   }
-  return [
-    content.replace(AT_MENTION_COMMAND_ANCHOR_PATTERN, (
+
+  const hasInsert = AT_MENTION_COMMAND_PATCHED_RE.test(updated);
+  const hasVisible = CLAUDE_VISIBLE_COMMAND_PATCHED_RE.test(updated);
+  const hasFanout = INSERT_AT_MENTION_FANOUT_PATCHED_RE.test(updated);
+
+  if (hasInsert && hasVisible && hasFanout) {
+    const detail = notes.length ? ` (${notes.join('+')})` : '';
+    return [updated, `${padLabel('@引用命令桥')}: 已存在${detail}`];
+  }
+
+  // 3) Fresh insert of the private command bridge next to official insertAtMention.
+  if (!hasInsert || !hasVisible) {
+    const matches = updated.match(AT_MENTION_COMMAND_ANCHOR_PATTERN) || [];
+    if (matches.length !== 1) {
+      const fanoutNote = hasFanout ? '' : (notes.includes('fanout-missing') ? '; multi-tab fanout 未打补丁' : '');
+      return [updated, `${padLabel('@引用命令桥')}: 降级 (未找到命令 setup 锚点; companion 引用不可用${fanoutNote})`];
+    }
+    updated = updated.replace(AT_MENTION_COMMAND_ANCHOR_PATTERN, (
       _match,
       functionName,
       subscriptions,
@@ -2332,7 +2410,7 @@ function patchAtMentionCommand(content) {
       const registrations = [];
       if (!hasInsert) {
         registrations.push(
-          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.insertAtMention",async(__incipitMention)=>{if(typeof __incipitMention==="string"){if(!${webviews}.hasVisibleWebview())await ${vscodeApi}.commands.executeCommand("claude-vscode.editor.openLast");let __incipitFire=()=>${emitter}.fire(__incipitMention);setTimeout(__incipitFire,80);setTimeout(__incipitFire,360);return!0}return!1})),`,
+          `${subscriptions}.push(${vscodeApi}.commands.registerCommand("incipit.claudeCode.insertAtMention",async(__incipitMention)=>{if(typeof __incipitMention==="string"){if(!${buildInsertAtMentionCommand(webviews, vscodeApi, emitter)}),`,
         );
       }
       if (!hasVisible) {
@@ -2341,10 +2419,19 @@ function patchAtMentionCommand(content) {
         );
       }
       return `function ${functionName}(${subscriptions},${emitter},${webviews}){${prefix}${registrations.join('')}${commandStart}`;
-    }
-    ),
-    `${padLabel('@引用命令桥')}: 已写入`,
-  ];
+    });
+    notes.push('cmd');
+  }
+
+  const okFanout = INSERT_AT_MENTION_FANOUT_PATCHED_RE.test(updated);
+  const okInsert = AT_MENTION_COMMAND_PATCHED_RE.test(updated);
+  if (!okFanout && notes.includes('fanout-missing')) {
+    return [updated, `${padLabel('@引用命令桥')}: 部分 (命令已写, multi-tab 仍可能广播 — host 形状变了)`];
+  }
+  if (!okInsert) {
+    return [updated, `${padLabel('@引用命令桥')}: 降级 (命令写入失败)`];
+  }
+  return [updated, `${padLabel('@引用命令桥')}: 已写入 (${notes.join('+') || 'ok'})`];
 }
 
 function patchDisableImplicitSelectionSend(content) {
