@@ -1,8 +1,8 @@
 {
-  "name": "incipit.claude-folder-reference",
+  "name": "claude-folder-reference",
   "displayName": "Incipit: Claude Folder Reference",
   "description": "Add a file or folder as an @reference in Claude Code from the explorer context menu.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "incipit",
   "license": "AGPL-3.0-or-later",
   "engines": {
@@ -34,8 +34,8 @@
       "explorer/context": [
         {
           "command": "incipitClaudeFolderReference.add",
-          "when": "explorerResourceIsFolder || explorerResourceIsFile",
-          "group": "inc-ipit@1"
+          "when": "resourceScheme == file || resourceScheme == vscode-remote || resourceScheme == vscode-vfs",
+          "group": "navigation@90"
         }
       ]
     },
@@ -45,7 +45,7 @@
         "incipitClaudeFolderReference.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show the 'Add to Claude Code' action on explorer context menus."
+          "description": "Show the 'Add to Claude Code' action on explorer context menus for files and folders."
         }
       }
     }

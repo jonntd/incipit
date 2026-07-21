@@ -52,6 +52,17 @@ function ok(name) {
     'claude-selection-reference',
     'package.json',
   ));
+  assert.strictEqual(
+    pkg.name,
+    'claude-selection-reference',
+    'package name is short form; full id is publisher.name',
+  );
+  assert.strictEqual(pkg.publisher, 'incipit');
+  assert.strictEqual(
+    require(path.join(ROOT, 'src', 'install.js')).companionFullId(pkg),
+    'incipit.claude-selection-reference',
+    'installer resolves full id as publisher.name without double prefix',
+  );
   const cmds = pkg.contributes.commands.map((c) => c.command);
   assert.ok(cmds.includes('incipitClaudeReference.referenceActiveSelection'));
   assert.ok(cmds.includes('incipitClaudeReference.referenceActiveFile'));

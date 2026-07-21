@@ -1634,13 +1634,19 @@ function sessionEditHarness(dir) {
 
 
 {
-  // Session Edits: floating body panel (no transcript overlay — avoids scroll jumps).
+  // Session Edits: body-mounted floating panel (no transcript overlay).
+  // Chip prefers chat tab header (left of Session history); body float is fallback.
   const legacy = fs.readFileSync(path.join(__dirname, '..', 'data', 'enhance_legacy.js'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '..', 'data', 'ui', 'change-review.css'), 'utf8');
   assert.ok(legacy.includes("document.body.appendChild(panel)"), 'body-mounted panel');
   assert.ok(legacy.includes('scheduleSessionEditsChrome'), 'debounced chrome');
   assert.ok(legacy.includes('updateSessionEditsToggleChip'), 'cheap chip update');
-  assert.ok(legacy.includes("data-float"), 'float chip when rail hidden');
+  assert.ok(legacy.includes('sessionEditsHeaderParts'), 'header mount helper');
+  assert.ok(legacy.includes("mode: 'header'"), 'header mount preferred');
+  assert.ok(legacy.includes("mode: 'float'"), 'float chip fallback when header missing');
+  assert.ok(legacy.includes('data-float'), 'float attr for fallback styling');
+  assert.ok(legacy.includes('sessionEditsPlaceToggle'), 'header place helper');
+  assert.ok(legacy.includes('Session history'), 'anchors left of Session history');
   assert.ok(legacy.includes('confirmSessionEditsDiscard'), 'styled discard confirm');
   assert.ok(legacy.includes('setSessionEditsButtonBusy'), 'busy button state');
   assert.ok(!legacy.includes("window.confirm(changeReviewText('discardAllConfirm'))"), 'no window.confirm for discard');
@@ -1649,6 +1655,8 @@ function sessionEditHarness(dir) {
   assert.ok(legacy.includes('data-incipit-session-edits-keep-all'), 'keep all');
   assert.ok(legacy.includes('data-incipit-session-edits-discard-all'), 'discard all');
   assert.ok(css.includes('position: fixed'), 'floating fixed panel');
+  assert.ok(css.includes('[data-incipit-session-edits-toggle][data-float="1"]'), 'float fallback style');
+  assert.ok(!css.includes('bottom: 72px'), 'float fallback not over composer');
   assert.ok(!css.includes('data-incipit-session-edits-open="1"'), 'no transcript hide overlay');
   ok('session edits floating panel contracts');
 }

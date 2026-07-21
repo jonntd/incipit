@@ -17,7 +17,7 @@ code --extensionDevelopmentPath="$PWD\companion\claude-selection-reference"
 Or copy this folder into your VS Code extensions directory and reload VS Code:
 
 ```powershell
-$dst = "$env:USERPROFILE\.vscode\extensions\incipit.claude-selection-reference-0.0.1"
+$dst = "$env:USERPROFILE\.vscode\extensions\incipit.claude-selection-reference-0.0.3"
 New-Item -ItemType Directory -Force $dst | Out-Null
 Copy-Item companion\claude-selection-reference\* $dst -Recurse -Force
 ```
@@ -26,7 +26,8 @@ Select text in an editor, then click `◆ Selection` or `▣ File`.
 
 ## Notes
 
+- Package uses VS Code convention: `publisher: "incipit"` + short `name: "claude-selection-reference"` → full id `incipit.claude-selection-reference`. Older installs used a bare registry id or a double-prefixed ghost (`incipit.incipit.*`); `incipit apply` / restore prune those.
 - It does not write Claude Code transcripts.
 - It does not call `session.send`.
 - It reuses the incipit-patched Claude command bridge (`incipit.claudeCode.insertAtMention`), so it does not depend on Claude Code's own `insertAtMention` callback accepting arguments.
-- The experimental overlay is installed by the incipit CLI, not by this companion extension.
+- The experimental overlay is installed by the incipit CLI, not by this companion extension. Overlay host-identity written by this extension only *locates* an official VS Code Workbench — reshaped forks (Trae / Antigravity / Cursor / …) are never patched via that path.

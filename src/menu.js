@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const {
   findLatestClaudeCodeExtension,
   installClaudeCodeVSCodeEnhance,
+  removeCompanions,
 } = require('./install');
 const {
   BACKUP_ROOT,
@@ -673,6 +674,19 @@ async function handleRestore({
     if (exc.stack) console.log(exc.stack);
     return 1;
   }
+  // Side-loaded companions live outside the Claude Code restore point. Always
+  // prune them on restore so Trae/Antigravity/etc. do not keep incipit
+  // folders / extensions.json entries after "restore official".
+  let companionCleanup;
+  try {
+    companionCleanup = removeCompanions(target.extensionDir);
+  } catch (exc) {
+    companionCleanup = {
+      removed: 0,
+      registryChanged: false,
+      statusLines: [`companion 清理: 降级 (${exc.message || exc})`],
+    };
+  }
   let workbenchResult;
   try {
     workbenchResult = restoreWorkbenchOverlayForTarget(target);
@@ -683,6 +697,9 @@ async function handleRestore({
   }
   if (result.alreadyOfficial) {
     console.log(color(t('restore.already_official'), Ansi.YELLOW));
+    if (companionCleanup && companionCleanup.statusLines) {
+      for (const line of companionCleanup.statusLines) console.log(color(line, Ansi.GREY));
+    }
     if (workbenchResult && workbenchResult.status) {
       const statusLine = t(`restore.workbench_${workbenchResult.status.replace(/-/g, '_')}`);
       console.log(color(statusLine, workbenchResult.status === 'restored' ? Ansi.GREEN : Ansi.YELLOW));
@@ -697,6 +714,9 @@ async function handleRestore({
   }
   console.log();
   console.log(t('restore.restore_point_dir', { dir: result.restorePointDir }));
+  if (companionCleanup && companionCleanup.statusLines) {
+    for (const line of companionCleanup.statusLines) console.log(line);
+  }
   if (workbenchResult && workbenchResult.restorePointDir) {
     console.log(t('restore.workbench_restore_point_dir', { dir: workbenchResult.restorePointDir }));
   }

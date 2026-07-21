@@ -134,6 +134,77 @@ function mkAppRoot(parent, product) {
   ok('preflight: enabled+unconfirmable → degraded (no throw); disabled → off (#5 user layer)');
 })();
 
+// ---- host-identity must not open Workbench patching on reshaped forks ----
+
+(function hostIdentityDoesNotBypassForkGate() {
+  const savedEnv = process.env.INCIPIT_WORKBENCH_APP_ROOT;
+  delete process.env.INCIPIT_WORKBENCH_APP_ROOT;
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'incipit-hi-'));
+  const target = mkExtTarget(dir, '.antigravity-ide');
+  const forkAppRoot = mkAppRoot(dir, {
+    applicationName: 'antigravity',
+    nameLong: 'Antigravity IDE',
+    version: '1.107.0',
+  });
+
+  // Seed a companion-written host identity that points the Claude extension
+  // path at this fork target but names a reshaped product app root. Before
+  // the safety fix this used allowAnyWorkbench:true and would resolve ok.
+  const hostKey = wb.hostKeyForAppRoot(forkAppRoot);
+  const identityRoot = path.join(os.homedir(), '.incipit', 'editor-hosts-v1');
+  fs.mkdirSync(identityRoot, { recursive: true });
+  const identityPath = path.join(identityRoot, `${hostKey}-test-fork-gate.json`);
+  fs.writeFileSync(identityPath, JSON.stringify({
+    schemaVersion: 1,
+    hostKey,
+    appRoot: forkAppRoot,
+    claudeExtensionPath: target.extensionDir,
+  }));
+
+  try {
+    let res, threw = false;
+    try { res = wb.preflightWorkbenchOverlayForTarget(target, true); }
+    catch (_) { threw = true; }
+    assert.strictEqual(threw, false, 'preflight must not throw for fork + host-identity');
+    assert.strictEqual(res.status, 'degraded', 'fork host-identity must degrade, not resolve');
+    assert.strictEqual(res.enabled, false);
+    assert.strictEqual(res.reason, 'only-official-vscode',
+      'reshaped fork via host-identity → only-official-vscode (no allowAnyWorkbench bypass)');
+
+    // Official product identity still resolves via host-identity (location only).
+    const officialRoot = mkAppRoot(dir, {
+      applicationName: 'code',
+      nameLong: 'Visual Studio Code',
+      version: '1.99.0',
+    });
+    const officialTarget = mkExtTarget(dir, '.vscode');
+    const officialKey = wb.hostKeyForAppRoot(officialRoot);
+    const officialIdentity = path.join(identityRoot, `${officialKey}-test-official.json`);
+    fs.writeFileSync(officialIdentity, JSON.stringify({
+      schemaVersion: 1,
+      hostKey: officialKey,
+      appRoot: officialRoot,
+      claudeExtensionPath: officialTarget.extensionDir,
+    }));
+    try {
+      const resolved = wb.resolveWorkbenchTarget(officialTarget);
+      assert.strictEqual(resolved.ok, true, 'host-identity may still locate official VS Code');
+      assert.ok(
+        resolved.workbenchPath.includes(path.join('out', 'vs', 'workbench', 'workbench.desktop.main.js')),
+        'official host-identity resolves workbench path',
+      );
+    } finally {
+      try { fs.unlinkSync(officialIdentity); } catch (_) {}
+    }
+  } finally {
+    try { fs.unlinkSync(identityPath); } catch (_) {}
+    if (savedEnv === undefined) delete process.env.INCIPIT_WORKBENCH_APP_ROOT;
+    else process.env.INCIPIT_WORKBENCH_APP_ROOT = savedEnv;
+  }
+  ok('host-identity: forks degrade; official product still resolves');
+})();
+
 // ---- #6: Windows folder picker guards UseDescriptionForTitle ----
 
 (function folderDialogPropertyGuarded() {

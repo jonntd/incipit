@@ -233,6 +233,33 @@
 [data-incipit-markdown-root] ::selection {
   background: rgba(191,93,58,0.22) !important;
 }
+/* User bubble / inline-edit selection: dark ink on terra fill so
+   selected text stays readable on both paper and the blue bubble. */
+[data-incipit-user-bubble] ::selection,
+[data-incipit-user-bubble] *::selection,
+[data-incipit-user-content] ::selection,
+[data-incipit-user-content] *::selection,
+.incipit-inline-edit-textarea::selection,
+[data-incipit-inline-edit-shell] ::selection,
+[data-incipit-inline-edit-shell] *::selection,
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] ::selection,
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] *::selection {
+  background: rgba(191, 93, 58, 0.50) !important;
+  color: #0d0d0d !important;
+  -webkit-text-fill-color: #0d0d0d !important;
+}
+/* User edit-mode draft card on paper: ivory surface + deep ink + terra ring. */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-bubble] {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #0d0d0d !important;
+  box-shadow: inset 0 0 0 1px rgba(191, 93, 58, 0.45) !important;
+}
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] .incipit-inline-edit-textarea {
+  color: #0d0d0d !important;
+  -webkit-text-fill-color: #0d0d0d !important;
+  caret-color: #bf5d3a !important;
+}
 
 /* ---------- Links ---------- */
 [data-incipit-message] a,
@@ -2002,6 +2029,11 @@ fieldset[class*="inputContainer_"][data-incipit-file-drag-hint="over"]::after,
 }
 .incipit-inline-edit-textarea {
   caret-color: #bf5d3a !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 1 !important;
 }
 /* Save button — primary commit, deep terra on paper. */
 .incipit-transcript-action-save {

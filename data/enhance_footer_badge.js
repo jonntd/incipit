@@ -1385,7 +1385,13 @@ function setupCacheBadge() {
 // A conversation-scoped, GitHub-style edit activity surface. The compact
 // header chip stays tiny beside the session title; the heavier 371-cell
 // heatmap is rendered only when the user opens the popup.
+//
+// Disabled in the header (2026-07): the Session Edits toggle already shows
+// current-session +N/−M next to it, so two green/red count chips read as a
+// duplicate. Re-enable by removing the early return below if the heatmap
+// entry is wanted again (ideally under a Configure flag, not always-on).
 function setupEditActivityHeader() {
+  return;
   if (!CFG.sessionUsage) return;
 
   var CHIP_CLASS = 'cceEditChip';

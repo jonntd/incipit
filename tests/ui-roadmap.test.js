@@ -164,6 +164,12 @@ function ok(name) {
   assert.ok(legacy.includes('function interruptActiveClaudeTurn'));
   assert.ok(legacy.includes("CONTINUE_SEND_TEXT = '继续'"));
   assert.ok(legacy.includes('interruptClaude'));
+  // Prefer host session.interrupt() (what the Stop button calls) before the
+  // fiber-located connection fallback — forks often miss locateClaudeConnection.
+  assert.ok(
+    legacy.includes('session.interrupt') || legacy.includes('typeof session.interrupt'),
+    'continue interrupt must prefer session.interrupt()',
+  );
   assert.ok(legacy.includes('rawSend.apply') && legacy.includes('CONTINUE_SEND_TEXT'));
   assert.ok(legacy.includes('data-incipit-continue-btn'));
   assert.ok(legacy.includes('setupContinueButton()'));
@@ -180,6 +186,14 @@ function ok(name) {
   assert.ok(
     cont.includes('aborting send') || cont.includes('did not quiesce'),
     'continue must abort on quiesce timeout instead of force-sending',
+  );
+  assert.ok(
+    cont.includes('showTranscriptToast'),
+    'continue must surface a toast when stop fails (silent abort felt broken)',
+  );
+  assert.ok(
+    cont.includes('interruptActiveClaudeTurn'),
+    'continue must interrupt before waiting / sending',
   );
   assert.ok(theme.includes('[data-incipit-continue-btn]'));
   assert.ok(theme.includes('[data-incipit-continue-btn]::before'));

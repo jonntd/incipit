@@ -3558,9 +3558,9 @@ import {
     }
     composerRailEl.toggleAttribute('data-incipit-composer-rail-hidden',
       !deferredComposerIsVisible(mount.input) || askPanelIsActive());
-    // Do NOT force-reparent Session Edits onto a hidden rail — that used to
-    // swallow the chip whenever Ask panel / deferred visibility hid the rail.
-    // Placement is owned by ensureSessionEditsToggle() (rail if visible, else body).
+    // Session Edits chip no longer rides the composer rail (rail hide/clip made
+    // it vanish). Placement is owned by ensureSessionEditsToggle() — chat tab
+    // header preferred, body float only as a temporary fallback.
     return { rail: composerRailEl, input: mount.input };
   }
 
@@ -4625,12 +4625,71 @@ import {
     };
   }
 
+  function sessionEditsHeaderParts() {
+    // Same anchor as cceEditChip (setupEditActivityHeader): the chat-panel
+    // title bar that contains titleGroup. CSS-module hashes change; the
+    // titleGroup child is the stable fingerprint.
+    const header = document.querySelector('[class^="header_"]:has([class*="titleGroup"])');
+    if (!header) return null;
+    const titleGroup = header.querySelector('[class*="titleGroup"]');
+    if (!titleGroup) return null;
+    const spacer = header.querySelector('[class*="headerSpacer"]');
+    return { header: header, titleGroup: titleGroup, spacer: spacer };
+  }
+
+  function sessionEditsSessionHistoryButton(header) {
+    if (!header || !header.children) return null;
+    for (let i = 0; i < header.children.length; i++) {
+      const child = header.children[i];
+      if (!child || child.tagName !== 'BUTTON') continue;
+      const label = String(child.getAttribute('aria-label') || '').toLowerCase();
+      const title = String(child.getAttribute('title') || '').toLowerCase();
+      if (label === 'session history' || title === 'session history') return child;
+    }
+    return null;
+  }
+
   function sessionEditsBarMount() {
-    // Always body-float the Edits chip. Riding the composer rail was unreliable:
-    // rail gets `data-incipit-composer-rail-hidden` / overflow clipping / remounts
-    // and the chip disappears even when sessionEdits has pending files.
+    // Prefer the chat tab header (left of Session history) so the chip never
+    // covers composer Bypass / send. Body float is only a temporary fallback
+    // while the header is missing (initial load / React remount gap).
+    // Do NOT ride the composer rail — it gets
+    // `data-incipit-composer-rail-hidden` / overflow clipping and the chip
+    // disappears even when sessionEdits has pending files.
+    const parts = sessionEditsHeaderParts();
+    if (parts) return { host: parts.header, mode: 'header', parts: parts };
     if (document.body) return { host: document.body, mode: 'float' };
     return null;
+  }
+
+  function sessionEditsPlaceToggle(toggle, mount) {
+    if (!toggle || !mount || !mount.host) return;
+    if (mount.mode === 'header') {
+      try { toggle.removeAttribute('data-float'); } catch (_) {}
+      const header = mount.host;
+      // Cluster with session actions: immediately left of Session history.
+      // cceEditChip also inserts before history; last ensure wins the slot, both
+      // stay in the header action group either way.
+      let before = sessionEditsSessionHistoryButton(header);
+      if (!before && mount.parts && mount.parts.spacer && mount.parts.spacer.parentNode === header) {
+        before = mount.parts.spacer;
+      }
+      if (!before && mount.parts && mount.parts.titleGroup) {
+        before = mount.parts.titleGroup.nextSibling;
+      }
+      if (before && before !== toggle && before.parentNode === header) {
+        if (toggle.nextElementSibling !== before || toggle.parentElement !== header) {
+          header.insertBefore(toggle, before);
+        }
+      } else if (toggle.parentElement !== header) {
+        try { header.appendChild(toggle); } catch (_) {}
+      }
+      return;
+    }
+    try { toggle.setAttribute('data-float', '1'); } catch (_) {}
+    if (toggle.parentElement !== mount.host) {
+      try { mount.host.appendChild(toggle); } catch (_) {}
+    }
   }
 
   function sessionEditsMessagesMount() {
@@ -4872,12 +4931,9 @@ import {
       });
       sessionEditsToggleEl = btn;
     }
-    // Re-parent without destroying listeners when rail remounts or we fall back
-    // to body float (rail hidden by ask-panel / deferred visibility).
-    if (sessionEditsToggleEl.parentElement !== mount.host) {
-      try { mount.host.appendChild(sessionEditsToggleEl); } catch (_) {}
-    }
-    sessionEditsToggleEl.setAttribute('data-float', '1');
+    // Re-parent without destroying listeners when header remounts or we fall
+    // back to body float (header not ready yet).
+    sessionEditsPlaceToggle(sessionEditsToggleEl, mount);
     return sessionEditsToggleEl;
   }
 
@@ -4987,21 +5043,30 @@ import {
     if (!rect || rect.width <= 0) {
       panel.style.left = 'auto';
       panel.style.right = '12px';
-      panel.style.bottom = '72px';
-      panel.style.top = 'auto';
+      // Prefer top-right when the chip is not measurable (header load race).
+      panel.style.top = '48px';
+      panel.style.bottom = 'auto';
       return;
     }
     let left = Math.round(rect.right - width);
     left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
+    const spaceBelow = window.innerHeight - rect.bottom - gap;
     const spaceAbove = rect.top - gap;
-    if (spaceAbove >= 160) {
+    // Header chip: open downward (primary). Float / bottom anchors: open upward
+    // when there is more room above (composer-adjacent fallback).
+    const preferBelow = !toggle || toggle.getAttribute('data-float') !== '1' || spaceBelow >= spaceAbove;
+    if (preferBelow && spaceBelow >= 160) {
+      panel.style.bottom = 'auto';
+      panel.style.top = Math.round(rect.bottom + gap) + 'px';
+      panel.style.maxHeight = Math.min(maxH, Math.max(160, spaceBelow - 4)) + 'px';
+    } else if (spaceAbove >= 160) {
       panel.style.top = 'auto';
       panel.style.bottom = Math.round(window.innerHeight - rect.top + gap) + 'px';
       panel.style.maxHeight = Math.min(maxH, Math.max(160, spaceAbove - 4)) + 'px';
     } else {
       panel.style.bottom = 'auto';
       panel.style.top = Math.round(rect.bottom + gap) + 'px';
-      panel.style.maxHeight = Math.min(maxH, Math.max(160, window.innerHeight - rect.bottom - gap - 4)) + 'px';
+      panel.style.maxHeight = Math.min(maxH, Math.max(160, spaceBelow - 4)) + 'px';
     }
     panel.style.left = left + 'px';
     panel.style.right = 'auto';
@@ -5089,16 +5154,20 @@ import {
 
   function updateSessionEditsToggleChip(toggle, totals, hasPending, staleCount) {
     if (!toggle) return;
-    // Always keep float styling — chip must stay visible outside host chrome.
-    try { toggle.setAttribute('data-float', '1'); } catch (_) {}
     const shouldShow = !!(hasPending || sessionEditsPanelOpen);
-    const sig = sessionEditsChipSignature(totals, hasPending, staleCount);
+    const mount = sessionEditsBarMount();
+    const isFloat = !!(mount && mount.mode === 'float');
+    // Keep placement/mode in sync even when the chip signature is unchanged
+    // (header may appear after a temporary body-float fallback).
+    if (shouldShow && mount) sessionEditsPlaceToggle(toggle, mount);
+    else if (isFloat) {
+      try { toggle.setAttribute('data-float', '1'); } catch (_) {}
+    } else {
+      try { toggle.removeAttribute('data-float'); } catch (_) {}
+    }
+    const sig = sessionEditsChipSignature(totals, hasPending, staleCount) + '|' + (isFloat ? 'f' : 'h');
     if (toggle.getAttribute('data-incipit-chip-sig') === sig) {
       toggle.hidden = !shouldShow;
-      // Ensure still in body if React/host moved it.
-      if (shouldShow && document.body && toggle.parentElement !== document.body) {
-        try { document.body.appendChild(toggle); } catch (_) {}
-      }
       return;
     }
     toggle.setAttribute('data-incipit-chip-sig', sig);
@@ -5135,9 +5204,6 @@ import {
     toggle.setAttribute('data-stale', staleCount > 0 ? '1' : '0');
     toggle.setAttribute('data-live', totals.live > 0 ? '1' : '0');
     toggle.setAttribute('aria-expanded', sessionEditsPanelOpen ? 'true' : 'false');
-    if (shouldShow && document.body && toggle.parentElement !== document.body) {
-      try { document.body.appendChild(toggle); } catch (_) {}
-    }
   }
 
   function renderSessionEditsChrome() {
@@ -5637,6 +5703,7 @@ import {
   }
 
   // Keep the panel anchored when the composer reflows; Esc / outside click closes it.
+  // Also re-home the chip into the chat header when React remounts it.
   if (!window.__incipitSessionEditsLayoutBound) {
     window.__incipitSessionEditsLayoutBound = true;
     const relayout = () => {
@@ -5645,6 +5712,65 @@ import {
     };
     window.addEventListener('resize', relayout, { passive: true });
     window.addEventListener('scroll', relayout, { passive: true, capture: true });
+    // Header remount (session switch / React tree rebuild): reinsert the chip
+    // without waiting for the next host payload. Coalesce to one paint/frame.
+    let headerEnsureScheduled = false;
+    const scheduleHeaderEnsure = () => {
+      if (headerEnsureScheduled) return;
+      headerEnsureScheduled = true;
+      requestAnimationFrame(() => {
+        headerEnsureScheduled = false;
+        // Only re-home when there is something to show, or the panel is open.
+        if (!(sessionEditsPanelOpen || sessionEditsFiles().length > 0)) return;
+        const toggle = ensureSessionEditsToggle();
+        if (toggle) {
+          const totals = sessionEditsTotals();
+          const files = sessionEditsFiles();
+          const staleCount = files.filter(f => f && f.status === 'stale').length;
+          updateSessionEditsToggleChip(toggle, totals, files.length > 0, staleCount);
+        }
+        if (sessionEditsPanelOpen) positionSessionEditsPanel(sessionEditsPanelEl, sessionEditsToggleEl);
+      });
+    };
+    const headerMutationTouches = (m) => {
+      if (!m || !m.addedNodes) return false;
+      for (let i = 0; i < m.addedNodes.length; i++) {
+        const n = m.addedNodes[i];
+        if (!n || n.nodeType !== 1) continue;
+        // Ignore our own chip / panel reinsertions.
+        if (n === sessionEditsToggleEl || n === sessionEditsPanelEl) continue;
+        if (n.getAttribute && (
+          n.hasAttribute('data-incipit-session-edits-toggle') ||
+          n.hasAttribute('data-incipit-session-edits-panel')
+        )) continue;
+        const cls = typeof n.className === 'string'
+          ? n.className
+          : String(n.getAttribute && n.getAttribute('class') || '');
+        if (n.tagName === 'BUTTON') {
+          const label = String(n.getAttribute('aria-label') || '').toLowerCase();
+          const title = String(n.getAttribute('title') || '').toLowerCase();
+          if (label === 'session history' || title === 'session history') return true;
+        }
+        if (cls.indexOf('header_') !== -1 || cls.indexOf('titleGroup') !== -1) return true;
+        try {
+          if (n.querySelector && n.querySelector(
+            '[class^="header_"], [class*="titleGroup"], button[aria-label="Session history"], button[title="Session history"]'
+          )) return true;
+        } catch (_) {}
+      }
+      return false;
+    };
+    try {
+      const mo = new MutationObserver(mutations => {
+        for (let i = 0; i < mutations.length; i++) {
+          if (headerMutationTouches(mutations[i])) {
+            scheduleHeaderEnsure();
+            return;
+          }
+        }
+      });
+      if (document.body) mo.observe(document.body, { childList: true, subtree: true });
+    } catch (_) {}
     document.addEventListener('keydown', evt => {
       if (!sessionEditsPanelOpen) return;
       // Prefer letting an open review modal consume keys first.
@@ -6726,28 +6852,86 @@ import {
       document.querySelector('[class*="sendButton"]');
   }
 
-  function interruptActiveClaudeTurn() {
+  // Tear down the live turn the same way the host Stop control does.
+  // Order matters:
+  //   1. session.interrupt() — official path:
+  //        connection.value.interruptClaude(claudeChannelId)
+  //      This is what the host send button calls when busy. Fiber-based
+  //      locateClaudeConnection() often misses on forks / after long sessions;
+  //      session.connection is already wired on the SessionState we hold.
+  //   2. session.connection.value.interruptClaude(channelId) — same wire,
+  //      in case interrupt() is renamed or non-callable in a future bundle.
+  //   3. locateClaudeConnection() fallback (rerun hand-off path).
+  //   4. Synthetic click on the host send/stop control so busy/DOM flips
+  //      even when the channel id is temporarily unset mid-transition.
+  // Never clear claudeChannelId here — quiesce/reinterrupt still needs it.
+  function interruptActiveClaudeTurn(options = {}) {
+    const forceClick = options.forceClick !== false;
+    let interrupted = false;
     try {
       const session = locateActiveSessionState();
-      // Prefer the same connection locator rerun hand-off uses.
-      const conn = (typeof locateConnection === 'function'
-        ? locateConnection()
-        : null) || (typeof locateClaudeConnection === 'function'
-        ? locateClaudeConnection()
-        : null);
-      const channelId = session && session.claudeChannelId;
-      if (channelId && conn && typeof conn.interruptClaude === 'function') {
-        try { conn.interruptClaude(channelId); } catch (_) {}
-        try { noteChannelInterrupt(); } catch (_) {}
+      if (session) {
+        if (typeof session.interrupt === 'function') {
+          try {
+            const ret = session.interrupt();
+            if (ret && typeof ret.then === 'function') {
+              try { ret.catch(() => {}); } catch (_) {}
+            }
+            interrupted = true;
+            try { noteChannelInterrupt(); } catch (_) {}
+          } catch (error) {
+            warn(
+              'continue button: session.interrupt failed',
+              error && error.message ? error.message : error,
+            );
+          }
+        }
+
+        const channelId = session.claudeChannelId;
+        let conn = null;
+        try {
+          const c = session.connection;
+          conn = c && typeof c === 'object' && 'value' in c ? c.value : c;
+        } catch (_) { conn = null; }
+        if (!conn || typeof conn.interruptClaude !== 'function') {
+          conn = (typeof locateConnection === 'function'
+            ? locateConnection()
+            : null) || (typeof locateClaudeConnection === 'function'
+            ? locateClaudeConnection()
+            : null);
+        }
+        if (channelId && conn && typeof conn.interruptClaude === 'function') {
+          try {
+            conn.interruptClaude(channelId);
+            interrupted = true;
+            try { noteChannelInterrupt(); } catch (_) {}
+          } catch (error) {
+            warn(
+              'continue button: interruptClaude failed',
+              error && error.message ? error.message : error,
+            );
+          }
+        }
       }
-      // Do NOT null claudeChannelId here — quiesce/reinterrupt still needs it.
-      // Also click the host stop control so UI/busy state flips with us.
+
+      // Always prefer a real Stop click when the host shows one — that is the
+      // path users know works. forceClick also fires when our busy probe is
+      // stuck true with a stale send icon (DOM lag after a long tool turn).
+      try { sendButtonDomCachedAt = 0; } catch (_) {}
       const stopBtn = findHostSendButton();
-      if (stopBtn && (
-        stopBtn.getAttribute('data-incipit-send-state') === 'stop' ||
-        sendButtonDomState() === 'stop'
-      )) {
-        try { stopBtn.click(); } catch (_) {}
+      if (stopBtn) {
+        const domStop = (
+          stopBtn.getAttribute('data-incipit-send-state') === 'stop' ||
+          !!stopBtn.querySelector('[class*="stopIcon"], [data-incipit-stop-icon]') ||
+          sendButtonDomState() === 'stop'
+        );
+        if (forceClick || domStop) {
+          try {
+            stopBtn.click();
+            interrupted = true;
+            try { noteChannelInterrupt(); } catch (_) {}
+          } catch (_) {}
+        }
       }
     } catch (error) {
       warn(
@@ -6755,6 +6939,7 @@ import {
         error && error.message ? error.message : error,
       );
     }
+    return interrupted;
   }
 
   function sleepMs(ms) {
@@ -6765,10 +6950,26 @@ import {
     const session = locateActiveSessionState();
     if (!session) {
       warn('continue button: no active session');
+      try {
+        showTranscriptToast(
+          CFG.language === 'zh'
+            ? '找不到当前会话，无法停止/继续。'
+            : 'No active session — cannot stop/continue.',
+          'warn',
+        );
+      } catch (_) {}
       return;
     }
     if (historyHandoffInFlight) {
       warn('continue button: handoff already in flight');
+      try {
+        showTranscriptToast(
+          CFG.language === 'zh'
+            ? '已有停止/重跑进行中，请稍候。'
+            : 'A stop/rerun hand-off is already in progress.',
+          'warn',
+        );
+      } catch (_) {}
       return;
     }
     const rawSend = rawSendForSession(session) || session.send;
@@ -6777,6 +6978,7 @@ import {
       return;
     }
 
+    try { sendButtonDomCachedAt = 0; } catch (_) {}
     let busy = false;
     try { busy = conversationIsBusy() || sendButtonDomState() === 'stop'; }
     catch (_) { busy = sendButtonDomState() === 'stop'; }
@@ -6785,6 +6987,11 @@ import {
     // a second concurrent continue click from opening a second stream.
     setHandoffLatch(true);
     try {
+      // Always fire an interrupt first. A "not busy" probe can lag behind a
+      // still-flushing CLI (tool turn gap, fork webviews). Cheap no-op when
+      // already idle; required when the user is staring at a stuck stream.
+      interruptActiveClaudeTurn({ forceClick: busy });
+
       if (busy) {
         // Prefer the full rerun quiesce path (interrupt + stable idle +
         // cooldown + reinterrupt). The old continue path only waited until
@@ -6794,21 +7001,54 @@ import {
         if (typeof quiesceOldStream === 'function') {
           const q = await quiesceOldStream();
           if (!q || !q.ok) {
-            warn('continue button: stream did not quiesce; aborting send to protect the conversation');
-            return;
+            // One last hard stop: force host Stop click + session.interrupt
+            // again. Still refuse to send "继续" into a live stream.
+            interruptActiveClaudeTurn({ forceClick: true });
+            await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS);
+            try { sendButtonDomCachedAt = 0; } catch (_) {}
+            if (conversationIsBusy() || sendButtonDomState() === 'stop') {
+              warn('continue button: stream did not quiesce; aborting send to protect the conversation');
+              try {
+                showTranscriptToast(
+                  CFG.language === 'zh'
+                    ? '未能强制停止当前回复。请再点一次宿主停止按钮，或稍后重试「停止并继续」。'
+                    : 'Could not force-stop the current reply. Click the host Stop button, then try again.',
+                  'warn',
+                );
+              } catch (_) {}
+              return;
+            }
           }
         } else {
-          interruptActiveClaudeTurn();
+          interruptActiveClaudeTurn({ forceClick: true });
           await sleepMs(CHANNEL_INTERRUPT_COOLDOWN_MS + TURN_HANDOFF_QUIET_MS);
+          try { sendButtonDomCachedAt = 0; } catch (_) {}
           if (conversationIsBusy() || sendButtonDomState() === 'stop') {
             warn('continue button: still busy after fallback wait; aborting send');
+            try {
+              showTranscriptToast(
+                CFG.language === 'zh'
+                  ? '停止后仍在回复中，已取消发送「继续」。'
+                  : 'Still busy after stop — cancelled sending “继续”.',
+                'warn',
+              );
+            } catch (_) {}
             return;
           }
         }
         // Residual quiet after host reports idle — absorbs late SSE frames.
         await sleepMs(CONTINUE_POST_QUIET_MS);
+        try { sendButtonDomCachedAt = 0; } catch (_) {}
         if (conversationIsBusy() || sendButtonDomState() === 'stop') {
           warn('continue button: became busy again during post-quiet; aborting send');
+          try {
+            showTranscriptToast(
+              CFG.language === 'zh'
+                ? '停止后回复又恢复了，已取消发送「继续」。'
+                : 'Reply resumed after stop — cancelled sending “继续”.',
+              'warn',
+            );
+          } catch (_) {}
           return;
         }
       }
@@ -6824,6 +7064,14 @@ import {
         'continue button send failed:',
         error && error.message ? error.message : error,
       );
+      try {
+        showTranscriptToast(
+          CFG.language === 'zh'
+            ? ('停止/继续失败：' + (error && error.message ? error.message : String(error)))
+            : ('Stop/continue failed: ' + (error && error.message ? error.message : String(error))),
+          'error',
+        );
+      } catch (_) {}
     } finally {
       setHandoffLatch(false);
     }
@@ -7446,14 +7694,22 @@ function setupContinueButton() {
   //
   // Resolves { ok:true } | { ok:false, reason:'timeout' }.
   async function quiesceOldStream() {
-    // Kick the old turn toward a clean stop up front.
+    // Kick the old turn toward a clean stop up front. Prefer session.interrupt
+    // (host Stop path) over fiber-located connection — same as continue btn.
     try {
-      const s0 = locateActiveSessionState();
-      const c0 = locateConnection();
-      const ch0 = s0 && s0.claudeChannelId;
-      if (ch0 && c0 && typeof c0.interruptClaude === 'function') {
-        c0.interruptClaude(ch0);
-        noteChannelInterrupt();
+      if (typeof interruptActiveClaudeTurn === 'function') {
+        interruptActiveClaudeTurn({ forceClick: true });
+      } else {
+        const s0 = locateActiveSessionState();
+        if (s0 && typeof s0.interrupt === 'function') {
+          try { s0.interrupt(); noteChannelInterrupt(); } catch (_) {}
+        }
+        const c0 = locateConnection();
+        const ch0 = s0 && s0.claudeChannelId;
+        if (ch0 && c0 && typeof c0.interruptClaude === 'function') {
+          c0.interruptClaude(ch0);
+          noteChannelInterrupt();
+        }
       }
     } catch (_) {}
 
@@ -7461,6 +7717,7 @@ function setupContinueButton() {
     let quietSince = 0;
     let reinterrupts = 0;
     while (true) {
+      try { sendButtonDomCachedAt = 0; } catch (_) {}
       const unsafe = activeSessionTailUnsafeReason();
       if (!unsafe) {
         if (quietSince === 0) quietSince = nowMs();
@@ -7470,12 +7727,19 @@ function setupContinueButton() {
         if (unsafe === 'busy' && reinterrupts < 4) {
           reinterrupts++;
           try {
-            const s = locateActiveSessionState();
-            const c = locateConnection();
-            const ch = s && s.claudeChannelId;
-            if (ch && c && typeof c.interruptClaude === 'function') {
-              c.interruptClaude(ch);
-              noteChannelInterrupt();
+            if (typeof interruptActiveClaudeTurn === 'function') {
+              interruptActiveClaudeTurn({ forceClick: true });
+            } else {
+              const s = locateActiveSessionState();
+              if (s && typeof s.interrupt === 'function') {
+                try { s.interrupt(); noteChannelInterrupt(); } catch (_) {}
+              }
+              const c = locateConnection();
+              const ch = s && s.claudeChannelId;
+              if (ch && c && typeof c.interruptClaude === 'function') {
+                c.interruptClaude(ch);
+                noteChannelInterrupt();
+              }
             }
           } catch (_) {}
         }

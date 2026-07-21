@@ -140,22 +140,21 @@ function extensionRootForTarget(target) {
   return extensionDir;
 }
 
-// Gate for the *no-companion fallback scan* only (env + companion
-// host-identity are tried first and bypass this). It admits targets whose
-// Workbench is the upstream VS Code build shape:
+// Gate for the *fallback scan* (env override is separate and may pin any
+// Workbench for power users / tests). It admits targets whose Workbench is
+// the upstream VS Code build shape:
 //   - Stable    `~/.vscode/extensions`            product "Code"
 //   - Insiders  `~/.vscode-insiders/extensions`   product "Code - Insiders"
 //   - VSCodium / Code - OSS  `~/.vscode-oss/extensions`  (same-source OSS
 //     rebuilds — NOT reshaped forks; their command-service shape matches
 //     the official minified anchor)
-// Reshaped forks (Cursor / Windsurf / Antigravity / Kiro) are not admitted
-// here: empirically their workbench does not contain incipit's command
-// bridge anchor (verified 0 matches on Kiro 0.12 + Antigravity 1.107), so
-// the patch would fail anyway. This is NOT a prohibition — if a companion
-// pins such a host the overlay still *attempts* and safely degrades; the
-// real protection is the anchor verification + the degrade safety net, not
-// this gate. resolveWorkbenchTarget's uniqueness/degrade contract is
-// unchanged: ambiguous or unfound Workbench still degrades.
+// Reshaped forks (Cursor / Windsurf / Antigravity / Trae / Kiro) are never
+// admitted — neither via the path-based fallback nor via companion-written
+// host identity. Empirically their workbench does not contain incipit's
+// command bridge anchor (verified 0 matches on Kiro 0.12 + Antigravity
+// 1.107), and a successful patch would trip those forks' install-integrity
+// "please reinstall" warnings. The real protection is product identity +
+// anchor verification + the degrade safety net.
 function isOfficialVSCodeTarget(target) {
   const extensionDir = canonicalPath(extensionRootForTarget(target));
   const settingsPath = canonicalPath(target && target.settingsPath);
@@ -399,7 +398,11 @@ function addHostIdentityCandidates(out, target) {
     if (!claudeExtensionPath) continue;
     const claudeExtensionRoot = canonicalPath(extensionRootForTarget({ extensionDir: claudeExtensionPath }));
     if (claudeExtensionPath !== targetExtensionDir && claudeExtensionRoot !== targetExtensionRoot) continue;
-    addAppRootCandidate(out, identity.appRoot, { allowAnyWorkbench: true });
+    // Host identity only *locates* the app root. Product must still look like
+    // official VS Code / Insiders / VSCodium / Code - OSS — never use
+    // allowAnyWorkbench here, or a companion run inside Trae/Antigravity
+    // would re-enable Workbench patching on reshaped forks.
+    addAppRootCandidate(out, identity.appRoot);
   }
 }
 
@@ -433,7 +436,10 @@ function resolveWorkbenchTarget(target) {
   }
 
   const portableAppRoot = portableAppRootForTarget(target);
-  if (portableAppRoot) {
+  // Portable layouts must still look like official VS Code product identity.
+  // A portable Cursor/Trae data dir must not become an overlay target just
+  // because it has a workbench.desktop.main.js next to extensions/.
+  if (portableAppRoot && appRootLooksSupported(portableAppRoot)) {
     return resolvedWorkbenchTargetFromAppRoot(portableAppRoot);
   }
   if (!isOfficialVSCodeTarget(target)) {

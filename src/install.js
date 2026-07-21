@@ -927,10 +927,50 @@ function installSerifSystemFonts(resourceRoot) {
   return written;
 }
 
+// Canonical companion extension ids as written to extensions.json / folder
+// names: `publisher.name` (VS Code convention). package.json keeps a short
+// `name` plus `publisher` so hosts that re-scan and recompute
+// `${publisher}.${name}` do not invent `incipit.incipit.*` ghosts.
+const COMPANION_IDS = Object.freeze([
+  'incipit.claude-selection-reference',
+  'incipit.claude-folder-reference',
+]);
+const LEGACY_COMPANION_IDS = Object.freeze([
+  // Pre-publisher-prefix bare package name used as registry id.
+  'claude-selection-reference',
+  'claude-folder-reference',
+  // Historical double-prefix ghosts: name already contained "incipit." and
+  // the host (or an older installer) prepended publisher again.
+  'incipit.incipit.claude-selection-reference',
+  'incipit.incipit.claude-folder-reference',
+]);
+const ALL_COMPANION_IDS = Object.freeze([...COMPANION_IDS, ...LEGACY_COMPANION_IDS]);
+
+// Resolve the on-disk / registry id for a companion package.json.
+//   { publisher: "incipit", name: "claude-selection-reference" }
+//     -> "incipit.claude-selection-reference"
+//   { publisher: "incipit", name: "incipit.claude-selection-reference" }
+//     -> "incipit.claude-selection-reference"  (no double prefix)
+function companionFullId(pkg) {
+  if (!pkg || typeof pkg !== 'object') return null;
+  const publisher = String(pkg.publisher || 'incipit').trim() || 'incipit';
+  const name = String(pkg.name || '').trim();
+  if (!name) return null;
+  if (name.startsWith(`${publisher}.`)) return name;
+  // Already a dotted full id from a non-incipit publisher — keep as-is.
+  if (name.includes('.')) return name;
+  return `${publisher}.${name}`;
+}
+
 // Copy every `companion/<name>` folder into the host's extension directory
 // and register it in `extensions.json` so it loads on next window open.
 // Idempotent: a companion whose source and registered entry already match
 // is left untouched. Returns a list of status-line strings.
+//
+// Safety: never rebuild extensions.json from `[]` when the file exists but is
+// unreadable/corrupt — that used to wipe every other extension entry and can
+// look like a damaged IDE install on Trae / Antigravity / other forks. Writes
+// are atomic (tmp + rename).
 function hashString(str) {
   let h = 0;
   const s = String(str || '');
@@ -941,25 +981,185 @@ function hashString(str) {
   return h;
 }
 
+function atomicWriteText(targetPath, text) {
+  const dir = path.dirname(targetPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(
+    dir,
+    `.${path.basename(targetPath)}.tmp-${process.pid}-${Date.now()}-${Math.abs(hashString(targetPath))}`,
+  );
+  fs.writeFileSync(tmp, text, 'utf8');
+  try {
+    fs.renameSync(tmp, targetPath);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* best-effort */ }
+    throw error;
+  }
+}
+
+function readExtensionsRegistry(extensionsJsonPath) {
+  if (!fs.existsSync(extensionsJsonPath)) {
+    return { registry: [], existed: false };
+  }
+  let text;
+  try {
+    text = fs.readFileSync(extensionsJsonPath, 'utf8');
+  } catch (exc) {
+    throw new Error(`无法读取 extensions.json: ${exc.message || exc}`);
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return { registry: [], existed: true };
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (exc) {
+    throw new Error(
+      `extensions.json 不是合法 JSON，已中止 companion 安装以免清空扩展注册表: ${exc.message || exc}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      'extensions.json 顶层不是数组，已中止 companion 安装以免清空扩展注册表',
+    );
+  }
+  return { registry: parsed, existed: true };
+}
+
+function writeExtensionsRegistry(extensionsJsonPath, registry) {
+  atomicWriteText(extensionsJsonPath, `${JSON.stringify(registry, null, 2)}\n`);
+}
+
+function companionDirMatchesId(dirName, id) {
+  return dirName === id || dirName.startsWith(`${id}-`);
+}
+
+function removeCompanionDirsByIds(hostExtensionsDir, ids, options = {}) {
+  const keepNames = options.keepNames instanceof Set
+    ? options.keepNames
+    : new Set(Array.isArray(options.keepNames) ? options.keepNames : []);
+  let removed = 0;
+  let names = [];
+  try {
+    names = fs.readdirSync(hostExtensionsDir);
+  } catch (_) {
+    return 0;
+  }
+  for (const name of names) {
+    if (keepNames.has(name)) continue;
+    if (!ids.some((id) => companionDirMatchesId(name, id))) continue;
+    const full = path.join(hostExtensionsDir, name);
+    try {
+      if (!fs.statSync(full).isDirectory()) continue;
+      fs.rmSync(full, { recursive: true, force: true });
+      removed += 1;
+    } catch (_) { /* best-effort */ }
+  }
+  return removed;
+}
+
+function pruneRegistryCompanionEntries(registry, ids) {
+  const drop = new Set(ids);
+  let changed = false;
+  const next = [];
+  for (const entry of registry) {
+    const id = entry && entry.identifier && entry.identifier.id;
+    if (id && drop.has(id)) {
+      changed = true;
+      continue;
+    }
+    next.push(entry);
+  }
+  return { registry: next, changed };
+}
+
+// Remove every known companion folder + registry entry from the host that
+// owns `extensionDir` (Claude Code's install dir). Best-effort: a corrupt
+// extensions.json is reported, not rewritten from empty.
+function removeCompanions(extensionDir) {
+  const statusLines = [];
+  if (!extensionDir) {
+    return { removed: 0, registryChanged: false, statusLines };
+  }
+  const hostExtensionsDir = path.dirname(extensionDir);
+  const extensionsJsonPath = path.join(hostExtensionsDir, 'extensions.json');
+
+  let registry = [];
+  let existed = false;
+  try {
+    ({ registry, existed } = readExtensionsRegistry(extensionsJsonPath));
+  } catch (exc) {
+    statusLines.push(`${padLabel('companion 清理')}: 降级 (${exc.message || exc})`);
+    const removedOnly = removeCompanionDirsByIds(hostExtensionsDir, ALL_COMPANION_IDS);
+    if (removedOnly > 0) {
+      statusLines.push(`${padLabel('companion 目录')}: 已删除 ${removedOnly} 个`);
+    }
+    return { removed: removedOnly, registryChanged: false, statusLines };
+  }
+
+  const pruned = pruneRegistryCompanionEntries(registry, ALL_COMPANION_IDS);
+  const removed = removeCompanionDirsByIds(hostExtensionsDir, ALL_COMPANION_IDS);
+  let registryChanged = false;
+  if (pruned.changed) {
+    try {
+      writeExtensionsRegistry(extensionsJsonPath, pruned.registry);
+      registryChanged = true;
+    } catch (exc) {
+      statusLines.push(`${padLabel('companion 清理')}: 注册表写回失败 (${exc.message || exc})`);
+    }
+  } else if (!existed) {
+    // nothing to write
+  }
+
+  if (removed > 0 || registryChanged) {
+    statusLines.push(
+      `${padLabel('companion 清理')}: 已移除${removed > 0 ? ` ${removed} 个目录` : ''}${registryChanged ? ' + 注册表' : ''}`,
+    );
+  } else {
+    statusLines.push(`${padLabel('companion 清理')}: 无`);
+  }
+  return { removed, registryChanged, statusLines };
+}
+
 function installCompanions(resourceRoot, extensionDir) {
   const COMPANION_DIR = path.join(resourceRoot, 'companion');
   const statusLines = [];
+  if (!extensionDir) return statusLines;
   const hostExtensionsDir = path.dirname(extensionDir);
   const extensionsJsonPath = path.join(hostExtensionsDir, 'extensions.json');
-  let registry = [];
+
+  let registry;
   try {
-    registry = JSON.parse(fs.readFileSync(extensionsJsonPath, 'utf8'));
-    if (!Array.isArray(registry)) registry = [];
-  } catch (_) {
-    registry = [];
+    ({ registry } = readExtensionsRegistry(extensionsJsonPath));
+  } catch (exc) {
+    statusLines.push(`${padLabel('companion')}: 降级 (${exc.message || exc})`);
+    return statusLines;
   }
 
-  if (!fs.existsSync(COMPANION_DIR)) return statusLines;
+  // Drop legacy package ids/dirs before writing the current companions so a
+  // host never ends up with both `claude-selection-reference` and
+  // `incipit.claude-selection-reference` loaded.
+  const legacyPrune = pruneRegistryCompanionEntries(registry, LEGACY_COMPANION_IDS);
+  registry = legacyPrune.registry;
+  const legacyDirsRemoved = removeCompanionDirsByIds(hostExtensionsDir, LEGACY_COMPANION_IDS);
+  if (legacyPrune.changed || legacyDirsRemoved > 0) {
+    statusLines.push(
+      `${padLabel('companion 旧版清理')}: 已移除${legacyDirsRemoved > 0 ? ` ${legacyDirsRemoved} 个目录` : ''}${legacyPrune.changed ? ' + 注册表' : ''}`,
+    );
+  }
+
+  if (!fs.existsSync(COMPANION_DIR)) {
+    if (legacyPrune.changed) {
+      try { writeExtensionsRegistry(extensionsJsonPath, registry); } catch (_) { /* best-effort */ }
+    }
+    return statusLines;
+  }
 
   const names = fs.readdirSync(COMPANION_DIR).filter((n) => {
     const p = path.join(COMPANION_DIR, n);
     try { return fs.statSync(p).isDirectory(); } catch (_) { return false; }
   });
+
+  let registryDirty = legacyPrune.changed;
 
   for (const name of names) {
     const srcDir = path.join(COMPANION_DIR, name);
@@ -967,12 +1167,20 @@ function installCompanions(resourceRoot, extensionDir) {
     if (!fs.existsSync(pkgPath)) continue;
     let pkg;
     try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch (_) { continue; }
-    const id = pkg.name;
+    // Full id is publisher.name — never use the raw package `name` alone, or
+    // hosts that recompose `${publisher}.${name}` create incipit.incipit.* ghosts.
+    const id = companionFullId(pkg);
     if (!id) continue;
     const version = pkg.version || '0.0.0';
+    const relativeLocation = `${id}-${version}`;
+    const dstDir = path.join(hostExtensionsDir, relativeLocation);
 
-    const dstDir = path.join(hostExtensionsDir, `${id}-${version}`);
-    let written = false;
+    // Drop older/side-car folders for this id (other versions) while keeping
+    // the destination we are about to refresh in place.
+    const staleRemoved = removeCompanionDirsByIds(hostExtensionsDir, [id], {
+      keepNames: new Set([relativeLocation]),
+    });
+    let written = staleRemoved > 0;
     try {
       if (!fs.existsSync(dstDir)) {
         fs.mkdirSync(dstDir, { recursive: true });
@@ -1015,7 +1223,7 @@ function installCompanions(resourceRoot, extensionDir) {
       },
       version,
       location: { $mid: 1, path: absDst, scheme: 'file' },
-      relativeLocation: `${id}-${version}`,
+      relativeLocation,
       metadata: {
         isApplicationScoped: false,
         isMachineScoped: false,
@@ -1036,28 +1244,30 @@ function installCompanions(resourceRoot, extensionDir) {
         preRelease: false,
       },
     };
-    let regChanged = false;
     if (regIdx < 0) {
       registry.push(entry);
-      regChanged = true;
+      registryDirty = true;
     } else {
       const prev = registry[regIdx];
       const prevPath = prev && prev.location && prev.location.path;
       const prevVer = prev && prev.version;
       if (prevPath !== absDst || prevVer !== version) {
         registry[regIdx] = entry;
-        regChanged = true;
+        registryDirty = true;
       }
-    }
-    if (regChanged) {
-      try {
-        fs.writeFileSync(extensionsJsonPath, JSON.stringify(registry, null, 2));
-      } catch (_) { }
     }
 
     statusLines.push(
       `${padLabel('companion ' + name)}: ${written ? '已写入' : '已存在'}`,
     );
+  }
+
+  if (registryDirty) {
+    try {
+      writeExtensionsRegistry(extensionsJsonPath, registry);
+    } catch (exc) {
+      statusLines.push(`${padLabel('companion 注册表')}: 写回失败 (${exc.message || exc})`);
+    }
   }
 
   return statusLines;
@@ -3114,6 +3324,10 @@ module.exports = {
   findLatestClaudeCodeExtension,
   installClaudeCodeVSCodeEnhance,
   installCompanions,
+  removeCompanions,
+  companionFullId,
+  COMPANION_IDS,
+  LEGACY_COMPANION_IDS,
   padLabel,
   __test: {
     patchExtensionJs,

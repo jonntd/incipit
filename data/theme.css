@@ -659,6 +659,18 @@ details[class*="thinking"]:not([open]) > summary[class*="thinkingSummary"]::afte
   background: rgba(217,119,87,0.32) !important;
   color: inherit !important;
 }
+/* User bubble text is #70b8ff on translucent blue — `color: inherit` on
+   selection makes selected text unreadable. Force light ink + stronger fill
+   (WCAG: selection must remain readable; do not inherit mid-blue ink). */
+[data-incipit-user-bubble] ::selection,
+[data-incipit-user-bubble]::selection,
+[data-incipit-user-bubble] *::selection,
+[data-incipit-user-content] ::selection,
+[data-incipit-user-content] *::selection {
+  background: rgba(217, 119, 87, 0.72) !important;
+  color: #f8f8f6 !important;
+  -webkit-text-fill-color: #f8f8f6 !important;
+}
 
 /* ============================================================
    Links keep the body text color. Affordance is a dotted terracotta
@@ -4537,15 +4549,23 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-input-footer] [class*="addButtonContainer"] {
   flex-shrink: 0 !important;
 }
-/* The editor companion inserts explicit visible @file references, so Claude
-   Code's own current-selection footer pill would duplicate both UI and send
-   context. This host affordance is disabled unconditionally, independent of
-   the experimental editor overlay toggle. Hide only the direct footer
-   selection pair; keep add, slash, cache/context, permission, and send
-   controls visible. */
-[data-incipit-input-footer] > [class*="divider"],
+/* Native Claude "current file selection" footer pill (footerButton /
+   footerButtonInactive, title: "Showing Claude your current file selection").
+   Kept visible so the host includeSelection toggle remains usable. The
+   companion CodeLens / @file insert path is additive, not a replacement —
+   users can attach either an explicit @ref or the host selection pill.
+   Compression still prefers this pill (flex default) over icon buttons /
+   cceBadge / permission cluster (flex-shrink: 0 above). */
 [data-incipit-input-footer] > [class*="footerButton"] {
-  display: none !important;
+  min-width: 0 !important;
+  max-width: 40% !important;
+  overflow: hidden !important;
+}
+[data-incipit-input-footer] > [class*="footerButton"] span {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 /* Permission button's natural min content is SVG 26 + padding-right 8
    = 34px under border-box. Lock that as the floor so the icon
@@ -4602,42 +4622,10 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 [data-incipit-edit-header] [class*="titleText_"] {
   min-width: 0 !important;
 }
-.cceEditChip {
-  align-self: center;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55em;
-  height: 24px;
-  flex: 0 0 auto;
-  margin: 0 4px 0 2px;
-  padding: 2px 6px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #d8d6ce;
-  font-family: var(--incipit-body-font);
-  font-size: 12px;
-  line-height: 1;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  letter-spacing: 0;
-  -webkit-appearance: none;
-  appearance: none;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.cceEditChip:hover,
-.cceEditChip:focus-visible,
-.cceEditChip.cceEditChipActive {
-  background: rgba(248,246,240,0.07);
-  color: #f8f8f6;
-  outline: none;
-}
-.cceEditChip:active {
-  background: rgba(248,246,240,0.11);
-}
+/* Header model-edit activity chip (+N −M heatmap entry) is disabled —
+   Session Edits owns the header count surface. Hide any stale instance;
+   popup CSS below is kept so re-enabling setupEditActivityHeader is one-line. */
+.cceEditChip,
 .cceEditChip[hidden] {
   display: none !important;
 }
@@ -5484,8 +5472,22 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
    via data-incipit-inline-edit-hidden — reconcile keeps believing
    they're decorated and won't re-create them mid-edit.
    ============================================================ */
-[data-incipit-inline-edit-hidden] {
+/* Must beat the edit-mode stretch rules below (they force display:block
+   on content_/expandable wrappers with higher attribute+class weight).
+   Without this win, the original bubble text stays painted on top of the
+   textarea — double text, no selection, clicks land on non-editable DOM. */
+[data-incipit-inline-edit-hidden],
+[data-incipit-user-message-container][data-incipit-inline-editing] [data-incipit-inline-edit-hidden],
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell]) [data-incipit-inline-edit-hidden],
+[data-incipit-message][data-incipit-inline-editing] [data-incipit-inline-edit-hidden] {
   display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
 }
 /* Shell: must override any flex/grid the host may apply to the
    markdown root's parent. Aggressive width:100% + align-self:stretch
@@ -5569,10 +5571,44 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   white-space: pre-wrap;
   word-break: break-word;
   overflow: hidden;
+  user-select: text;
+  -webkit-user-select: text;
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
 }
 .incipit-inline-edit-textarea:focus {
   outline: none;
   box-shadow: none;
+}
+/* Keyboard focus ring on the shell (not the textarea) so we don't fight
+   the host's chrome-less draft look while still meeting focus-states. */
+[data-incipit-inline-edit-shell]:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 70%, transparent);
+  outline-offset: 2px;
+}
+/* User-bubble edit: focus ring rides the bubble (shell is transparent). */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-bubble]:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 70%, transparent);
+  outline-offset: 2px;
+}
+/* Selection: terra fill + near-white ink. Never `color: inherit` here —
+   user-bubble ink is #70b8ff and vanishes on a blue highlight. */
+.incipit-inline-edit-textarea::selection,
+.incipit-inline-edit-textarea::-moz-selection,
+[data-incipit-inline-edit-shell] ::selection,
+[data-incipit-inline-edit-shell] *::selection,
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] ::selection,
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] *::selection {
+  background: rgba(217, 119, 87, 0.72) !important;
+  color: #f8f8f6 !important;
+  -webkit-text-fill-color: #f8f8f6 !important;
+}
+/* Explicit light ink while editing (overrides bubble's #70b8ff). */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] .incipit-inline-edit-textarea {
+  color: #e8e6dd !important;
+  -webkit-text-fill-color: #e8e6dd !important;
+  caret-color: #e3937a !important;
 }
 
 /* User bubble in edit mode: expand to fill the message container's
@@ -5602,20 +5638,30 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   /* Long-message collapse (max-height:600) must not clip the editor. */
   max-height: none !important;
   overflow: visible !important;
+  /* Edit-mode draft surface (state-clarity): leave the translucent blue
+     read bubble for a deeper card + light ink so caret, selection, and
+     typed text all stay ≥4.5:1. Terra inset ring marks "you are editing". */
+  background: #1a2330 !important;
+  background-color: #1a2330 !important;
+  color: #e8e6dd !important;
+  box-shadow: inset 0 0 0 1px rgba(217, 119, 87, 0.42) !important;
+  padding: 10px 12px !important;
 }
 /* CRITICAL: while editing, neutralize long-message clip on every host
    wrapper the shell may sit under. Without this, collapsed long bubbles
    keep overflow:hidden at 600px and the growing textarea / Save row are
    cut off mid-edit ("edit UI looks broken"). */
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-expandable],
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-content],
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="expandableContainer"],
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="contentWrapper_"],
-[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="content_"],
+/* :not([data-incipit-inline-edit-hidden]) keeps the stretch rules from
+   resurrecting the host content node we intentionally hid for the edit. */
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-expandable]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-user-content]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="expandableContainer"]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="contentWrapper_"]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-message-container][data-incipit-inline-editing="user"] [class*="content_"]:not([data-incipit-inline-edit-hidden]),
 [data-incipit-user-message-container][data-incipit-inline-editing="user"] [data-incipit-inline-edit-shell="user"],
-[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [data-incipit-user-expandable],
-[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="expandableContainer"],
-[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="contentWrapper_"] {
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [data-incipit-user-expandable]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="expandableContainer"]:not([data-incipit-inline-edit-hidden]),
+[data-incipit-user-bubble]:has([data-incipit-inline-edit-shell="user"]) [class*="contentWrapper_"]:not([data-incipit-inline-edit-hidden]) {
   display: block !important;
   width: 100% !important;
   max-width: 100% !important;
@@ -5631,6 +5677,11 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
   max-width: 100% !important;
   min-height: 4.5em !important;
   overflow: hidden !important; /* autoGrow owns height; avoid double scroll */
+  position: relative !important;
+  z-index: 1 !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  pointer-events: auto !important;
 }
 /* Show-more is meaningless while editing — hide so it doesn't sit over Save. */
 [data-incipit-user-message-container][data-incipit-inline-editing="user"] .claude-show-more-row,
