@@ -20,6 +20,8 @@ const SUPPORTED_LANGUAGES = Object.freeze(['zh', 'en']);
 const RETIRED_FEATURE_KEYS = Object.freeze([
   'fileDropReferences',
   'toolFold',
+  // Removed: per-hunk editorInsets review (Session Edits covers Keep/Discard).
+  'hunkwise',
 ]);
 
 // User-adjustable feature toggles. Missing keys fall back to defaults.
@@ -27,9 +29,6 @@ const DEFAULT_FEATURES = Object.freeze({
   math: true,
   sessionUsage: true,
   editorSelectionOverlay: false,
-  // Per-hunk editorInsets review. Off by default: expensive (workspace
-  // watch + private git + insets). Session Edits panel covers Keep/Discard.
-  hunkwise: false,
 });
 
 // User-adjustable visual knobs. `bodyFontSize` must match one of the
@@ -163,7 +162,6 @@ function getFeatures() {
     editorSelectionOverlay: typeof raw.editorSelectionOverlay === 'boolean'
       ? raw.editorSelectionOverlay
       : DEFAULT_FEATURES.editorSelectionOverlay,
-    hunkwise: typeof raw.hunkwise === 'boolean' ? raw.hunkwise : DEFAULT_FEATURES.hunkwise,
   };
 }
 

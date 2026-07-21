@@ -137,7 +137,7 @@ function ok(name) {
 // --- activate injection (synthetic extension.js) ---------------------------
 
 {
-  // Shape A: exports.activate = someFn;  (classic)
+  // Shape A: exports.activate = someFn;  (classic) — commit-message wraps alone
   let updated = [
     'exports.activate = activateFn;',
     'function activateFn(ctx) { return 1; }',
@@ -145,34 +145,50 @@ function ok(name) {
   updated = updated.replace(
     /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/,
     (match, funcName) =>
-      `exports.activate = function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return ${funcName}(__hunkwiseCtx); };`,
+      `exports.activate = function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return ${funcName}(__incipitCommitCtx); };`,
   );
-  // commit message — piggy-back on hunkwise try/catch (matches install.js)
-  const HUNKWISE_TRY_LOOSE =
-    /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
-  updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) =>
-    `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`,
-  );
-  assert.ok(updated.includes("require('./webview/hunkwise_bundle.js').activate("));
+  assert.ok(!updated.includes('hunkwise_bundle'));
   assert.ok(updated.includes("require('./webview/commit_message_bundle.js').activate("));
-  assert.ok(updated.includes('return activateFn(__hunkwiseCtx)'));
-  ok('activate injection wraps hunkwise then commit-message (exports.activate)');
+  assert.ok(updated.includes('return activateFn(__incipitCommitCtx)'));
+  ok('activate injection wraps commit-message only (exports.activate)');
 }
 
 {
   // Shape B: module.exports IIFE wrapper (Trae CN / modern Claude Code)
-  let updated =
-    "module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined; } }); })(zve(kut));";
-  const HUNKWISE_TRY_LOOSE =
-    /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
-  assert.ok(HUNKWISE_TRY_LOOSE.test(updated), 'loose hunkwise regex matches Trae shape');
-  updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) =>
-    `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`,
+  let updated = 'module.exports = zve(kut);';
+  updated = updated.replace(
+    /module\.exports\s*=\s*([^;]+);/,
+    (match, exportedVal) =>
+      `module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__incipitCommitCtx) : undefined; } }); })(${exportedVal});`,
   );
-  assert.ok(updated.includes("require('./webview/commit_message_bundle.js').activate(__hunkwiseCtx)"));
-  // still returns original activate
-  assert.ok(updated.includes('__incipit_orig.activate(__hunkwiseCtx)'));
-  ok('activate injection piggy-backs hunkwise on module.exports Trae shape');
+  assert.ok(!updated.includes('hunkwise'));
+  assert.ok(updated.includes("require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx)"));
+  assert.ok(updated.includes('__incipit_orig.activate(__incipitCommitCtx)'));
+  ok('activate injection wraps commit-message on module.exports Trae shape');
+}
+
+{
+  // Legacy strip: old hunkwise try/catch + thin wrapper are removed.
+  // Mirrors the strip block in src/install.js patchExtensionJs.
+  let dirty =
+    "exports.activate = function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return activateFn(__hunkwiseCtx); };";
+  const HUNKWISE_TRY_LOOSE =
+    /\s*try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}\s*/g;
+  dirty = dirty.replace(HUNKWISE_TRY_LOOSE, ' ');
+  const WRAP_EXPORTS =
+    /exports\.activate\s*=\s*function\s*\(__hunkwiseCtx\)\s*\{\s*return\s+([A-Za-z_$][\w$]*)\(__hunkwiseCtx\);\s*\};/;
+  assert.ok(!dirty.includes('hunkwise_bundle'), 'legacy hunkwise try/catch stripped');
+  assert.ok(WRAP_EXPORTS.test(dirty), 'thin __hunkwiseCtx wrapper remains for unwrap');
+  dirty = dirty.replace(WRAP_EXPORTS, 'exports.activate = $1;');
+  assert.strictEqual(dirty.trim(), 'exports.activate = activateFn;');
+  // After strip, commit-message reinjects on the bare assignment.
+  dirty = dirty.replace(
+    /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/,
+    (match, funcName) =>
+      `exports.activate = function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return ${funcName}(__incipitCommitCtx); };`,
+  );
+  assert.ok(dirty.includes("require('./webview/commit_message_bundle.js').activate("));
+  ok('legacy hunkwise wrappers strip cleanly; commit-message reinjects');
 }
 
 // --- package.json merge is idempotent --------------------------------------

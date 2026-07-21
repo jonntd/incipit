@@ -60,7 +60,6 @@ const ROOT_WEBVIEW_FILES = [
   [path.join('data', 'math_tokens.js'), 'math_tokens.js'],
   [path.join('data', 'math_rewriter.js'), 'math_rewriter.js'],
   [path.join('data', 'theme.css'), THEME_TARGET_NAME],
-  [path.join('data', 'hunkwise_bundle.js'), 'hunkwise_bundle.js'],
   [path.join('data', 'commit_message_bundle.js'), 'commit_message_bundle.js'],
   // Warm-white palette overrides. Always copied so users can flip the
   // setting without re-running apply just to ship the CSS file. enhance.js
@@ -73,13 +72,19 @@ const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
 // Sync the whole subtree so math, highlighting, fonts, and mermaid work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'hunkwise_media', 'ui'];
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'ui'];
 const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({
   legacy: new Set(['session_status.js']),
 });
 // Asset subtrees we used to ship but no longer need. `apply` wipes these on
 // sight so upgrades never leave dead bytes behind in the host webview folder.
-const LEGACY_ASSET_TREES = ['mathjax'];
+const LEGACY_ASSET_TREES = ['mathjax', 'hunkwise_media'];
+// Root-level webview files retired with Hunkwise removal. Wiped on apply.
+const LEGACY_WEBVIEW_FILES = Object.freeze([
+  'hunkwise_bundle.js',
+  'hunkwise-bundle.cjs',
+  'enhance_hunk_review.js',
+]);
 
 // Files copied into the user font directory. Only the Latin serif family is
 // installed here. CJK faces are left to the system fallback stack.
@@ -1829,67 +1834,54 @@ function patchExtensionJs(content) {
   [updated, statusAtMention] = patchAtMentionCommand(updated);
   statusLines.push(record('install.atMentionCommand', statusAtMention));
 
-  // --- Hunkwise: inject into activate (optional; off by default) ---
-  const hunkwiseEnabled = getFeatures().hunkwise === true;
-  if (!hunkwiseEnabled) {
-    statusLines.push(`${padLabel('Hunkwise 注入')}: 已跳过 (feature off)`);
-  } else if (updated.includes('exports.activate = function(__hunkwiseCtx)')) {
-    statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在`);
-  } else if (updated.includes("require('./webview/hunkwise_bundle.js').activate(")) {
-    statusLines.push(`${padLabel('Hunkwise 注入')}: 已存在 (inline)`);
-  } else {
-    const ACTIVATE_PATTERN = /exports\.activate\s*=\s*([A-Za-z_$][\w$]*);/;
-    const INLINE_ACTIVATE_PATTERN = /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/;
-    const MODULE_EXPORTS_PATTERN = /module\.exports\s*=\s*([^;]+);/;
-    if (ACTIVATE_PATTERN.test(updated)) {
-      updated = updated.replace(ACTIVATE_PATTERN, (match, funcName) => {
-        return `exports.activate = function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return ${funcName}(__hunkwiseCtx); };`;
-      });
-      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (exports.activate)`);
-    } else if (INLINE_ACTIVATE_PATTERN.test(updated)) {
-      updated = updated.replace(INLINE_ACTIVATE_PATTERN, (match, paramName) => {
-        return `${match} try { require('./webview/hunkwise_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } `;
-      });
-      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (inline)`);
-    } else if (MODULE_EXPORTS_PATTERN.test(updated)) {
-      updated = updated.replace(MODULE_EXPORTS_PATTERN, (match, exportedVal) => {
-        return `module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__hunkwiseCtx) { try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) { console.error('[incipit] Hunkwise init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined; } }); })(${exportedVal});`;
-      });
-      statusLines.push(`${padLabel('Hunkwise 注入')}: 已写入 (module.exports)`);
-    } else {
-      statusLines.push(`${padLabel('Hunkwise 注入')}: 降级 (未找到 activate)`);
+  // --- Strip retired Hunkwise activate wrappers (idempotent) ---
+  // Older applies may have wrapped activate() around hunkwise_bundle.js.
+  // Remove those try/catch lines and unwrap the thin exports.activate /
+  // module.exports shells so commit-message injection sees a clean host.
+  {
+    let stripped = false;
+    // No /g on the probe — a global regex leaves lastIndex set after .test().
+    const HUNKWISE_TRY =
+      /\s*try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}\s*/;
+    if (HUNKWISE_TRY.test(updated)) {
+      updated = updated.replace(new RegExp(HUNKWISE_TRY.source, 'g'), ' ');
+      stripped = true;
+    }
+    // exports.activate = function(__hunkwiseCtx) { ... return orig(__hunkwiseCtx); };
+    // → exports.activate = orig;  (only when the body no longer has hunkwise)
+    const WRAP_EXPORTS =
+      /exports\.activate\s*=\s*function\s*\(__hunkwiseCtx\)\s*\{\s*return\s+([A-Za-z_$][\w$]*)\(__hunkwiseCtx\);\s*\};/;
+    if (WRAP_EXPORTS.test(updated) && !updated.includes('hunkwise_bundle.js')) {
+      updated = updated.replace(WRAP_EXPORTS, 'exports.activate = $1;');
+      stripped = true;
+    }
+    // module.exports IIFE that only re-exports activate via __hunkwiseCtx
+    const WRAP_MODULE =
+      /module\.exports\s*=\s*\(function\(__incipit_orig\)\s*\{\s*return\s+Object\.assign\(\{\},\s*__incipit_orig,\s*\{\s*activate:\s*function\(__hunkwiseCtx\)\s*\{\s*return\s+__incipit_orig\.activate\s*\?\s*__incipit_orig\.activate\(__hunkwiseCtx\)\s*:\s*undefined;\s*\}\s*\}\);\s*\}\)\(([^)]+)\);/;
+    if (WRAP_MODULE.test(updated) && !updated.includes('hunkwise_bundle.js')) {
+      updated = updated.replace(WRAP_MODULE, 'module.exports = $1;');
+      stripped = true;
+    }
+    if (stripped) {
+      statusLines.push(`${padLabel('Hunkwise 清理')}: 已剥离旧 activate 注入`);
+    }
+    // Cosmetic: rename leftover __hunkwiseCtx params from older piggy-back injects.
+    if (updated.includes('__hunkwiseCtx')) {
+      updated = updated.split('__hunkwiseCtx').join('__incipitCommitCtx');
+      statusLines.push(`${padLabel('Hunkwise 清理')}: 已重命名 __hunkwiseCtx`);
     }
   }
 
-  // --- Commit message: inject into activate (after hunkwise) ---
-  // Trae/Cursor often ship `module.exports = { activate:()=>fn }` which
-  // hunkwise wraps as:
-  //   module.exports = (function(__incipit_orig){ return Object.assign({}, __incipit_orig, {
-  //     activate: function(__hunkwiseCtx) {
-  //       try { require('./webview/hunkwise_bundle.js').activate(__hunkwiseCtx); } catch(e) {...}
-  //       return __incipit_orig.activate ? __incipit_orig.activate(__hunkwiseCtx) : undefined;
-  //     }
-  //   }); })(...);
-  // so there is no bare `exports.activate =`. Prefer piggy-backing on the
-  // hunkwise try/catch (all hosts that got hunkwise), then fall back to
-  // wrapping exports.activate / module.exports the same way hunkwise does.
+  // --- Commit message: inject into activate ---
+  // Trae/Cursor often ship `module.exports = { activate:()=>fn }` with no bare
+  // `exports.activate =`. Prefer wrapping exports.activate, then fall back to
+  // a module.exports IIFE that preserves the original activate.
   if (updated.includes("require('./webview/commit_message_bundle.js').activate(")) {
     statusLines.push(`${padLabel('CommitMsg 注入')}: 已存在`);
   } else {
     let injected = false;
-    const HUNKWISE_TRY = /try \{ require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\); \} catch\(e\) \{ console\.error\('\[[\w]+\] Hunkwise init failed', e\); \}/;
-    // Broader: tolerate any console.error message that mentions Hunkwise.
-    const HUNKWISE_TRY_LOOSE =
-      /try \{\s*require\(['"]\.\/webview\/hunkwise_bundle\.js['"]\)\.activate\(([A-Za-z_$][\w$]*)\);\s*\} catch\(e\) \{[^}]*Hunkwise[^}]*\}/;
 
-    if (HUNKWISE_TRY_LOOSE.test(updated)) {
-      updated = updated.replace(HUNKWISE_TRY_LOOSE, (match, paramName) => {
-        injected = true;
-        return `${match} try { require('./webview/commit_message_bundle.js').activate(${paramName}); } catch(e) { console.error('[incipit] CommitMsg init failed', e); }`;
-      });
-    }
-
-    if (!injected && /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/.test(updated)) {
+    if (/exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/.test(updated)) {
       updated = updated.replace(
         /exports\.activate\s*=\s*function\s*\(([A-Za-z_$][\w$]*)\)\s*\{/,
         (match, paramName) => {
@@ -1910,13 +1902,8 @@ function patchExtensionJs(content) {
     }
 
     if (!injected) {
-      // Last resort: wrap module.exports the same way hunkwise does when
-      // hunkwise itself was missing (shouldn't happen after the block above).
       const MODULE_EXPORTS_PATTERN = /module\.exports\s*=\s*([^;]+);/;
-      if (
-        MODULE_EXPORTS_PATTERN.test(updated) &&
-        !updated.includes("require('./webview/hunkwise_bundle.js').activate(")
-      ) {
+      if (MODULE_EXPORTS_PATTERN.test(updated)) {
         updated = updated.replace(MODULE_EXPORTS_PATTERN, (match, exportedVal) => {
           injected = true;
           return `module.exports = (function(__incipit_orig) { return Object.assign({}, __incipit_orig, { activate: function(__incipitCommitCtx) { try { require('./webview/commit_message_bundle.js').activate(__incipitCommitCtx); } catch(e) { console.error('[incipit] CommitMsg init failed', e); } return __incipit_orig.activate ? __incipit_orig.activate(__incipitCommitCtx) : undefined; } }); })(${exportedVal});`;
@@ -2771,12 +2758,28 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     }
   }
 
-  // Prune any legacy asset subtrees that earlier versions used to ship.
+  // Prune any legacy asset subtrees / root files that earlier versions shipped.
   let legacyAssetTreesPruned = 0;
   for (const legacy of LEGACY_ASSET_TREES) {
     const legacyDir = path.join(webviewDir, legacy);
     if (fs.existsSync(legacyDir)) {
       fs.rmSync(legacyDir, { recursive: true, force: true });
+      legacyAssetTreesPruned++;
+    }
+  }
+  for (const legacyFile of LEGACY_WEBVIEW_FILES) {
+    const p = path.join(webviewDir, legacyFile);
+    if (fs.existsSync(p)) {
+      try { fs.unlinkSync(p); } catch { /* best-effort */ }
+      legacyAssetTreesPruned++;
+    }
+  }
+  // Workspace-local .vscode/hunkwise state dir that older Hunkwise runs created
+  // under the extension folder (not the user's workspace).
+  {
+    const extHunkDir = path.join(target.extensionDir, '.vscode', 'hunkwise');
+    if (fs.existsSync(extHunkDir)) {
+      try { fs.rmSync(extHunkDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       legacyAssetTreesPruned++;
     }
   }
@@ -2806,39 +2809,71 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     );
   }
 
-  // --- Hunkwise + Commit message: patch package.json ---
+  // --- Commit message: patch package.json; strip retired Hunkwise contrib ---
   const packageJsonPath = path.join(target.extensionDir, 'package.json');
   if (fs.existsSync(packageJsonPath)) {
     const pkgText = fs.readFileSync(packageJsonPath, 'utf8');
     try {
       const pkg = JSON.parse(pkgText);
       let pkgModified = false;
-      const hunkwiseEnabled = getFeatures().hunkwise === true;
-      if (hunkwiseEnabled) {
-        if (!pkg.enabledApiProposals) pkg.enabledApiProposals = [];
-        if (!pkg.enabledApiProposals.includes("editorInsets")) {
-          pkg.enabledApiProposals.push("editorInsets");
-          pkgModified = true;
+
+      // Drop any leftover hunkwise contributes / proposals from older applies.
+      if (Array.isArray(pkg.enabledApiProposals)) {
+        const before = pkg.enabledApiProposals.length;
+        pkg.enabledApiProposals = pkg.enabledApiProposals.filter(p => p !== 'editorInsets');
+        if (pkg.enabledApiProposals.length !== before) pkgModified = true;
+        if (pkg.enabledApiProposals.length === 0) delete pkg.enabledApiProposals;
+      }
+      if (pkg.contributes && typeof pkg.contributes === 'object') {
+        const isHunkwiseId = (id) => typeof id === 'string' && (
+          id === 'hunkwise' || id.startsWith('hunkwise.') ||
+          id === 'hunkwisePanel' || id === 'hunkwiseToolbar'
+        );
+        for (const key of Object.keys(pkg.contributes)) {
+          const val = pkg.contributes[key];
+          if (Array.isArray(val)) {
+            const next = val.filter(item => {
+              const id = item && (item.command || item.id);
+              return !isHunkwiseId(id);
+            });
+            if (next.length !== val.length) {
+              pkg.contributes[key] = next;
+              pkgModified = true;
+            }
+            if (pkg.contributes[key].length === 0) delete pkg.contributes[key];
+          } else if (val && typeof val === 'object') {
+            // viewsContainers.panel / views.hunkwisePanel / menus
+            for (const sub of Object.keys(val)) {
+              if (isHunkwiseId(sub)) {
+                delete val[sub];
+                pkgModified = true;
+                continue;
+              }
+              if (Array.isArray(val[sub])) {
+                const next = val[sub].filter(item => {
+                  const id = item && (item.command || item.id || item.when);
+                  if (isHunkwiseId(item && (item.command || item.id))) return false;
+                  if (typeof item.when === 'string' && item.when.includes('hunkwise')) return false;
+                  if (isHunkwiseId(item && item.id)) return false;
+                  return true;
+                });
+                if (next.length !== val[sub].length) {
+                  val[sub] = next;
+                  pkgModified = true;
+                }
+                if (val[sub].length === 0) delete val[sub];
+              }
+            }
+            if (Object.keys(val).length === 0) delete pkg.contributes[key];
+          }
         }
       }
 
-      const contribSources = [];
-      if (hunkwiseEnabled) {
-        contribSources.push({
-          label: 'hunkwise',
-          rel: path.join('data', 'hunkwise_package.json'),
-          rewriteIcon: (icon) => (
-            typeof icon === 'string' && icon.startsWith('media/')
-              ? icon.replace('media/', 'webview/hunkwise_media/')
-              : icon
-          ),
-        });
-      }
-      contribSources.push({
+      const contribSources = [{
         label: 'commit-message',
         rel: path.join('data', 'commit_message_package.json'),
         rewriteIcon: null,
-      });
+      }];
       const mergedLabels = [];
 
       for (const source of contribSources) {
@@ -3071,6 +3106,7 @@ module.exports = {
   ROOT_WEBVIEW_FILES,
   LOCAL_ASSET_TREES,
   LEGACY_ASSET_TREES,
+  LEGACY_WEBVIEW_FILES,
   SYSTEM_FONT_FILES,
   extensionRoot,
   vscodeUserSettingsPath,

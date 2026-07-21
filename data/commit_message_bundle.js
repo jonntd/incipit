@@ -2,8 +2,8 @@
 
 // Incipit SCM commit-message generator — host-side patch module.
 //
-// Registered into Claude Code's activate() by install.js (same pattern as
-// hunkwise). Shows a sparkle button on the Source Control title bar; click
+// Registered into Claude Code's activate() by install.js.
+// Shows a sparkle button on the Source Control title bar; click
 // builds a bounded git diff prompt, calls Claude via host-badge's shared
 // completeClaudeText(), and streams the result into the SCM input box.
 //

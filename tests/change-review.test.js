@@ -1330,7 +1330,7 @@ console.log(`change-review tests passed: ${passed}`);
 
 
 // ---------------------------------------------------------------------------
-// Session Edits (Augment-style Keep All / Discard All) — no hunkwise
+// Session Edits (Augment-style Keep All / Discard All)
 // ---------------------------------------------------------------------------
 
 function sessionEditHarness(dir) {
