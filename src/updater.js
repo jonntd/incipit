@@ -149,6 +149,15 @@ del "%~f0"
   } else {
     fs.chmodSync(tempPath, 0o755);
     fs.renameSync(tempPath, currentExecPath);
+
+    // 自动重新拉起并运行新版本
+    const args = process.argv.slice(1);
+    const child = spawn(currentExecPath, args, {
+      stdio: 'inherit',
+      detached: true
+    });
+    child.unref();
+    process.exit(0);
   }
 }
 
