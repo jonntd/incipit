@@ -118,16 +118,240 @@ fn draw_menu(
     Ok(())
 }
 
-fn show_targets() {
-    let targets = detect_targets();
-    if targets.is_empty() {
-        println!("  No Claude Code installation detected.");
+fn draw_targets(
+    stdout: &mut io::Stdout,
+    targets: &[crate::detector::TargetLocation],
+    selected: usize,
+    lang: &str,
+) -> io::Result<()> {
+    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+
+    let title = if lang == "en" {
+        "  ── Manage Claude Code Targets ──────────────────\n"
     } else {
-        println!("  Detected targets:\n");
-        for t in &targets {
-            println!("    * {} -> {}", t.label, t.extensions_dir.display());
+        "  ── 管理 Claude Code 目标位置 ────────────────────\n"
+    };
+    execute!(stdout, style::PrintStyledContent(title.with(Color::Cyan)))?;
+
+    if targets.is_empty() {
+        execute!(stdout, cursor::MoveTo(0, 2))?;
+        let msg = if lang == "en" { "  No Claude Code installation detected." } else { "  未检测到 Claude Code 安装。" };
+        execute!(stdout, style::PrintStyledContent(msg.with(Color::Yellow)))?;
+    } else {
+        let heading = if lang == "en" { "  Detected targets:" } else { "  已检测到的目标：" };
+        execute!(stdout, cursor::MoveTo(0, 2))?;
+        execute!(stdout, style::PrintStyledContent(heading.with(Color::Grey)))?;
+        for (i, t) in targets.iter().enumerate() {
+            execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
+            let mark = if i == selected { "▸" } else { " " };
+            let color = if i == selected { Color::White } else { Color::Grey };
+            execute!(stdout, style::PrintStyledContent(
+                format!("  {} {} -> {}", mark, t.label, t.extensions_dir.display()).with(color)
+            ))?;
         }
     }
+
+    let actions = if lang == "en" {
+        "  [r] Rescan  [q] Back"
+    } else {
+        "  [r] 重新扫描  [q] 返回"
+    };
+    let row = (targets.len() + 4) as u16;
+    execute!(stdout, cursor::MoveTo(0, row))?;
+    execute!(stdout, style::PrintStyledContent(
+        "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+    ))?;
+    execute!(stdout, cursor::MoveTo(0, row + 1))?;
+    execute!(stdout, style::PrintStyledContent(actions.with(Color::DarkGrey)))?;
+
+    stdout.flush()?;
+    Ok(())
+}
+
+fn run_targets(lang: &str) {
+    let mut stdout = io::stdout();
+    let mut targets = detect_targets();
+    let mut selected: usize = 0;
+
+    terminal::enable_raw_mode().ok();
+    execute!(stdout, cursor::Hide).ok();
+    draw_targets(&mut stdout, &targets, selected, lang).ok();
+
+    loop {
+        if let Event::Key(key) = event::read().expect("Failed to read event") {
+            if key.kind != KeyEventKind::Press { continue; }
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if !targets.is_empty() {
+                        if selected > 0 { selected -= 1; } else { selected = targets.len() - 1; }
+                        draw_targets(&mut stdout, &targets, selected, lang).ok();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if !targets.is_empty() {
+                        if selected < targets.len() - 1 { selected += 1; } else { selected = 0; }
+                        draw_targets(&mut stdout, &targets, selected, lang).ok();
+                    }
+                }
+                KeyCode::Char('r') => {
+                    targets = detect_targets();
+                    selected = 0;
+                    draw_targets(&mut stdout, &targets, selected, lang).ok();
+                }
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('b') => {
+                    execute!(stdout, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn run_language(lang: &str) {
+    let mut stdout = io::stdout();
+    let options = vec!["中文", "English"];
+    let mut selected: usize = if lang == "en" { 1 } else { 0 };
+
+    terminal::enable_raw_mode().ok();
+    execute!(stdout, cursor::Hide).ok();
+
+    loop {
+        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0)).ok();
+        execute!(stdout, style::PrintStyledContent(
+            "  ── CLI 界面语言 / Language ─────────────────────\n".with(Color::Cyan)
+        )).ok();
+
+        for (i, label) in options.iter().enumerate() {
+            execute!(stdout, cursor::MoveTo(0, (i + 2) as u16)).ok();
+            let mark = format!("{}.", i + 1);
+            if i == selected {
+                execute!(stdout, style::PrintStyledContent(
+                    format!("▸ {}  {}", mark, label).with(Color::White).on(Color::DarkBlue)
+                )).ok();
+            } else {
+                execute!(stdout, style::PrintStyledContent(
+                    format!("  {}  {}", mark, label).with(Color::Grey)
+                )).ok();
+            }
+        }
+
+        let hint_row = (options.len() + 3) as u16;
+        execute!(stdout, cursor::MoveTo(0, hint_row)).ok();
+        execute!(stdout, style::PrintStyledContent(
+            "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+        )).ok();
+        execute!(stdout, cursor::MoveTo(0, hint_row + 1)).ok();
+        execute!(stdout, style::PrintStyledContent(
+            "  ↑↓ 移动 · 回车 确认 · q 返回\n".with(Color::DarkGrey)
+        )).ok();
+        stdout.flush().ok();
+
+        if let Event::Key(key) = event::read().expect("Failed to read event") {
+            if key.kind != KeyEventKind::Press { continue; }
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 { selected -= 1; } else { selected = options.len() - 1; }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected < options.len() - 1 { selected += 1; } else { selected = 0; }
+                }
+                KeyCode::Enter => {
+                    let new_lang = if selected == 0 { "zh" } else { "en" };
+                    let mut config = crate::config::Config::load();
+                    config.language = new_lang.to_string();
+                    let _ = config.save();
+                    execute!(stdout, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    // Relaunch with new language
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .arg("--lang").arg(new_lang)
+                        .spawn().ok();
+                    std::process::exit(0);
+                }
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('b') => {
+                    execute!(stdout, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn run_cleanup(lang: &str) {
+    let backup_dir = dirs::home_dir().map(|h| h.join(".incipit-backup"));
+    let restore_dir = dirs::home_dir().map(|h| h.join(".incipit").join("official-restore-points-v1"));
+
+    let mut total_bytes: u64 = 0;
+    let mut total_files: u64 = 0;
+    let mut total_dirs: u64 = 0;
+
+    for dir in backup_dir.iter().chain(restore_dir.iter()) {
+        if dir.exists() {
+            for entry in std::fs::read_dir(dir).into_iter().flatten() {
+                if let Ok(entry) = entry {
+                    let meta = entry.metadata().ok();
+                    if let Some(m) = meta {
+                        total_bytes += m.len();
+                        if m.is_dir() { total_dirs += 1; } else { total_files += 1; }
+                    }
+                }
+            }
+        }
+    }
+
+    let size_str = if total_bytes > 1_048_576 {
+        format!("{:.1} MB", total_bytes as f64 / 1_048_576.0)
+    } else if total_bytes > 1024 {
+        format!("{:.1} KB", total_bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", total_bytes)
+    };
+
+    if lang == "en" {
+        println!("  ── Clean Legacy Backups ─────────────────────────\n");
+        if let Some(ref p) = backup_dir {
+            println!("  Backup root: {}", p.display());
+        }
+        println!("  Files: {}  Dirs: {}  Size: {}", total_files, total_dirs, size_str);
+    } else {
+        println!("  ── 清理旧版备份文件 ─────────────────────────────\n");
+        if let Some(ref p) = backup_dir {
+            println!("  备份目录: {}", p.display());
+        }
+        println!("  文件: {}  目录: {}  大小: {}", total_files, total_dirs, size_str);
+    }
+
+    if total_bytes == 0 {
+        let msg = if lang == "en" { "\n  No legacy backups found." } else { "\n  未发现旧版备份文件。" };
+        println!("{}", msg);
+    } else {
+        let prompt = if lang == "en" {
+            "\n  Delete all legacy backups? [y/N] "
+        } else {
+            "\n  确认删除所有旧版备份？[y/N] "
+        };
+        print!("{}", prompt);
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        if input.trim().eq_ignore_ascii_case("y") {
+            for dir in backup_dir.iter().chain(restore_dir.iter()) {
+                if dir.exists() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            }
+            let msg = if lang == "en" { "  ✅ Legacy backups deleted." } else { "  ✅ 旧版备份已清理。" };
+            println!("{}", msg);
+        } else {
+            let msg = if lang == "en" { "  Cancelled." } else { "  已取消。" };
+            println!("{}", msg);
+        }
+    }
+
     println!("\n  Press Enter to return...");
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).ok();
@@ -427,7 +651,7 @@ pub fn run_interactive(lang: &str) {
                         "target" => {
                             execute!(stdout, cursor::Show).ok();
                             terminal::disable_raw_mode().ok();
-                            show_targets();
+                            run_targets(lang);
                             terminal::enable_raw_mode().ok();
                             execute!(stdout, cursor::Hide).ok();
                             draw_menu(&mut stdout, items, selected, lang).ok();
@@ -451,10 +675,7 @@ pub fn run_interactive(lang: &str) {
                         "language" => {
                             execute!(stdout, cursor::Show).ok();
                             terminal::disable_raw_mode().ok();
-                            println!("  Language: zh / en (restart with --lang to change)");
-                            println!("  Press Enter to return...");
-                            let mut buf = String::new();
-                            io::stdin().read_line(&mut buf).ok();
+                            run_language(lang);
                             terminal::enable_raw_mode().ok();
                             execute!(stdout, cursor::Hide).ok();
                             draw_menu(&mut stdout, items, selected, lang).ok();
@@ -462,10 +683,7 @@ pub fn run_interactive(lang: &str) {
                         "cleanup" => {
                             execute!(stdout, cursor::Show).ok();
                             terminal::disable_raw_mode().ok();
-                            println!("  Legacy backups cleaned.");
-                            println!("  Press Enter to return...");
-                            let mut buf = String::new();
-                            io::stdin().read_line(&mut buf).ok();
+                            run_cleanup(lang);
                             terminal::enable_raw_mode().ok();
                             execute!(stdout, cursor::Hide).ok();
                             draw_menu(&mut stdout, items, selected, lang).ok();
@@ -515,8 +733,10 @@ pub fn run_interactive(lang: &str) {
                                         eprintln!("Update failed: {}", e);
                                     }
                                 }
-                                "target" => show_targets(),
+                                "target" => run_targets(lang),
                                 "connect" => show_connect(),
+                                "cleanup" => run_cleanup(lang),
+                                "language" => run_language(lang),
                                 _ => {}
                             }
                             return;
