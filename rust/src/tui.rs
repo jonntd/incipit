@@ -12,10 +12,14 @@ use crate::detector::detect_targets;
 use crate::installer::{apply_patch, restore_official};
 use crate::updater::update_self;
 
-// ── Color palette (matches original frontispiece.js) ──
+// ── Color palette (matches original frontispiece.js exactly) ──
 fn terra() -> Color { Color::Rgb { r: 217, g: 119, b: 87 } }
 fn ivory() -> Color { Color::Rgb { r: 248, g: 248, b: 246 } }
 fn grey()  -> Color { Color::Rgb { r: 152, g: 152, b: 152 } }
+
+const MARK_COL: usize = 5;
+const CHECK_COL: usize = 4;
+const LABEL_COL: usize = 22;
 
 fn pad(s: &str, width: usize) -> String {
     let len = s.chars().count();
@@ -29,6 +33,8 @@ fn center(text: &str, width: usize) -> String {
 }
 
 fn rule(w: usize) -> String { "━".repeat(w) }
+
+fn cursor_indent() -> String { format!("   {}  ", "›".with(terra()).bold()) }
 
 const MENU_ITEMS: &[(&str, &str)] = &[
     ("apply",     "应用界面补丁"),
@@ -80,19 +86,35 @@ fn print_help(lang: &str) {
     }
 }
 
-// ── Main menu ──
-fn draw_menu(stdout: &mut io::Stdout, items: &[(&str, &str)], sel: usize, lang: &str) -> io::Result<()> {
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-    let w: usize = 60;
+// ── Render helpers ──
+fn render_header(stdout: &mut io::Stdout, title: &str, w: usize) -> io::Result<()> {
     let r = rule(w);
-    let ind = "      ";
-
     execute!(stdout, style::PrintStyledContent(format!("{}\n\n", center(&r, w)).with(grey())))?;
     execute!(stdout, style::PrintStyledContent(format!("{}\n\n", center("I  ·  N  ·  C  ·  I  ·  P  ·  I  ·  T", w)).with(terra()).bold()))?;
     execute!(stdout, style::PrintStyledContent(format!("{}\n", center("A frontend rework of the official", w)).with(grey()).italic()))?;
     execute!(stdout, style::PrintStyledContent(format!("{}\n", center("Claude Code VS Code extension", w)).with(grey()).italic()))?;
     execute!(stdout, style::PrintStyledContent(format!("\n{}\n\n", center(&format!("version {}", env!("CARGO_PKG_VERSION")), w)).with(grey()).italic()))?;
+    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(title, w)).with(grey())))?;
+    execute!(stdout, style::PrintStyledContent("\n\n".with(grey())))?;
+    Ok(())
+}
 
+fn render_footer(stdout: &mut io::Stdout, hint: &str, w: usize) -> io::Result<()> {
+    let r = rule(w);
+    execute!(stdout, style::PrintStyledContent(format!("\n{}\n", center(&r, w)).with(grey())))?;
+    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(hint, w)).with(grey()).italic()))?;
+    Ok(())
+}
+
+// ── Main menu ──
+fn draw_menu(stdout: &mut io::Stdout, items: &[(&str, &str)], sel: usize, lang: &str) -> io::Result<()> {
+    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    let w: usize = 60;
+    let ind = "      ";
+
+    render_header(stdout, "", w)?;
+
+    // Ledger
     let targets = detect_targets();
     if let Some(t) = targets.first() {
         execute!(stdout, cursor::MoveTo(0, 8))?;
@@ -106,83 +128,217 @@ fn draw_menu(stdout: &mut io::Stdout, items: &[(&str, &str)], sel: usize, lang: 
     }
     execute!(stdout, style::PrintStyledContent("\n".with(grey())))?;
 
+    // Menu items
     let mut row: u16 = 10;
     for (i, (_, label)) in items.iter().enumerate() {
         let mark = format!("{}.", i + 1);
-        if i == sel {
-            execute!(stdout, cursor::MoveTo(0, row))?;
-            execute!(stdout, style::PrintStyledContent(
-                format!("   {}  {}  {}\n", "›".with(terra()).bold(), pad(&mark, 4).with(terra()).bold(), label).with(ivory())
-            ))?;
-        } else {
-            execute!(stdout, cursor::MoveTo(0, row))?;
-            execute!(stdout, style::PrintStyledContent(
-                format!("{}{}{}\n", ind, pad(&mark, 4).with(terra()), label).with(ivory())
-            ))?;
-        }
+        let lead = if i == sel { cursor_indent() } else { ind.to_string() };
+        execute!(stdout, cursor::MoveTo(0, row))?;
+        execute!(stdout, style::PrintStyledContent(
+            format!("{}{}{}\n", lead, pad(&mark, MARK_COL).with(terra()), label).with(ivory())
+        ))?;
         row += 1;
     }
 
-    execute!(stdout, style::PrintStyledContent(format!("\n{}\n", center(&r, w)).with(grey())))?;
     let hint = if lang == "en" { "↑↓ navigate  ·  Enter confirm  ·  q quit" } else { "↑↓ 导航  ·  回车 确认  ·  q 退出" };
-    execute!(stdout, cursor::MoveTo(0, row + 2))?;
-    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(hint, w)).with(grey()).italic()))?;
-    execute!(stdout, cursor::MoveTo(0, row + 3))?;
-    execute!(stdout, style::PrintStyledContent(format!("{}{}", ind, "› ").with(terra()).bold()))?;
-    execute!(stdout, style::PrintStyledContent("\n".with(grey())))?;
+    render_footer(stdout, hint, w)?;
     stdout.flush()?;
     Ok(())
 }
 
-// ── Targets sub-menu ──
+// ── Configure sub-menu (matches original with ✓/✗ toggles) ──
+fn draw_configure(stdout: &mut io::Stdout, config: &Config, sel: usize, lang: &str) -> io::Result<()> {
+    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    let w: usize = 60;
+    let ind = "      ";
+
+    render_header(stdout, if lang == "en" { "Configure" } else { "配置" }, w)?;
+
+    let on = if lang == "en" { "ON" } else { "开启" };
+    let off = if lang == "en" { "OFF" } else { "关闭" };
+
+    // Row data: (mark, value_display, is_toggle)
+    struct Row { mark: &'static str, label: &'static str, value: String, is_toggle: bool }
+    let rows: Vec<Row> = vec![
+        Row { mark: "1.", label: if lang == "en" { "Math rendering" } else { "数学公式渲染" }, value: if config.features.math { on.into() } else { off.into() }, is_toggle: true },
+        Row { mark: "2.", label: if lang == "en" { "Session usage" } else { "会话用量统计" }, value: if config.features.session_usage { on.into() } else { off.into() }, is_toggle: true },
+        Row { mark: "3.", label: if lang == "en" { "Editor overlay" } else { "编辑器浮层" }, value: if config.features.editor_selection_overlay { on.into() } else { off.into() }, is_toggle: true },
+        Row { mark: "4.", label: if lang == "en" { "Body font size" } else { "正文字号" }, value: format!("{} px", config.theme.body_font_size), is_toggle: false },
+        Row { mark: "5.", label: if lang == "en" { "Color palette" } else { "主题色" }, value: if config.theme.palette == "warm-white" {
+            if lang == "en" { "Warm White" } else { "暖白" }.into()
+        } else {
+            if lang == "en" { "Warm Black" } else { "暖黑" }.into()
+        }, is_toggle: false },
+        Row { mark: "6.", label: "", value: "".into(), is_toggle: false }, // placeholder for bodyFont
+        Row { mark: "7.", label: "", value: "".into(), is_toggle: false }, // placeholder for codeFont
+        Row { mark: "r.", label: if lang == "en" { "Reset to defaults" } else { "恢复默认设置" }, value: "".into(), is_toggle: false },
+        Row { mark: "b.", label: if lang == "en" { "Back" } else { "返回" }, value: "".into(), is_toggle: false },
+    ];
+
+    let mut row_num: u16 = 10;
+    for (i, r) in rows.iter().enumerate() {
+        let lead = if i == sel { cursor_indent() } else { ind.to_string() };
+
+        if i < 3 {
+            // Toggle items: ✓/✗ + label
+            let glyph = if (i == 0 && config.features.math)
+                || (i == 1 && config.features.session_usage)
+                || (i == 2 && config.features.editor_selection_overlay) { "✓" } else { "✗" };
+            let glyph_color = if glyph == "✓" { terra() } else { grey() };
+
+            execute!(stdout, cursor::MoveTo(0, row_num))?;
+            execute!(stdout, style::PrintStyledContent(
+                format!("{}{}{}{}\n", lead,
+                    pad(r.mark, MARK_COL).with(terra()),
+                    pad(glyph, CHECK_COL).with(glyph_color),
+                    r.label).with(ivory())
+            ))?;
+        } else if i < 7 {
+            // Knob items: label + value
+            execute!(stdout, cursor::MoveTo(0, row_num))?;
+            let knob_line = format!("{}{}{}{}", lead,
+                pad(r.mark, MARK_COL).with(terra()),
+                " ".repeat(CHECK_COL),
+                pad(r.label, LABEL_COL).with(ivory()));
+            execute!(stdout, style::PrintStyledContent(
+                format!("{}{}\n", knob_line, r.value).with(ivory())
+            ))?;
+        } else {
+            // Plain items: r. / b.
+            execute!(stdout, cursor::MoveTo(0, row_num))?;
+            execute!(stdout, style::PrintStyledContent(
+                format!("{}{}{}\n", lead,
+                    pad(r.mark, MARK_COL).with(terra()),
+                    r.label).with(ivory())
+            ))?;
+        }
+        row_num += 1;
+    }
+
+    let hint = if lang == "en" { "↑↓ move  ·  Enter toggle  ·  r reset  ·  b back" } else { "↑↓ 移动  ·  回车 切换  ·  r 恢复默认  ·  b 返回" };
+    render_footer(stdout, hint, w)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+pub fn run_configure(lang: &str) {
+    let mut stdout = io::stdout();
+    let mut config = Config::load();
+    let mut sel: usize = 0;
+    let item_count = 9; // 3 toggles + 3 knobs + reset + back + 1 bodyFont placeholder
+    terminal::enable_raw_mode().expect("Failed to enable raw mode");
+    execute!(stdout, cursor::Hide).ok();
+    draw_configure(&mut stdout, &config, sel, lang).ok();
+
+    loop {
+        if let Event::Key(key) = event::read().expect("read") {
+            if key.kind != KeyEventKind::Press { continue; }
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => { sel = if sel > 0 { sel - 1 } else { item_count - 1 }; draw_configure(&mut stdout, &config, sel, lang).ok(); }
+                KeyCode::Down | KeyCode::Char('j') => { sel = if sel < item_count - 1 { sel + 1 } else { 0 }; draw_configure(&mut stdout, &config, sel, lang).ok(); }
+                KeyCode::Char('q') | KeyCode::Char('b') | KeyCode::Esc => { execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    match sel {
+                        0 => config.features.math = !config.features.math,
+                        1 => config.features.session_usage = !config.features.session_usage,
+                        2 => config.features.editor_selection_overlay = !config.features.editor_selection_overlay,
+                        3 => config.theme.body_font_size = match config.theme.body_font_size { 12 => 13, 13 => 14, 14 => 15, 15 => 16, _ => 12 },
+                        4 => config.theme.palette = if config.theme.palette == "warm-black" { "warm-white".into() } else { "warm-black".into() },
+                        7 => { config = Config::default(); }
+                        8 => { let _ = config.save(); execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
+                        _ => {}
+                    }
+                    let _ = config.save();
+                    draw_configure(&mut stdout, &config, sel, lang).ok();
+                }
+                KeyCode::Char('r') => { config = Config::default(); let _ = config.save(); draw_configure(&mut stdout, &config, sel, lang).ok(); }
+                _ => {}
+            }
+        }
+    }
+}
+
+// ── Targets sub-menu (browse mode with actions) ──
 fn run_targets(lang: &str) {
     let mut stdout = io::stdout();
     let mut targets = detect_targets();
-    let mut sel: usize = 0;
+    let mut sel: usize = 0; // index into actions
+    let actions: Vec<(&str, &str)> = vec![
+        ("a.", if lang == "en" { "Add target" } else { "添加目标" }),
+        ("s.", if lang == "en" { "Deep scan" } else { "深度扫描" }),
+        ("d.", if lang == "en" { "Remove target" } else { "删除目标" }),
+        ("b.", if lang == "en" { "Back" } else { "返回" }),
+    ];
+
     terminal::enable_raw_mode().ok();
     execute!(stdout, cursor::Hide).ok();
 
     loop {
         execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0)).ok();
         let w: usize = 60;
-        let r = rule(w);
         let ind = "      ";
-        let title = if lang == "en" { "Manage Claude Code Targets" } else { "管理 Claude Code 目标位置" };
 
-        execute!(stdout, style::PrintStyledContent(format!("{}\n", center(&r, w)).with(grey()))).ok();
-        execute!(stdout, style::PrintStyledContent(format!("{}\n{}\n", center(title, w).with(terra()).bold(), center(&r, w)).with(grey()))).ok();
+        render_header(&mut stdout, if lang == "en" { "Manage Targets" } else { "管理目标位置" }, w).ok();
+
+        // Target list
+        let sub_heading = if lang == "en" { "Detected targets:" } else { "已检测到的目标：" };
+        execute!(stdout, style::PrintStyledContent(format!("{}{}\n", ind, sub_heading).with(grey()))).ok();
         execute!(stdout, style::PrintStyledContent("\n".with(grey()))).ok();
 
+        let mut row: u16 = 12;
         if targets.is_empty() {
             let msg = if lang == "en" { "No Claude Code installation detected." } else { "未检测到 Claude Code 安装。" };
-            execute!(stdout, style::PrintStyledContent(format!("{}\n", center(msg, w)).with(grey()).italic())).ok();
+            let hint_msg = if lang == "en" { "Install Claude Code first, then run scan." } else { "请先安装 Claude Code，然后运行扫描。" };
+            execute!(stdout, style::PrintStyledContent(format!("{}{}\n", ind, msg).with(grey()).italic())).ok();
+            execute!(stdout, style::PrintStyledContent(format!("{}{}\n", ind, hint_msg).with(grey()).italic())).ok();
         } else {
-            for (i, t) in targets.iter().enumerate() {
-                let mark = format!("{}.", i + 1);
-                if i == sel {
-                    execute!(stdout, style::PrintStyledContent(
-                        format!("   {}  {}  {}\n", "›".with(terra()).bold(), pad(&mark, 4).with(terra()).bold(), t.label).with(ivory())
-                    )).ok();
-                } else {
-                    execute!(stdout, style::PrintStyledContent(
-                        format!("{}{}{}\n", ind, pad(&mark, 4).with(terra()), t.label).with(ivory())
-                    )).ok();
-                }
+            for t in &targets {
+                let ext_name = t.extensions_dir.file_name().unwrap_or_default().to_string_lossy();
+                execute!(stdout, cursor::MoveTo(0, row)).ok();
+                execute!(stdout, style::PrintStyledContent(format!("{}{}\n", ind, t.label).with(ivory()))).ok();
+                execute!(stdout, style::PrintStyledContent(format!("        {}\n", ext_name).with(grey()).italic())).ok();
+                row += 2;
             }
         }
 
-        execute!(stdout, style::PrintStyledContent(format!("\n{}\n", center(&r, w)).with(grey()))).ok();
-        let hint = if lang == "en" { "[r] Rescan  ·  [q] Back" } else { "[r] 重新扫描  ·  [q] 返回" };
-        execute!(stdout, style::PrintStyledContent(format!("{}\n", center(hint, w)).with(grey()).italic())).ok();
+        // Separator
+        execute!(stdout, style::PrintStyledContent("\n".with(grey()))).ok();
+        execute!(stdout, style::PrintStyledContent(
+            format!("{}{}\n", ind, "─".repeat(w - ind.len() - 2)).with(grey())
+        )).ok();
+        execute!(stdout, style::PrintStyledContent("\n".with(grey()))).ok();
+
+        // Action rows
+        for (i, (mark, label)) in actions.iter().enumerate() {
+            let lead = if i == sel { cursor_indent() } else { ind.to_string() };
+            execute!(stdout, style::PrintStyledContent(
+                format!("{}{}{}\n", lead, pad(mark, MARK_COL).with(terra()), label).with(ivory())
+            )).ok();
+        }
+
+        let hint = if lang == "en" { "↑↓ navigate  ·  Enter select  ·  b back" } else { "↑↓ 导航  ·  回车 确认  ·  b 返回" };
+        render_footer(&mut stdout, hint, w).ok();
         stdout.flush().ok();
 
         if let Event::Key(key) = event::read().expect("read") {
             if key.kind != KeyEventKind::Press { continue; }
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => { if !targets.is_empty() { sel = if sel > 0 { sel - 1 } else { targets.len() - 1 }; } }
-                KeyCode::Down | KeyCode::Char('j') => { if !targets.is_empty() { sel = if sel < targets.len() - 1 { sel + 1 } else { 0 }; } }
-                KeyCode::Char('r') => { targets = detect_targets(); sel = 0; }
-                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('b') => { execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
+                KeyCode::Up | KeyCode::Char('k') => { sel = if sel > 0 { sel - 1 } else { actions.len() - 1 }; }
+                KeyCode::Down | KeyCode::Char('j') => { sel = if sel < actions.len() - 1 { sel + 1 } else { 0 }; }
+                KeyCode::Enter => {
+                    match sel {
+                        0 => { /* add target - TODO */ }
+                        1 => { targets = detect_targets(); } // rescan
+                        2 => { /* remove - TODO */ }
+                        3 => { execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
+                        _ => {}
+                    }
+                }
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('b') => {
+                    execute!(stdout, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return;
+                }
                 _ => {}
             }
         }
@@ -200,29 +356,21 @@ fn run_language(lang: &str) {
     loop {
         execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0)).ok();
         let w: usize = 60;
-        let r = rule(w);
         let ind = "      ";
 
-        execute!(stdout, style::PrintStyledContent(format!("{}\n", center(&r, w)).with(grey()))).ok();
-        execute!(stdout, style::PrintStyledContent(format!("{}\n{}\n", center("CLI 界面语言 / Language", w).with(terra()).bold(), center(&r, w)).with(grey()))).ok();
+        render_header(&mut stdout, if lang == "en" { "CLI Language" } else { "CLI 界面语言" }, w).ok();
         execute!(stdout, style::PrintStyledContent("\n".with(grey()))).ok();
 
         for (i, label) in options.iter().enumerate() {
             let mark = format!("{}.", i + 1);
-            if i == sel {
-                execute!(stdout, style::PrintStyledContent(
-                    format!("   {}  {}  {}\n", "›".with(terra()).bold(), pad(&mark, 4).with(terra()).bold(), label).with(ivory())
-                )).ok();
-            } else {
-                execute!(stdout, style::PrintStyledContent(
-                    format!("{}{}{}\n", ind, pad(&mark, 4).with(terra()), label).with(ivory())
-                )).ok();
-            }
+            let lead = if i == sel { cursor_indent() } else { ind.to_string() };
+            execute!(stdout, style::PrintStyledContent(
+                format!("{}{}{}\n", lead, pad(&mark, MARK_COL).with(terra()), label).with(ivory())
+            )).ok();
         }
 
-        execute!(stdout, style::PrintStyledContent(format!("\n{}\n", center(&r, w)).with(grey()))).ok();
-        let hint = if lang == "en" { "↑↓ move  ·  Enter select  ·  q back" } else { "↑↓ 移动  ·  回车 确认  ·  q 返回" };
-        execute!(stdout, style::PrintStyledContent(format!("{}\n", center(hint, w)).with(grey()).italic())).ok();
+        let hint = if lang == "en" { "↑↓ move  ·  Enter select  ·  b back" } else { "↑↓ 移动  ·  回车 确认  ·  b 返回" };
+        render_footer(&mut stdout, hint, w).ok();
         stdout.flush().ok();
 
         if let Event::Key(key) = event::read().expect("read") {
@@ -307,103 +455,6 @@ fn run_cleanup(lang: &str) {
     println!("\n  Press Enter to return...");
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).ok();
-}
-
-// ── Configure sub-menu ──
-fn draw_configure(stdout: &mut io::Stdout, config: &Config, sel: usize, lang: &str) -> io::Result<()> {
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-    let w: usize = 60;
-    let r = rule(w);
-    let ind = "      ";
-    let title = if lang == "en" { "Configure" } else { "配置" };
-
-    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(&r, w)).with(grey())))?;
-    execute!(stdout, style::PrintStyledContent(format!("{}\n{}\n", center(title, w).with(terra()).bold(), center(&r, w)).with(grey())))?;
-    execute!(stdout, style::PrintStyledContent("\n".with(grey())))?;
-
-    let on = if lang == "en" { "ON" } else { "开启" };
-    let off = if lang == "en" { "OFF" } else { "关闭" };
-
-    let rows: Vec<(String, String, bool)> = vec![
-        ("math".into(), if lang == "en" { "Math rendering" } else { "数学公式渲染" }.into(), config.features.math),
-        ("session".into(), if lang == "en" { "Session usage" } else { "会话用量统计" }.into(), config.features.session_usage),
-        ("overlay".into(), if lang == "en" { "Editor overlay" } else { "编辑器浮层" }.into(), config.features.editor_selection_overlay),
-        ("bodysize".into(), if lang == "en" { "Body font size" } else { "正文字号" }.into(), false),
-        ("palette".into(), if lang == "en" { "Color palette" } else { "主题色" }.into(), false),
-        ("reset".into(), if lang == "en" { "Reset to defaults" } else { "恢复默认设置" }.into(), false),
-        ("back".into(), if lang == "en" { "Back" } else { "返回" }.into(), false),
-    ];
-
-    for (i, (_, label, val)) in rows.iter().enumerate() {
-        let display = match i {
-            0..=2 => format!("{} [{}]", label, if *val { on } else { off }),
-            3 => format!("{}  {} px", label, config.theme.body_font_size),
-            4 => {
-                let pal = if config.theme.palette == "warm-white" {
-                    if lang == "en" { "Warm White" } else { "暖白" }
-                } else {
-                    if lang == "en" { "Warm Black" } else { "暖黑" }
-                };
-                format!("{}  {}", label, pal)
-            }
-            _ => label.clone(),
-        };
-        let mark = format!("{}.", i + 1);
-        if i == sel {
-            execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
-            execute!(stdout, style::PrintStyledContent(
-                format!("   {}  {}  {}\n", "›".with(terra()).bold(), pad(&mark, 4).with(terra()).bold(), display).with(ivory())
-            ))?;
-        } else {
-            execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
-            execute!(stdout, style::PrintStyledContent(
-                format!("{}{}{}\n", ind, pad(&mark, 4).with(terra()), display).with(ivory())
-            ))?;
-        }
-    }
-
-    execute!(stdout, cursor::MoveTo(0, (rows.len() + 5) as u16))?;
-    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(&r, w)).with(grey())))?;
-    let hint = if lang == "en" { "↑↓ move  ·  Enter toggle  ·  r reset  ·  q back" } else { "↑↓ 移动  ·  回车 切换  ·  r 恢复默认  ·  q 返回" };
-    execute!(stdout, style::PrintStyledContent(format!("{}\n", center(hint, w)).with(grey()).italic()))?;
-    stdout.flush()?;
-    Ok(())
-}
-
-pub fn run_configure(lang: &str) {
-    let mut stdout = io::stdout();
-    let mut config = Config::load();
-    let mut sel: usize = 0;
-    terminal::enable_raw_mode().expect("Failed to enable raw mode");
-    execute!(stdout, cursor::Hide).ok();
-    draw_configure(&mut stdout, &config, sel, lang).ok();
-
-    loop {
-        if let Event::Key(key) = event::read().expect("read") {
-            if key.kind != KeyEventKind::Press { continue; }
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => { sel = if sel > 0 { sel - 1 } else { 6 }; draw_configure(&mut stdout, &config, sel, lang).ok(); }
-                KeyCode::Down | KeyCode::Char('j') => { sel = if sel < 6 { sel + 1 } else { 0 }; draw_configure(&mut stdout, &config, sel, lang).ok(); }
-                KeyCode::Char('q') | KeyCode::Char('b') | KeyCode::Esc => { execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    match sel {
-                        0 => config.features.math = !config.features.math,
-                        1 => config.features.session_usage = !config.features.session_usage,
-                        2 => config.features.editor_selection_overlay = !config.features.editor_selection_overlay,
-                        3 => config.theme.body_font_size = match config.theme.body_font_size { 12 => 13, 13 => 14, 14 => 15, 15 => 16, _ => 12 },
-                        4 => config.theme.palette = if config.theme.palette == "warm-black" { "warm-white".into() } else { "warm-black".into() },
-                        5 => config = Config::default(),
-                        6 => { let _ = config.save(); execute!(stdout, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
-                        _ => {}
-                    }
-                    let _ = config.save();
-                    draw_configure(&mut stdout, &config, sel, lang).ok();
-                }
-                KeyCode::Char('r') => { config = Config::default(); let _ = config.save(); draw_configure(&mut stdout, &config, sel, lang).ok(); }
-                _ => {}
-            }
-        }
-    }
 }
 
 // ── Main interactive menu ──
