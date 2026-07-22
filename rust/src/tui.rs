@@ -73,46 +73,70 @@ fn draw_menu(
 ) -> io::Result<()> {
     execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
 
+    // Title with version
     let title = if lang == "en" {
-        "  incipit  A frontend rework of the official Claude Code VS Code extension\n"
+        "  incipit"
     } else {
-        "  incipit  Claude Code VS Code 扩展前端重绘\n"
+        "  incipit"
     };
-    execute!(stdout, style::PrintStyledContent(title.with(Color::Cyan)))?;
+    execute!(stdout, style::PrintStyledContent(title.with(Color::Cyan).bold()))?;
     execute!(stdout, style::PrintStyledContent(
-        "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+        format!(" v{}\n", env!("CARGO_PKG_VERSION")).with(Color::DarkGrey)
     ))?;
 
+    let subtitle = if lang == "en" {
+        "  Claude Code VS Code Extension — Surface Redrawn\n"
+    } else {
+        "  Claude Code VS Code 扩展前端重绘\n"
+    };
+    execute!(stdout, style::PrintStyledContent(subtitle.with(Color::DarkGrey)))?;
+    execute!(stdout, style::PrintStyledContent(
+        "\n".with(Color::DarkGrey)
+    ))?;
+
+    // Menu items with visual grouping
     for (i, (_, label)) in items.iter().enumerate() {
         let is_quit = items[i].0 == "quit";
         let display_mark = if is_quit { "q.".to_string() } else { format!("{}.", i + 1) };
 
         if i == selected {
-            // Selected item: white text on dark blue background
-            execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
+            execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
             execute!(stdout, style::PrintStyledContent(
                 format!("  {}  ▸ {}", display_mark, label).with(Color::White).on(Color::DarkBlue)
             ))?;
         } else {
-            // Normal item: grey text
-            execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
+            // Use different colors for different item groups
+            let color = if i < 2 {
+                Color::White      // Primary actions: apply, restore
+            } else if i < 4 {
+                Color::Grey       // System: configure, update
+            } else if i < 6 {
+                Color::DarkGrey   // Management: target, language
+            } else if items[i].0 == "quit" {
+                Color::Red        // Quit: red for emphasis
+            } else {
+                Color::Grey       // Other: connect, cleanup
+            };
+            execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
             execute!(stdout, style::PrintStyledContent(
-                format!("  {}    {}", display_mark, label).with(Color::Grey)
+                format!("  {}    {}", display_mark, label).with(color)
             ))?;
         }
     }
 
-    execute!(stdout, cursor::MoveTo(0, (items.len() + 3) as u16))?;
+    // Footer
+    let footer_row = (items.len() + 5) as u16;
+    execute!(stdout, cursor::MoveTo(0, footer_row))?;
     execute!(stdout, style::PrintStyledContent(
         "\n  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
     ))?;
 
     let hint = if lang == "en" {
-        "  ↑↓ move · Enter select · q quit\n"
+        "  ↑↓ navigate  ·  Enter confirm  ·  q quit\n"
     } else {
-        "  ↑↓ 移动 · 回车 确认 · q 退出\n"
+        "  ↑↓ 导航  ·  回车 确认  ·  q 退出\n"
     };
-    execute!(stdout, style::PrintStyledContent(hint.with(Color::DarkGrey)))?;
+    execute!(stdout, style::PrintStyledContent(hint.with(Color::DarkGrey).italic()))?;
 
     stdout.flush()?;
     Ok(())
@@ -608,11 +632,16 @@ pub fn run_interactive(lang: &str) {
                             terminal::disable_raw_mode().ok();
                             let targets = detect_targets();
                             if targets.is_empty() {
-                                eprintln!("No Claude Code installation detected.");
-                            } else if let Err(e) = apply_patch(&targets[0]) {
-                                eprintln!("Error applying patch: {}", e);
+                                eprintln!("\n  ⚠  No Claude Code installation detected.");
+                                eprintln!("     Install Claude Code first, then run incipit again.\n");
+                            } else {
+                                eprintln!("\n  ⏳ Applying patch to {}...", targets[0].label);
+                                match apply_patch(&targets[0]) {
+                                    Ok(()) => eprintln!("  ✅ Patch applied successfully!\n"),
+                                    Err(e) => eprintln!("  ❌ Error: {}\n", e),
+                                }
                             }
-                            println!("\n  Press Enter to return...");
+                            eprintln!("  Press Enter to return...");
                             let mut buf = String::new();
                             io::stdin().read_line(&mut buf).ok();
                             terminal::enable_raw_mode().ok();
@@ -624,11 +653,15 @@ pub fn run_interactive(lang: &str) {
                             terminal::disable_raw_mode().ok();
                             let targets = detect_targets();
                             if targets.is_empty() {
-                                eprintln!("No Claude Code installation detected.");
-                            } else if let Err(e) = restore_official(&targets[0]) {
-                                eprintln!("Error restoring: {}", e);
+                                eprintln!("\n  ⚠  No Claude Code installation detected.\n");
+                            } else {
+                                eprintln!("\n  ⏳ Restoring {} to official state...", targets[0].label);
+                                match restore_official(&targets[0]) {
+                                    Ok(()) => eprintln!("  ✅ Official files restored!\n"),
+                                    Err(e) => eprintln!("  ❌ Error: {}\n", e),
+                                }
                             }
-                            println!("\n  Press Enter to return...");
+                            eprintln!("  Press Enter to return...");
                             let mut buf = String::new();
                             io::stdin().read_line(&mut buf).ok();
                             terminal::enable_raw_mode().ok();
@@ -638,12 +671,18 @@ pub fn run_interactive(lang: &str) {
                         "update" => {
                             execute!(stdout, cursor::Show).ok();
                             terminal::disable_raw_mode().ok();
-                            if let Err(e) = update_self() {
-                                eprintln!("Update failed: {}", e);
+                            eprintln!("\n  ⏳ Checking for updates...");
+                            match update_self() {
+                                Ok(()) => {
+                                    // update_self calls process::exit on success
+                                }
+                                Err(e) => {
+                                    eprintln!("  ❌ Update failed: {}\n", e);
+                                    eprintln!("  Press Enter to return...");
+                                    let mut buf = String::new();
+                                    io::stdin().read_line(&mut buf).ok();
+                                }
                             }
-                            println!("\n  Press Enter to return...");
-                            let mut buf = String::new();
-                            io::stdin().read_line(&mut buf).ok();
                             terminal::enable_raw_mode().ok();
                             execute!(stdout, cursor::Hide).ok();
                             draw_menu(&mut stdout, items, selected, lang).ok();
@@ -715,22 +754,31 @@ pub fn run_interactive(lang: &str) {
                                 "apply" => {
                                     let targets = detect_targets();
                                     if targets.is_empty() {
-                                        eprintln!("No Claude Code installation detected.");
-                                    } else if let Err(e) = apply_patch(&targets[0]) {
-                                        eprintln!("Error: {}", e);
+                                        eprintln!("\n  ⚠  No Claude Code installation detected.\n");
+                                    } else {
+                                        eprintln!("\n  ⏳ Applying patch...");
+                                        match apply_patch(&targets[0]) {
+                                            Ok(()) => eprintln!("  ✅ Done!\n"),
+                                            Err(e) => eprintln!("  ❌ Error: {}\n", e),
+                                        }
                                     }
                                 }
                                 "restore" => {
                                     let targets = detect_targets();
                                     if targets.is_empty() {
-                                        eprintln!("No Claude Code installation detected.");
-                                    } else if let Err(e) = restore_official(&targets[0]) {
-                                        eprintln!("Error: {}", e);
+                                        eprintln!("\n  ⚠  No Claude Code installation detected.\n");
+                                    } else {
+                                        eprintln!("\n  ⏳ Restoring...");
+                                        match restore_official(&targets[0]) {
+                                            Ok(()) => eprintln!("  ✅ Done!\n"),
+                                            Err(e) => eprintln!("  ❌ Error: {}\n", e),
+                                        }
                                     }
                                 }
                                 "update" => {
+                                    eprintln!("\n  ⏳ Checking for updates...");
                                     if let Err(e) = update_self() {
-                                        eprintln!("Update failed: {}", e);
+                                        eprintln!("  ❌ Failed: {}\n", e);
                                     }
                                 }
                                 "target" => run_targets(lang),
