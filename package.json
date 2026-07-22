@@ -21,6 +21,7 @@
     "start": "node bin/cli.js",
     "apply": "node bin/cli.js apply",
     "restore": "node bin/cli.js restore",
+    "build:bin": "pkg . --out-path dist --compress Gzip",
     "test": "node tests/patch-contracts.test.js && node tests/markdown-preprocess.test.js && node tests/cache-history-buckets.test.js && node tests/session-identity.test.js && node tests/rerun-handoff.test.js && node tests/file-reveal.test.js && node tests/change-review.test.js && node tests/editor-overlay-insiders.test.js && node tests/host-detect-manual-add.test.js && node tests/deep-scan.test.js && node tests/deep-scan-results-screen.test.js && node tests/deferred-next.test.js && node tests/ui-roadmap.test.js && node tests/auth-login-guard.test.js && node tests/cjk-literary-no-faux-bold.test.js && node tests/mermaid-render.test.js && node tests/notes.test.js && node tests/prompt-enhancer-fallback.test.js && node tests/commit-message.test.js && node tests/folder-reference.test.js && node tests/selection-reference.test.js && node tests/drop-paths.test.js && node tests/protocol-tags.test.js && node tests/tool-chrome-mo-loop.test.js",
     "test:tool-chrome-mo-loop": "node tests/tool-chrome-mo-loop.test.js",
     "test:contracts": "node tests/patch-contracts.test.js",
@@ -80,5 +81,24 @@
   },
   "homepage": "https://github.com/jonntd/incipit#readme",
   "author": "jonntd",
-  "license": "AGPL-3.0-or-later"
+  "license": "AGPL-3.0-or-later",
+  "pkg": {
+    "scripts": [
+      "src/**/*.js",
+      "data/**/*.js",
+      "data/**/*.cjs"
+    ],
+    "assets": [
+      "data/**/*",
+      "companion/**/*",
+      "package.json"
+    ],
+    "targets": [
+      "node18-macos-x64",
+      "node18-macos-arm64",
+      "node18-win-x64",
+      "node18-linux-x64"
+    ],
+    "outputPath": "dist"
+  }
 }

@@ -768,10 +768,11 @@ function mainMenuRows() {
     { id: 'apply',     mark: '1.', label: t('menu.apply') },
     { id: 'restore',   mark: '2.', label: t('menu.restore') },
     { id: 'configure', mark: '3.', label: t('menu.configure') },
-    { id: 'target',    mark: '4.', label: t('menu.target') },
-    { id: 'language',  mark: '5.', label: t('menu.cli_language') },
-    { id: 'connect',   mark: '6.', label: t('menu.connect_us') },
-    { id: 'cleanup',   mark: '7.', label: t('menu.cleanup_backups') },
+    { id: 'update',    mark: '4.', label: t('menu.update') },
+    { id: 'target',    mark: '5.', label: t('menu.target') },
+    { id: 'language',  mark: '6.', label: t('menu.cli_language') },
+    { id: 'connect',   mark: '7.', label: t('menu.connect_us') },
+    { id: 'cleanup',   mark: '8.', label: t('menu.cleanup_backups') },
     { id: 'quit',      mark: 'q.', label: t('menu.quit') },
   ];
 }
@@ -2554,6 +2555,7 @@ function printHelp() {
     ${cmd('incipit restore')}                           ${t('help.cmd_restore')}
     ${cmd('incipit clean-backups')}                     ${t('help.cmd_clean_backups')}
     ${cmd('incipit list-targets')}                      ${t('help.cmd_list_targets')}
+    ${cmd('incipit update')}                            ${t('help.cmd_update')}
     ${cmd('incipit --version')}                         ${t('help.cmd_version')}
 
   ${usage} (${flags})
@@ -2876,7 +2878,39 @@ async function runInteractiveScreenLoop() {
     }
     if (action === 'restore') return { action: 'restore' };
     if (action === 'cleanup') return { action: 'cleanup' };
-    if (action === 'configure') {
+    if (action === 'update') {
+      const { checkLatestRelease, performSelfUpdate } = require('./updater');
+      resetScreenForPrompt();
+      console.log();
+      console.log('  Checking for latest release on GitHub...');
+      try {
+        const releaseInfo = await checkLatestRelease(PACKAGE_VERSION);
+        if (!releaseInfo.hasNewer) {
+          console.log(`  Already at the latest version (v${PACKAGE_VERSION}).`);
+          await pause();
+        } else {
+          console.log(`  New version found: v${releaseInfo.latestVersion} (current: v${PACKAGE_VERSION})`);
+          if (!releaseInfo.downloadUrl) {
+            console.log(`  No binary asset found for platform: ${releaseInfo.assetName}`);
+            await pause();
+          } else {
+            console.log(`  Downloading update from GitHub Releases ...`);
+            await performSelfUpdate(releaseInfo.downloadUrl, (downloaded, total) => {
+              if (total > 0) {
+                const pct = Math.round((downloaded / total) * 100);
+                process.stdout.write(`\r  Downloading: ${pct}% (${(downloaded / 1024 / 1024).toFixed(1)} MB)`);
+              }
+            });
+            console.log('\n  Update completed!');
+            await pause();
+          }
+        }
+      } catch (e) {
+        console.log(`  Update failed: ${e.message}`);
+        await pause();
+      }
+      resetScreenForMenuTransition();
+    } else if (action === 'configure') {
       await runScreenTransition(handleConfigure);
     } else if (action === 'target') {
       await runScreenTransition(handleTarget);
@@ -2928,6 +2962,34 @@ async function main(argv) {
   if (args[0] === 'list-targets') {
     const code = handleListTargets();
     return finishWithUpdateNotice(code, updatePromise);
+  }
+  if (args[0] === 'update' || args.includes('--update')) {
+    const { checkLatestRelease, performSelfUpdate } = require('./updater');
+    console.log('Checking for latest release on GitHub...');
+    try {
+      const releaseInfo = await checkLatestRelease(PACKAGE_VERSION);
+      if (!releaseInfo.hasNewer) {
+        console.log(`Already at the latest version (${PACKAGE_VERSION}).`);
+        return finishWithUpdateNotice(0, updatePromise);
+      }
+      console.log(`New version found: v${releaseInfo.latestVersion} (current: v${PACKAGE_VERSION})`);
+      if (!releaseInfo.downloadUrl) {
+        console.log(`No binary found for platform asset: ${releaseInfo.assetName}`);
+        return finishWithUpdateNotice(1, updatePromise);
+      }
+      console.log(`Downloading update from ${releaseInfo.downloadUrl} ...`);
+      await performSelfUpdate(releaseInfo.downloadUrl, (downloaded, total) => {
+        if (total > 0) {
+          const pct = Math.round((downloaded / total) * 100);
+          process.stdout.write(`\rDownloading: ${pct}% (${(downloaded/1024/1024).toFixed(1)} MB)`);
+        }
+      });
+      console.log('\nUpdate completed successfully!');
+      return finishWithUpdateNotice(0, updatePromise);
+    } catch (e) {
+      console.error('Update failed:', e.message);
+      return finishWithUpdateNotice(1, updatePromise);
+    }
   }
 
   // Interactive path requires a TTY. Piping into `incipit` without

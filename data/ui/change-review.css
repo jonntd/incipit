@@ -436,7 +436,14 @@
 
 /* Modal must sit above the edits panel */
 [data-incipit-change-review-modal] {
+  position: fixed !important;
+  inset: 0 !important;
   z-index: 2147483600 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 28px !important;
+  background: rgba(0, 0, 0, 0.48) !important;
 }
 
 /* Origin chip: only for user / mixed pending windows */

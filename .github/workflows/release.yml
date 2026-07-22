@@ -1,0 +1,55 @@
+name: Build and Release Single-File Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Multi-Platform Executables
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Binaries
+        run: npx @yao-pkg/pkg . --out-path dist --compress Gzip
+
+      - name: Prepare Artifacts & Checksums
+        run: |
+          cd dist
+          mv incipit-macos-x64 incipit-macos-x64 || true
+          mv incipit-macos-arm64 incipit-macos-arm64 || true
+          mv incipit-win-x64.exe incipit-win-x64.exe || true
+          mv incipit-linux-x64 incipit-linux-x64 || true
+          sha256sum * > checksums-sha256.txt
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/incipit-macos-x64
+            dist/incipit-macos-arm64
+            dist/incipit-win-x64.exe
+            dist/incipit-linux-x64
+            dist/checksums-sha256.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
