@@ -83,22 +83,25 @@ fn draw_menu(
     ))?;
 
     for (i, (_, label)) in items.iter().enumerate() {
-        let mark = format!("{}.", i + 1);
         let is_quit = items[i].0 == "quit";
-
-        let display_mark = if is_quit { "q.".to_string() } else { mark };
+        let display_mark = if is_quit { "q.".to_string() } else { format!("{}.", i + 1) };
 
         if i == selected {
-            let line = format!("  {}  ▸ {}\n", display_mark, label);
+            // Selected item: white text on dark blue background
+            execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
             execute!(stdout, style::PrintStyledContent(
-                line.with(Color::White).on(Color::DarkBlue)
+                format!("  {}  ▸ {}", display_mark, label).with(Color::White).on(Color::DarkBlue)
             ))?;
         } else {
-            let line = format!("  {}    {}\n", display_mark, label);
-            execute!(stdout, style::PrintStyledContent(line.with(Color::Grey)))?;
+            // Normal item: grey text
+            execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
+            execute!(stdout, style::PrintStyledContent(
+                format!("  {}    {}", display_mark, label).with(Color::Grey)
+            ))?;
         }
     }
 
+    execute!(stdout, cursor::MoveTo(0, (items.len() + 3) as u16))?;
     execute!(stdout, style::PrintStyledContent(
         "\n  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
     ))?;
