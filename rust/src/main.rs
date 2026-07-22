@@ -1,4 +1,5 @@
 mod assets;
+mod config;
 mod detector;
 mod i18n;
 mod installer;

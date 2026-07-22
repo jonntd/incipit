@@ -7,6 +7,7 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
+use crate::config::Config;
 use crate::detector::detect_targets;
 use crate::installer::{apply_patch, restore_official};
 use crate::updater::update_self;
@@ -140,6 +141,198 @@ fn show_connect() {
     io::stdin().read_line(&mut buf).ok();
 }
 
+fn toggle_label(val: bool, lang: &str) -> &'static str {
+    if lang == "en" {
+        if val { "ON" } else { "OFF" }
+    } else {
+        if val { "开启" } else { "关闭" }
+    }
+}
+
+fn palette_label(palette: &str, lang: &str) -> &'static str {
+    match (palette, lang) {
+        ("warm-white", "zh") => "暖白（象牙纸）",
+        ("warm-white", _) => "Warm White (Ivory)",
+        ("warm-black", "zh") => "暖黑（默认）",
+        _ => "Warm Black (Default)",
+    }
+}
+
+fn draw_configure(
+    stdout: &mut io::Stdout,
+    config: &Config,
+    selected: usize,
+    lang: &str,
+) -> io::Result<()> {
+    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+
+    let title = if lang == "en" {
+        "  ── Configure ────────────────────────────────────\n"
+    } else {
+        "  ── 配置 ─────────────────────────────────────────\n"
+    };
+    execute!(stdout, style::PrintStyledContent(title.with(Color::Cyan)))?;
+
+    let items: Vec<(String, String)> = vec![
+        (
+            "math".to_string(),
+            format!("  {}  {}",
+                if lang == "en" { "Math rendering" } else { "数学公式渲染" },
+                toggle_label(config.features.math, lang)),
+        ),
+        (
+            "session".to_string(),
+            format!("  {}  {}",
+                if lang == "en" { "Session usage tracking" } else { "会话用量统计" },
+                toggle_label(config.features.session_usage, lang)),
+        ),
+        (
+            "overlay".to_string(),
+            format!("  {}  {}",
+                if lang == "en" { "Editor overlay (experimental)" } else { "编辑器浮层（实验性）" },
+                toggle_label(config.features.editor_selection_overlay, lang)),
+        ),
+        (
+            "bodysize".to_string(),
+            format!("  {}  {} px",
+                if lang == "en" { "Body font size" } else { "正文字号" },
+                config.theme.body_font_size),
+        ),
+        (
+            "palette".to_string(),
+            format!("  {}  {}",
+                if lang == "en" { "Color palette" } else { "主题色" },
+                palette_label(&config.theme.palette, lang)),
+        ),
+        (
+            "reset".to_string(),
+            format!("  {}", if lang == "en" { "Reset to defaults" } else { "恢复默认设置" }),
+        ),
+        (
+            "back".to_string(),
+            format!("  {}", if lang == "en" { "Back" } else { "返回" }),
+        ),
+    ];
+
+    for (i, (_, label)) in items.iter().enumerate() {
+        if i == selected {
+            execute!(stdout, cursor::MoveTo(0, (i + 2) as u16))?;
+            execute!(stdout, style::PrintStyledContent(
+                format!("▸{}", &label[1..]).with(Color::White).on(Color::DarkBlue)
+            ))?;
+        } else {
+            execute!(stdout, cursor::MoveTo(0, (i + 2) as u16))?;
+            // Toggle items show ON/OFF in color
+            let colored = if i < 3 {
+                let on_off = if i == 0 { config.features.math }
+                    else if i == 1 { config.features.session_usage }
+                    else { config.features.editor_selection_overlay };
+                let color = if on_off { Color::Green } else { Color::Red };
+                let parts: Vec<&str> = label.split("  ").collect();
+                if parts.len() >= 2 {
+                    format!(" {}  {}{}", parts[0], parts[1],
+                        if on_off { " ✓" } else { " ✗" })
+                } else {
+                    label.clone()
+                }
+            } else {
+                label.clone()
+            };
+            execute!(stdout, style::PrintStyledContent(colored.with(Color::Grey)))?;
+        }
+    }
+
+    execute!(stdout, cursor::MoveTo(0, (items.len() + 2) as u16))?;
+    execute!(stdout, style::PrintStyledContent(
+        "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+    ))?;
+
+    let hint = if lang == "en" {
+        "  ↑↓ move · Enter/Space toggle · r reset · q/Esc back\n"
+    } else {
+        "  ↑↓ 移动 · 回车/空格 切换 · r 恢复默认 · q/Esc 返回\n"
+    };
+    execute!(stdout, style::PrintStyledContent(hint.with(Color::DarkGrey)))?;
+
+    stdout.flush()?;
+    Ok(())
+}
+
+pub fn run_configure(lang: &str) {
+    let mut stdout = io::stdout();
+    let mut config = Config::load();
+    let mut selected: usize = 0;
+    let item_count = 7; // math, session, overlay, bodysize, palette, reset, back
+
+    terminal::enable_raw_mode().expect("Failed to enable raw mode");
+    execute!(stdout, cursor::Hide).ok();
+    draw_configure(&mut stdout, &config, selected, lang).ok();
+
+    loop {
+        if let Event::Key(key) = event::read().expect("Failed to read event") {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if selected > 0 { selected -= 1; } else { selected = item_count - 1; }
+                    draw_configure(&mut stdout, &config, selected, lang).ok();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if selected < item_count - 1 { selected += 1; } else { selected = 0; }
+                    draw_configure(&mut stdout, &config, selected, lang).ok();
+                }
+                KeyCode::Char('q') | KeyCode::Char('b') | KeyCode::Esc => {
+                    execute!(stdout, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    match selected {
+                        0 => { config.features.math = !config.features.math; }
+                        1 => { config.features.session_usage = !config.features.session_usage; }
+                        2 => { config.features.editor_selection_overlay = !config.features.editor_selection_overlay; }
+                        3 => {
+                            // Cycle font size: 12 -> 13 -> 14 -> 15 -> 16 -> 12
+                            config.theme.body_font_size = match config.theme.body_font_size {
+                                12 => 13, 13 => 14, 14 => 15, 15 => 16, _ => 12,
+                            };
+                        }
+                        4 => {
+                            config.theme.palette = if config.theme.palette == "warm-black" {
+                                "warm-white".to_string()
+                            } else {
+                                "warm-black".to_string()
+                            };
+                        }
+                        5 => {
+                            // Reset to defaults
+                            config = Config::default();
+                        }
+                        6 => {
+                            // Back
+                            let _ = config.save();
+                            execute!(stdout, cursor::Show).ok();
+                            terminal::disable_raw_mode().ok();
+                            return;
+                        }
+                        _ => {}
+                    }
+                    let _ = config.save();
+                    draw_configure(&mut stdout, &config, selected, lang).ok();
+                }
+                KeyCode::Char('r') => {
+                    config = Config::default();
+                    let _ = config.save();
+                    draw_configure(&mut stdout, &config, selected, lang).ok();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn run_interactive(lang: &str) {
     // If not a TTY, print help and exit
     if !terminal::window_size().is_ok() {
@@ -250,10 +443,7 @@ pub fn run_interactive(lang: &str) {
                         "configure" => {
                             execute!(stdout, cursor::Show).ok();
                             terminal::disable_raw_mode().ok();
-                            println!("  Configure options coming soon...");
-                            println!("  Press Enter to return...");
-                            let mut buf = String::new();
-                            io::stdin().read_line(&mut buf).ok();
+                            run_configure(lang);
                             terminal::enable_raw_mode().ok();
                             execute!(stdout, cursor::Hide).ok();
                             draw_menu(&mut stdout, items, selected, lang).ok();
