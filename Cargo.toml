@@ -1,0 +1,29 @@
+[package]
+name = "incipit"
+version = "0.1.20"
+edition = "2021"
+authors = ["jonntd <jonntd@gmail.com>"]
+description = "A frontend rework of the official Claude Code VS Code extension — surface redrawn, engine untouched."
+repository = "https://github.com/jonntd/incipit"
+
+[[bin]]
+name = "incipit"
+path = "rust/src/main.rs"
+
+[dependencies]
+rust-embed = "8.5.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+semver = "1.0"
+dirs = "5.0"
+crossterm = "0.28"
+walkdir = "2.5"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

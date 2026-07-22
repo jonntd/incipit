@@ -4541,21 +4541,12 @@ fieldset[class*="inputContainer_"] [class*="inputMentionChip"] *,
 }
 /* Native Claude "current file selection" footer pill (footerButton /
    footerButtonInactive, title: "Showing Claude your current file selection").
-   Kept visible so the host includeSelection toggle remains usable. The
-   companion CodeLens / @file insert path is additive, not a replacement —
-   users can attach either an explicit @ref or the host selection pill.
-   Compression still prefers this pill (flex default) over icon buttons /
-   cceBadge / permission cluster (flex-shrink: 0 above). */
+   This host affordance is disabled unconditionally — the companion CodeLens
+   / @file insert path is the additive reference surface, so the footer pill
+   duplicates both UI and send context. Hide only the direct footer selection
+   pair; keep add, slash, cache/context, permission, and send controls visible. */
 [data-incipit-input-footer] > [class*="footerButton"] {
-  min-width: 0 !important;
-  max-width: 40% !important;
-  overflow: hidden !important;
-}
-[data-incipit-input-footer] > [class*="footerButton"] span {
-  min-width: 0 !important;
-  overflow: hidden !important;
-  text-overflow: ellipsis !important;
-  white-space: nowrap !important;
+  display: none !important;
 }
 /* Permission button's natural min content is SVG 26 + padding-right 8
    = 34px under border-box. Lock that as the floor so the icon

@@ -21,6 +21,7 @@ dev-notes/
 # Build/temp artifacts (in case someone tries PyInstaller again)
 build/
 dist/
+target/
 __pycache__/
 *.pyc
 *.spec

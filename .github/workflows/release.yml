@@ -1,4 +1,4 @@
-name: Build and Release Single-File Binaries
+name: Build and Release Rust Binaries
 
 on:
   push:
@@ -11,42 +11,87 @@ permissions:
 
 jobs:
   build:
-    name: Build Multi-Platform Executables
-    runs-on: ubuntu-latest
+    name: Build Rust Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            asset_name: incipit-macos-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            asset_name: incipit-macos-x64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset_name: incipit-win-x64.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            asset_name: incipit-linux-x64
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 20
-          cache: 'npm'
+          targets: ${{ matrix.target }}
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build Binaries
-        run: npx @yao-pkg/pkg . --out-path dist --compress Gzip
+      - name: Prepare Binary Asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp target/${{ matrix.target }}/release/incipit.exe dist/${{ matrix.asset_name }}
+          else
+            cp target/${{ matrix.target }}/release/incipit dist/${{ matrix.asset_name }}
+          fi
 
-      - name: Prepare Artifacts & Checksums
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare Checksums and Zips
         run: |
           cd dist
-          mv incipit-macos-x64 incipit-macos-x64 || true
-          mv incipit-macos-arm64 incipit-macos-arm64 || true
-          mv incipit-win-x64.exe incipit-win-x64.exe || true
-          mv incipit-linux-x64 incipit-linux-x64 || true
+          zip -9 incipit-macos-arm64.zip incipit-macos-arm64 || true
+          zip -9 incipit-macos-x64.zip incipit-macos-x64 || true
+          zip -9 incipit-win-x64.zip incipit-win-x64.exe || true
+          zip -9 incipit-linux-x64.zip incipit-linux-x64 || true
           sha256sum * > checksums-sha256.txt
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/incipit-macos-x64
             dist/incipit-macos-arm64
+            dist/incipit-macos-x64
             dist/incipit-win-x64.exe
             dist/incipit-linux-x64
+            dist/incipit-macos-arm64.zip
+            dist/incipit-macos-x64.zip
+            dist/incipit-win-x64.zip
+            dist/incipit-linux-x64.zip
             dist/checksums-sha256.txt
           draft: false
           prerelease: false
