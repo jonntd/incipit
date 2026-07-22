@@ -468,15 +468,11 @@ function buildPatchTree(result) {
     }),
   ];
 
-  const fontTotal = report.systemFonts && Number.isFinite(report.systemFonts.total)
-    ? report.systemFonts.total
-    : 0;
   const workbench = report.workbenchOverlay || { status: 'off' };
   return [
     { name: 'extension.js', desc: t('apply.report.desc.extension_js') },
     { name: 'webview/', desc: t('apply.report.desc.webview_dir'), children: webviewChildren },
     { name: 'editor overlay', desc: t(`apply.report.desc.workbench_overlay_${workbench.status.replace(/-/g, '_')}`) },
-    { name: 'system fonts', desc: t('apply.report.desc.system_fonts', { files: fileCount(fontTotal) }) },
   ];
 }
 
@@ -551,13 +547,12 @@ function collectApplyWarnings(report) {
 function countApplyReportEntries(report) {
   const rootFiles = report.rootWebviewFiles || [];
   const assetTrees = report.assetTrees || [];
-  let total = 3 + rootFiles.length + assetTrees.length; // extension.js, webview/index.js, system fonts
+  let total = 2 + rootFiles.length + assetTrees.length; // extension.js, webview/index.js
   let changed = 0;
   if (report.extensionJs && report.extensionJs.updated) changed++;
   if (report.webviewIndex && report.webviewIndex.updated) changed++;
   changed += rootFiles.filter(file => file.written).length;
   changed += assetTrees.filter(tree => tree.written > 0).length;
-  if (report.systemFonts && report.systemFonts.written > 0) changed++;
   if (report.workbenchOverlay) {
     total++;
     if (report.workbenchOverlay.status === 'patched' || report.workbenchOverlay.status === 'restored') {

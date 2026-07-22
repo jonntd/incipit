@@ -130,7 +130,6 @@ const STRINGS = {
     'apply.report.desc.webview_file_generic': 'incipit webview runtime file',
     'apply.report.desc.asset_katex': 'formula rendering assets, {files}',
     'apply.report.desc.asset_hljs': 'code highlighting assets, {files}',
-    'apply.report.desc.asset_fonts': 'webview font assets, {files}',
     'apply.report.desc.asset_effort_brain': 'effort brain icons, {files}',
     'apply.report.desc.asset_generic': 'webview asset tree, {files}',
     'apply.report.desc.workbench_overlay_off': 'off by default; Workbench left untouched',
@@ -148,7 +147,6 @@ const STRINGS = {
     'apply.report.overlay_degraded_reason_apply_error': 'Applying the editor overlay failed, so it was skipped:',
     'apply.report.overlay_degraded_hint': 'The default reference entry (CodeLens via the companion) is unaffected. To use the overlay, run Claude Code in official VS Code Stable/Insiders; or turn off "Editor overlay (reference text or file)" in Configure to silence this notice.',
     'apply.report.overlay_degraded_candidates': 'Candidates: {list}',
-    'apply.report.desc.system_fonts': 'install IBM Plex Serif, {files}',
 
     // --- restore flow ---
     'restore.title':            '[ Restore official Claude Code ]',
@@ -492,7 +490,6 @@ const STRINGS = {
     'apply.report.desc.webview_file_generic': 'incipit webview runtime 文件',
     'apply.report.desc.asset_katex': '公式渲染资源，{files}',
     'apply.report.desc.asset_hljs': '代码高亮资源，{files}',
-    'apply.report.desc.asset_fonts': 'webview 字体资源，{files}',
     'apply.report.desc.asset_effort_brain': 'effort 大脑图标，{files}',
     'apply.report.desc.asset_generic': 'webview 资源目录，{files}',
     'apply.report.desc.workbench_overlay_off': '默认关闭；不触碰 Workbench',
@@ -510,7 +507,6 @@ const STRINGS = {
     'apply.report.overlay_degraded_reason_apply_error': '编辑器浮层应用失败，本次已跳过：',
     'apply.report.overlay_degraded_hint': '默认引用入口（companion 提供的 CodeLens）不受影响。要使用浮层，请在官方 VS Code Stable/Insiders 中运行 Claude Code；或在 Configure 关闭“编辑器浮层（引用文本或文件）”以消除此提示。',
     'apply.report.overlay_degraded_candidates': '候选：{list}',
-    'apply.report.desc.system_fonts': '安装 IBM Plex Serif，{files}',
 
     'restore.title':            '[恢复官方 Claude Code]',
     'restore.restore_root':     '恢复点根目录：{path}',

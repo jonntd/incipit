@@ -144,57 +144,12 @@
   --incipit-user-bubble-bg: rgba(0, 143, 245, 0.10);
   --incipit-user-bubble-fg: #0d74ce;
   --incipit-user-bubble-radius: 8px;
-  /* Same agent-panel UI fonts as dark theme — follow host IDE. */
   --incipit-ui-font: var(--vscode-font-family, system-ui, -apple-system,
                           BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
                           Arial, sans-serif);
   --incipit-ui-mono: var(--vscode-editor-font-family, ui-monospace,
                           SFMono-Regular, Menlo, Monaco, Consolas,
                           "Liberation Mono", monospace);
-}
-
-@font-face {
-  font-family: 'PaperReading';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/ibm-plex-serif/IBMPlexSerif-500.woff2') format('woff2');
-  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+2070-209F,
-                 U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF;
-}
-@font-face {
-  font-family: 'PaperReading';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/lxgw-wenkai/LXGWWenKai-500.woff2') format('woff2');
-  unicode-range: U+3000-303F, U+3040-309F, U+30A0-30FF,
-                 U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
-                 U+FE30-FE4F, U+FF00-FFEF;
-}
-/* Gothic-preset bodyBold cut: same name-encoded-weight contract, real
-   500-weight masters (Plex Serif Medium + Noto Sans SC Medium). The
-   bodyBold rule below selects `PaperReading` vs `PaperReadingHei` via
-   `--incipit-paper-reading-font`, injected per preset at apply so the
-   warm-white bold body matches whichever CJK face the preset uses. */
-@font-face {
-  font-family: 'PaperReadingHei';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/ibm-plex-serif/IBMPlexSerif-500.woff2') format('woff2');
-  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+2070-209F,
-                 U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF;
-}
-@font-face {
-  font-family: 'PaperReadingHei';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('fonts/noto-sans-sc/NotoSansSC-500.woff2') format('woff2');
-  unicode-range: U+3000-303F, U+3040-309F, U+30A0-30FF,
-                 U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
-                 U+FE30-FE4F, U+FF00-FFEF;
 }
 
 :root[data-incipit-body-bold] [data-incipit-message],

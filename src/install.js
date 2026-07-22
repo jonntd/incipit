@@ -71,8 +71,8 @@ const CDN_HOST = 'https://cdnjs.cloudflare.com';
 const IMPORT_MARKER =
   'import("./enhance.js").catch(e=>console.error("[incipit] enhance.js import failed",e));';
 // Local asset subtrees copied from `data/<name>/` to `webview/<name>/`.
-// Sync the whole subtree so math, highlighting, fonts, and mermaid work offline.
-const LOCAL_ASSET_TREES = ['katex', 'hljs', 'fonts', 'effort-brain', 'capability', 'legacy', 'mermaid', 'ui'];
+// Sync the whole subtree so math, highlighting, and mermaid work offline.
+const LOCAL_ASSET_TREES = ['katex', 'hljs', 'effort-brain', 'capability', 'legacy', 'mermaid', 'ui'];
 const DORMANT_WEBVIEW_ASSET_FILES = Object.freeze({
   legacy: new Set(['session_status.js']),
 });
@@ -86,12 +86,6 @@ const LEGACY_WEBVIEW_FILES = Object.freeze([
   'enhance_hunk_review.js',
 ]);
 
-// Files copied into the user font directory. Only the Latin serif family is
-// installed here. CJK faces are left to the system fallback stack.
-const SYSTEM_FONT_FILES = [
-  ['IBMPlexSerif-Regular.ttf', 'ibm-plex-serif', 'IBM Plex Serif Regular (TrueType)'],
-  ['IBMPlexSerif-SemiBold.ttf', 'ibm-plex-serif', 'IBM Plex Serif SemiBold (TrueType)'],
-];
 
 const HOST_CONTACT_ROUTE_SCHEMA = 1;
 const HOST_CONTACT_ROUTE_CATALOG = Object.freeze([
@@ -534,17 +528,6 @@ function inferSettingsPathFromExtensionsDir(extensionsDir) {
   }
 }
 
-function userFontDir() {
-  const home = os.homedir();
-  if (process.platform === 'win32') {
-    const lad = process.env.LOCALAPPDATA || home;
-    return path.join(lad, 'Microsoft', 'Windows', 'Fonts');
-  }
-  if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Fonts');
-  }
-  return path.join(home, '.local', 'share', 'fonts');
-}
 
 // ============================================================
 // extension discovery
@@ -894,66 +877,7 @@ function padLabel(label, width = 16) {
   return label + ' '.repeat(width - w);
 }
 
-function installSerifSystemFonts(resourceRoot) {
-  const fontDir = userFontDir();
-  try {
-    fs.mkdirSync(fontDir, { recursive: true });
-  } catch (_) {
-    return 0;
-  }
 
-  let written = 0;
-  const installedPaths = [];
-  for (const [fileName, subdir, displayName] of SYSTEM_FONT_FILES) {
-    const src = path.join(resourceRoot, 'data', 'system-fonts', subdir, fileName);
-    if (!fs.existsSync(src)) continue;
-    const dst = path.join(fontDir, fileName);
-    const srcBytes = fs.readFileSync(src);
-    let same = false;
-    if (fs.existsSync(dst)) {
-      try {
-        same = fs.readFileSync(dst).equals(srcBytes);
-      } catch (_) { }
-    }
-    if (!same) {
-      fs.writeFileSync(dst, srcBytes);
-      written++;
-    }
-    installedPaths.push([displayName, dst]);
-
-    // Register fonts under `HKCU\...\Fonts` so admin rights are not required.
-    if (process.platform === 'win32') {
-      try {
-        cp.execFileSync(
-          'reg',
-          [
-            'add',
-            'HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts',
-            '/v', displayName,
-            '/t', 'REG_SZ',
-            '/d', dst,
-            '/f',
-          ],
-          { stdio: 'ignore' },
-        );
-      } catch (_) { }
-    }
-  }
-
-  // Refresh the Linux font cache when `fc-cache` is available.
-  if (process.platform === 'linux' && written > 0) {
-    try {
-      cp.execFileSync('fc-cache', ['-f', fontDir], { stdio: 'ignore' });
-    } catch (_) {
-      // Missing `fc-cache` is acceptable. Most desktop environments will
-      // rescan `~/.local/share/fonts/` later.
-    }
-  }
-
-  // macOS does not require an explicit refresh.
-
-  return written;
-}
 
 // Canonical companion extension ids as written to extensions.json / folder
 // names: `publisher.name` (VS Code convention). package.json keeps a short
@@ -3300,14 +3224,6 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     fs.writeFileSync(target.webviewIndexJsPath, webviewUpdatedText, 'utf8');
   }
 
-  // Install the bundled serif system fonts for hosts that resolve user font
-  // names outside the webview font-face scope. The chat input now follows
-  // the generated webview CSS variables, so apply no longer writes
-  // `chat.fontFamily` / `chat.fontSize` into the host's global settings.
-  const serifWritten = installSerifSystemFonts(resourceRoot);
-  const serifStatus = serifWritten > 0
-    ? `已写入 ${serifWritten}/${SYSTEM_FONT_FILES.length}`
-    : `已存在 (${SYSTEM_FONT_FILES.length} 个)`;
 
   // --- Companion extensions: copy each `companion/<name>` folder into the
   // host's extension root and register it in `extensions.json` so it loads
@@ -3358,7 +3274,6 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     ...extStatusLines,
     ...webviewStatusLines,
     `${padLabel('编辑器浮层')}: ${workbenchOverlay.status}`,
-    `${padLabel('serif 系统字体')}: ${serifStatus}`,
     ...companionStatusLines,
   ];
 
@@ -3369,7 +3284,6 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
     webviewIndexUpdated: webviewUpdated,
     assetFilesWritten: assetWrittenTotal,
     assetFilesTotal: assetTotal,
-    serifFontsInstalled: serifWritten,
     report: {
       webviewDir,
       rootWebviewFiles,
@@ -3383,10 +3297,6 @@ function installClaudeCodeVSCodeEnhance(resourceRoot, options = {}) {
         path: target.webviewIndexJsPath,
         updated: webviewUpdated,
         statusLines: webviewStatusLines,
-      },
-      systemFonts: {
-        written: serifWritten,
-        total: SYSTEM_FONT_FILES.length,
       },
       workbenchOverlay,
       legacyAssetTreesPruned,
@@ -3404,10 +3314,8 @@ module.exports = {
   LOCAL_ASSET_TREES,
   LEGACY_ASSET_TREES,
   LEGACY_WEBVIEW_FILES,
-  SYSTEM_FONT_FILES,
   extensionRoot,
   vscodeUserSettingsPath,
-  userFontDir,
   findLatestClaudeCodeExtension,
   installClaudeCodeVSCodeEnhance,
   installCompanions,
