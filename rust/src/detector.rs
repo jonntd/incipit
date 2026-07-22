@@ -32,7 +32,9 @@ const HOSTS: &[HostDef] = &[
 
 fn parse_version(dir_name: &str) -> Vec<u32> {
     let stripped = dir_name.trim_start_matches(CLAUDE_CODE_EXTENSION_PREFIX);
-    stripped
+    // Extract only the numeric version part (e.g. "2.1.207" from "2.1.207-darwin-arm64")
+    let version_str = stripped.split('-').next().unwrap_or(stripped);
+    version_str
         .split('.')
         .filter_map(|s| s.parse::<u32>().ok())
         .collect()
