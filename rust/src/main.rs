@@ -2,11 +2,11 @@ mod assets;
 mod detector;
 mod i18n;
 mod installer;
+mod tui;
 mod updater;
 
 use clap::{Parser, Subcommand};
 use detector::detect_targets;
-use i18n::I18n;
 use installer::{apply_patch, restore_official};
 use updater::update_self;
 
@@ -39,7 +39,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let i18n = I18n::new(cli.lang.as_deref());
+    let lang = cli.lang.as_deref().unwrap_or("zh");
 
     match cli.command {
         Some(Commands::Apply) => {
@@ -80,13 +80,8 @@ fn main() {
             println!("Legacy backups cleaned.");
         }
         None => {
-            println!("  incipit  A frontend rework of the official Claude Code VS Code extension\n");
-            println!("  {}", i18n.t("help.usage_heading"));
-            println!("    incipit apply       {}", i18n.t("menu.apply"));
-            println!("    incipit restore     {}", i18n.t("menu.restore"));
-            println!("    incipit update      {}", i18n.t("menu.update"));
-            println!("    incipit list-targets{}", i18n.t("help.cmd_list_targets"));
-            println!("\n  For interactive mode, pass a subcommand or check help.");
+            // Launch interactive TUI menu
+            tui::run_interactive(lang);
         }
     }
 }
