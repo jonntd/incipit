@@ -74,14 +74,8 @@ fn draw_menu(
     execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
 
     // Title with version
-    let title = if lang == "en" {
-        "  incipit"
-    } else {
-        "  incipit"
-    };
-    execute!(stdout, style::PrintStyledContent(title.with(Color::Cyan).bold()))?;
     execute!(stdout, style::PrintStyledContent(
-        format!(" v{}\n", env!("CARGO_PKG_VERSION")).with(Color::DarkGrey)
+        format!("  incipit v{}\n", env!("CARGO_PKG_VERSION")).with(Color::Cyan).bold()
     ))?;
 
     let subtitle = if lang == "en" {
@@ -89,10 +83,8 @@ fn draw_menu(
     } else {
         "  Claude Code VS Code 扩展前端重绘\n"
     };
-    execute!(stdout, style::PrintStyledContent(subtitle.with(Color::DarkGrey)))?;
-    execute!(stdout, style::PrintStyledContent(
-        "\n".with(Color::DarkGrey)
-    ))?;
+    execute!(stdout, style::PrintStyledContent(subtitle.with(Color::White)))?;
+    execute!(stdout, style::PrintStyledContent("\n".with(Color::Reset)))?;
 
     // Menu items with visual grouping
     for (i, (_, label)) in items.iter().enumerate() {
@@ -102,20 +94,20 @@ fn draw_menu(
         if i == selected {
             execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
             execute!(stdout, style::PrintStyledContent(
-                format!("  {}  ▸ {}", display_mark, label).with(Color::White).on(Color::DarkBlue)
+                format!("  {}  ▸ {}", display_mark, label).with(Color::Black).on(Color::Cyan).bold()
             ))?;
         } else {
-            // Use different colors for different item groups
+            // Brighter, more readable colors
             let color = if i < 2 {
-                Color::White      // Primary actions: apply, restore
+                Color::White          // Primary actions: apply, restore
             } else if i < 4 {
-                Color::Grey       // System: configure, update
+                Color::White          // System: configure, update
             } else if i < 6 {
-                Color::DarkGrey   // Management: target, language
+                Color::White          // Management: target, language
             } else if items[i].0 == "quit" {
-                Color::Red        // Quit: red for emphasis
+                Color::Red            // Quit: red for emphasis
             } else {
-                Color::Grey       // Other: connect, cleanup
+                Color::White          // Other: connect, cleanup
             };
             execute!(stdout, cursor::MoveTo(0, (i + 4) as u16))?;
             execute!(stdout, style::PrintStyledContent(
@@ -128,7 +120,7 @@ fn draw_menu(
     let footer_row = (items.len() + 5) as u16;
     execute!(stdout, cursor::MoveTo(0, footer_row))?;
     execute!(stdout, style::PrintStyledContent(
-        "\n  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+        "\n  ─────────────────────────────────────────────────\n".with(Color::Cyan)
     ))?;
 
     let hint = if lang == "en" {
@@ -136,7 +128,7 @@ fn draw_menu(
     } else {
         "  ↑↓ 导航  ·  回车 确认  ·  q 退出\n"
     };
-    execute!(stdout, style::PrintStyledContent(hint.with(Color::DarkGrey).italic()))?;
+    execute!(stdout, style::PrintStyledContent(hint.with(Color::White).italic()))?;
 
     stdout.flush()?;
     Ok(())
@@ -164,11 +156,11 @@ fn draw_targets(
     } else {
         let heading = if lang == "en" { "  Detected targets:" } else { "  已检测到的目标：" };
         execute!(stdout, cursor::MoveTo(0, 2))?;
-        execute!(stdout, style::PrintStyledContent(heading.with(Color::Grey)))?;
+        execute!(stdout, style::PrintStyledContent(heading.with(Color::White)))?;
         for (i, t) in targets.iter().enumerate() {
             execute!(stdout, cursor::MoveTo(0, (i + 3) as u16))?;
             let mark = if i == selected { "▸" } else { " " };
-            let color = if i == selected { Color::White } else { Color::Grey };
+            let color = if i == selected { Color::White } else { Color::White };
             execute!(stdout, style::PrintStyledContent(
                 format!("  {} {} -> {}", mark, t.label, t.extensions_dir.display()).with(color)
             ))?;
@@ -183,10 +175,10 @@ fn draw_targets(
     let row = (targets.len() + 4) as u16;
     execute!(stdout, cursor::MoveTo(0, row))?;
     execute!(stdout, style::PrintStyledContent(
-        "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+        "  ─────────────────────────────────────────────────\n".with(Color::White)
     ))?;
     execute!(stdout, cursor::MoveTo(0, row + 1))?;
-    execute!(stdout, style::PrintStyledContent(actions.with(Color::DarkGrey)))?;
+    execute!(stdout, style::PrintStyledContent(actions.with(Color::White)))?;
 
     stdout.flush()?;
     Ok(())
@@ -256,7 +248,7 @@ fn run_language(lang: &str) {
                 )).ok();
             } else {
                 execute!(stdout, style::PrintStyledContent(
-                    format!("  {}  {}", mark, label).with(Color::Grey)
+                    format!("  {}  {}", mark, label).with(Color::White)
                 )).ok();
             }
         }
@@ -264,11 +256,11 @@ fn run_language(lang: &str) {
         let hint_row = (options.len() + 3) as u16;
         execute!(stdout, cursor::MoveTo(0, hint_row)).ok();
         execute!(stdout, style::PrintStyledContent(
-            "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+            "  ─────────────────────────────────────────────────\n".with(Color::White)
         )).ok();
         execute!(stdout, cursor::MoveTo(0, hint_row + 1)).ok();
         execute!(stdout, style::PrintStyledContent(
-            "  ↑↓ 移动 · 回车 确认 · q 返回\n".with(Color::DarkGrey)
+            "  ↑↓ 移动 · 回车 确认 · q 返回\n".with(Color::White)
         )).ok();
         stdout.flush().ok();
 
@@ -486,13 +478,13 @@ fn draw_configure(
             } else {
                 label.clone()
             };
-            execute!(stdout, style::PrintStyledContent(colored.with(Color::Grey)))?;
+            execute!(stdout, style::PrintStyledContent(colored.with(Color::White)))?;
         }
     }
 
     execute!(stdout, cursor::MoveTo(0, (items.len() + 2) as u16))?;
     execute!(stdout, style::PrintStyledContent(
-        "  ─────────────────────────────────────────────────\n".with(Color::DarkGrey)
+        "  ─────────────────────────────────────────────────\n".with(Color::White)
     ))?;
 
     let hint = if lang == "en" {
@@ -500,7 +492,7 @@ fn draw_configure(
     } else {
         "  ↑↓ 移动 · 回车/空格 切换 · r 恢复默认 · q/Esc 返回\n"
     };
-    execute!(stdout, style::PrintStyledContent(hint.with(Color::DarkGrey)))?;
+    execute!(stdout, style::PrintStyledContent(hint.with(Color::White)))?;
 
     stdout.flush()?;
     Ok(())
