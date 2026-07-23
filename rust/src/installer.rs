@@ -37,8 +37,6 @@ const CDN_HOST: &str = "https://cdnjs.cloudflare.com";
 fn patch_csp_directives(content: &str) -> String {
     let mut result = content.to_string();
 
-    // Pattern: directive followed by tokens until semicolon
-    // e.g. style-src 'self' ${cspSource} https:;
     let directives = vec![
         ("style-src", vec![CDN_HOST]),
         ("script-src", vec![CDN_HOST]),
@@ -48,7 +46,6 @@ fn patch_csp_directives(content: &str) -> String {
     for (directive, required_tokens) in &directives {
         for token in required_tokens {
             if !result.contains(token) {
-                // Try to inject the token into the directive
                 let pattern = format!(r"{}(\s+[^;]*?)(;)", regex::escape(directive));
                 if let Ok(re) = regex::Regex::new(&pattern) {
                     if let Some(caps) = re.captures(&result) {
@@ -65,6 +62,57 @@ fn patch_csp_directives(content: &str) -> String {
     }
 
     result
+}
+
+// Patch extension.js with all critical modifications
+fn patch_extension_js(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // 1. Remove legacy enhance script tag
+    let enhance_tag_re = regex::Regex::new(
+        r#"<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>"#
+    ).unwrap();
+    result = enhance_tag_re.replace_all(&result, "").to_string();
+
+    // 2. Remove legacy module-load diagnostic probe
+    let modload_re = regex::Regex::new(
+        r"try\{require\('fs'\)\.appendFileSync\([^)]*MODULE LOADED[^)]*\)\}catch\(e\)\{\};"
+    ).unwrap();
+    result = modload_re.replace_all(&result, "").to_string();
+
+    // 3. Patch message guard — add __incipit filter
+    let msg_guard_re = regex::Regex::new(
+        r"\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{(?!if\(\1&&\1\.__incipit===true\)return;)"
+    ).unwrap();
+    if msg_guard_re.is_match(&result) {
+        result = msg_guard_re.replace_all(&result, |caps: &regex::Captures| {
+            let var = &caps[1];
+            format!(".webview.onDidReceiveMessage(({})=>{{if({}&&{}.__incipit===true)return;", var, var, var)
+        }).to_string();
+    }
+
+    result
+}
+
+// Patch webview/index.js with config preamble and legacy cleanup
+fn patch_webview_index(content: &str, config: &Config) -> String {
+    let mut result = content.to_string();
+
+    // 1. Strip any existing incipit preamble
+    let preamble_re = regex::Regex::new(
+        r"^// incipit webview config \(generated at apply; do not edit\)\r?\n[\s\S]*?\r?\n\r?\n"
+    ).unwrap();
+    result = preamble_re.replace(&result, "").to_string();
+
+    // 2. Strip install manifest
+    let manifest_re = regex::Regex::new(
+        r"globalThis\.__incipitInstallManifest = Object\.freeze\([\s\S]*?\);\r?\n"
+    ).unwrap();
+    result = manifest_re.replace_all(&result, "").to_string();
+
+    // 3. Inject config preamble at top
+    let preamble = build_webview_preamble(config);
+    format!("{}{}", preamble, result)
 }
 
 // Check if CSP already has the required tokens
@@ -181,35 +229,39 @@ pub fn apply_patch_with_config(target: &TargetLocation, config: &Config) -> Resu
         }
     }
 
-    // 3. Patch webview/index.js — inject config preamble at top
+    // 3. Patch webview/index.js — inject config preamble, strip legacy, etc.
     if target.webview_index_js.exists() {
         let original = fs::read_to_string(&target.webview_index_js)
             .map_err(|e| format!("Failed to read webview/index.js: {}", e))?;
-        let preamble = build_webview_preamble(config);
-        let patched = format!("{}{}", preamble, original);
+        let patched = patch_webview_index(&original, config);
         fs::write(&target.webview_index_js, &patched)
             .map_err(|e| format!("Failed to write patched webview/index.js: {}", e))?;
     }
 
-    // 4. Patch extension.js — inject CSP directives for cdnjs
+    // 4. Patch extension.js — CSP + legacy cleanup + message guard
     let extension_js = extension_dir.join("extension.js");
     if extension_js.exists() {
         let original = fs::read_to_string(&extension_js)
             .map_err(|e| format!("Failed to read extension.js: {}", e))?;
 
-        if !csp_has_tokens(&original, "style-src", &[CDN_HOST, "data:"])
-            || !csp_has_tokens(&original, "script-src", &[CDN_HOST])
-            || !csp_has_tokens(&original, "font-src", &[CDN_HOST, "data:"])
-        {
-            let patched = patch_csp_directives(&original);
-            // Backup original extension.js
-            let backup_ext = backup_dir.join("extension.js");
-            if !backup_ext.exists() {
-                fs::copy(&extension_js, &backup_ext).ok();
-            }
-            fs::write(&extension_js, &patched)
-                .map_err(|e| format!("Failed to write patched extension.js: {}", e))?;
+        // Backup original extension.js
+        let backup_ext = backup_dir.join("extension.js");
+        if !backup_ext.exists() {
+            fs::copy(&extension_js, &backup_ext).ok();
         }
+
+        let mut patched = patch_extension_js(&original);
+
+        // Apply CSP patching if needed
+        if !csp_has_tokens(&patched, "style-src", &[CDN_HOST, "data:"])
+            || !csp_has_tokens(&patched, "script-src", &[CDN_HOST])
+            || !csp_has_tokens(&patched, "font-src", &[CDN_HOST, "data:"])
+        {
+            patched = patch_csp_directives(&patched);
+        }
+
+        fs::write(&extension_js, &patched)
+            .map_err(|e| format!("Failed to write patched extension.js: {}", e))?;
     }
 
     // 4. Sync asset trees (katex, hljs, mermaid, etc.)
