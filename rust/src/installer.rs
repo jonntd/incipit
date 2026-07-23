@@ -31,6 +31,54 @@ const ASSET_TREES: &[&str] = &[
     "katex", "hljs", "effort-brain", "capability", "legacy", "mermaid", "ui",
 ];
 
+const CDN_HOST: &str = "https://cdnjs.cloudflare.com";
+
+// Patch CSP directives in extension.js to allow cdnjs resources
+fn patch_csp_directives(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Pattern: directive followed by tokens until semicolon
+    // e.g. style-src 'self' ${cspSource} https:;
+    let directives = vec![
+        ("style-src", vec![CDN_HOST]),
+        ("script-src", vec![CDN_HOST]),
+        ("font-src", vec![CDN_HOST, "data:"]),
+    ];
+
+    for (directive, required_tokens) in &directives {
+        for token in required_tokens {
+            if !result.contains(token) {
+                // Try to inject the token into the directive
+                let pattern = format!(r"{}(\s+[^;]*?)(;)", regex::escape(directive));
+                if let Ok(re) = regex::Regex::new(&pattern) {
+                    if let Some(caps) = re.captures(&result) {
+                        let full_match = caps.get(0).unwrap().as_str();
+                        let existing_tokens = caps.get(1).unwrap().as_str();
+                        if !existing_tokens.contains(token) {
+                            let replacement = format!("{} {}{};", directive, existing_tokens.trim(), token);
+                            result = result.replacen(full_match, &replacement, 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// Check if CSP already has the required tokens
+fn csp_has_tokens(content: &str, directive: &str, required: &[&str]) -> bool {
+    let pattern = format!("{}\\s+[^;]*", regex::escape(directive));
+    if let Ok(re) = regex::Regex::new(&pattern) {
+        if let Some(m) = re.find(content) {
+            let directive_text = m.as_str();
+            return required.iter().all(|t| directive_text.contains(t));
+        }
+    }
+    false
+}
+
 // Generate the JS config preamble that gets injected at the top of enhance.js
 fn build_enhance_preamble(config: &Config) -> String {
     let math = if config.features.math { "true" } else { "false" };
@@ -141,6 +189,27 @@ pub fn apply_patch_with_config(target: &TargetLocation, config: &Config) -> Resu
         let patched = format!("{}{}", preamble, original);
         fs::write(&target.webview_index_js, &patched)
             .map_err(|e| format!("Failed to write patched webview/index.js: {}", e))?;
+    }
+
+    // 4. Patch extension.js — inject CSP directives for cdnjs
+    let extension_js = extension_dir.join("extension.js");
+    if extension_js.exists() {
+        let original = fs::read_to_string(&extension_js)
+            .map_err(|e| format!("Failed to read extension.js: {}", e))?;
+
+        if !csp_has_tokens(&original, "style-src", &[CDN_HOST, "data:"])
+            || !csp_has_tokens(&original, "script-src", &[CDN_HOST])
+            || !csp_has_tokens(&original, "font-src", &[CDN_HOST, "data:"])
+        {
+            let patched = patch_csp_directives(&original);
+            // Backup original extension.js
+            let backup_ext = backup_dir.join("extension.js");
+            if !backup_ext.exists() {
+                fs::copy(&extension_js, &backup_ext).ok();
+            }
+            fs::write(&extension_js, &patched)
+                .map_err(|e| format!("Failed to write patched extension.js: {}", e))?;
+        }
     }
 
     // 4. Sync asset trees (katex, hljs, mermaid, etc.)

@@ -20,6 +20,7 @@ semver = "1.0"
 dirs = "5.0"
 crossterm = "0.28"
 walkdir = "2.5"
+regex = "1.11"
 
 [profile.release]
 opt-level = "z"
