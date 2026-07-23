@@ -134,7 +134,35 @@ fn patch_webview_index(content: &str, config: &Config) -> String {
         result = re.replace_all(&result, "lineDecorationsWidth:0").to_string();
     }
 
-    // 8. Inject config preamble at top
+    // 8. Inject HTML head CSS links for theme.css and warm-white-override.css
+    // Find the host stylesheet anchor: <link href="${...}" rel="stylesheet">
+    if let Ok(re) = regex::Regex::new(r#"<link href="\$\{([A-Za-z_$][\w$]*)\}" rel="stylesheet">"#) {
+        if let Some(caps) = re.captures(&result) {
+            let anchor = caps.get(0).unwrap().as_str();
+            let href_var = &caps[1];
+            // Theme CSS link
+            let theme_link = format!(
+                "<link id=\"claude-enhance-styles-link\" href=\"${{{}}}.toString().replace(/index\\.css(?=$|[?#])/,'theme.css')\" rel=\"stylesheet\">",
+                href_var
+            );
+            // Warm-white override link (only if palette is warm-white)
+            let ww_link = if config.theme.palette == "warm-white" {
+                format!(
+                    "<link id=\"incipit-warm-white-link\" href=\"${{{}}}.toString().replace(/index\\.css(?=$|[?#])/,'warm-white-override.css')\" rel=\"stylesheet\">",
+                    href_var
+                )
+            } else {
+                String::new()
+            };
+            // Strip any existing incipit links first, then inject
+            if !result.contains("claude-enhance-styles-link") {
+                let insert = format!("{}{}{}", anchor, theme_link, ww_link);
+                result = result.replacen(anchor, &insert, 1);
+            }
+        }
+    }
+
+    // 9. Inject config preamble at top
     let preamble = build_webview_preamble(config);
     format!("{}{}", preamble, result)
 }
