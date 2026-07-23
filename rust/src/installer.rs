@@ -99,43 +99,40 @@ fn patch_webview_index(content: &str, config: &Config) -> String {
     let mut result = content.to_string();
 
     // 1. Strip any existing incipit preamble
-    let preamble_re = regex::Regex::new(
-        r"^// incipit webview config \(generated at apply; do not edit\)\r?\n[\s\S]*?\r?\n\r?\n"
-    ).unwrap();
-    result = preamble_re.replace(&result, "").to_string();
+    if let Ok(re) = regex::Regex::new(r"^// incipit webview config \(generated at apply; do not edit\)\r?\n[\s\S]*?\r?\n\r?\n") {
+        result = re.replace(&result, "").to_string();
+    }
 
     // 2. Strip install manifest
-    let manifest_re = regex::Regex::new(
-        r"globalThis\.__incipitInstallManifest = Object\.freeze\([\s\S]*?\);\r?\n"
-    ).unwrap();
-    result = manifest_re.replace_all(&result, "").to_string();
+    if let Ok(re) = regex::Regex::new(r"globalThis\.__incipitInstallManifest = Object\.freeze\([\s\S]*?\);\r?\n") {
+        result = re.replace_all(&result, "").to_string();
+    }
 
     // 3. Strip legacy acquireVsCodeApi wrapper
-    let api_re = regex::Regex::new(
-        r"\(function\(\)\{if\(window\.__cceApiWrap\)[\s\S]*?\}\)\(\);\n"
-    ).unwrap();
-    result = api_re.replace(&result, "").to_string();
+    if let Ok(re) = regex::Regex::new(r"\(function\(\)\{if\(window\.__cceApiWrap\)[\s\S]*?\}\)\(\);\n") {
+        result = re.replace(&result, "").to_string();
+    }
 
-    // 4. Patch Monaco diff theme — replace hardcoded theme:"vs-dark"
-    let theme_expr = if config.theme.palette == "warm-white" {
-        "(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette===\"warm-white\"?\"vs\":\"vs-dark\")"
-    } else {
-        "(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette===\"warm-white\"?\"vs\":\"vs-dark\")"
-    };
-    let monaco_theme_re = regex::Regex::new(r#"theme:"vs-dark""#).unwrap();
-    result = monaco_theme_re.replace_all(&result, format!("theme:{}", theme_expr).as_str()).to_string();
+    // 4. Patch Monaco diff theme
+    if let Ok(re) = regex::Regex::new(r#"theme:"vs-dark""#) {
+        let theme_expr = "(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette===\"warm-white\"?\"vs\":\"vs-dark\")";
+        result = re.replace_all(&result, format!("theme:{}", theme_expr).as_str()).to_string();
+    }
 
     // 5. Patch Monaco font size
-    let monaco_font_re = regex::Regex::new(r#"fontSize:12"#).unwrap();
-    result = monaco_font_re.replace_all(&result, "fontSize:13").to_string();
+    if let Ok(re) = regex::Regex::new(r#"fontSize:12"#) {
+        result = re.replace_all(&result, "fontSize:13").to_string();
+    }
 
-    // 6. Patch lineNumbers:"off" to lineNumbers:"on" for inline diff gutter
-    let line_num_re = regex::Regex::new(r#"lineNumbers:"off""#).unwrap();
-    result = line_num_re.replace_all(&result, "lineNumbers:\"on\"").to_string();
+    // 6. Patch lineNumbers
+    if let Ok(re) = regex::Regex::new(r#"lineNumbers:"off""#) {
+        result = re.replace_all(&result, "lineNumbers:\"on\"").to_string();
+    }
 
-    // 7. Patch lineDecorationsWidth to remove extra glyph column
-    let decor_re = regex::Regex::new(r#"lineDecorationsWidth:\d+"#).unwrap();
-    result = decor_re.replace_all(&result, "lineDecorationsWidth:0").to_string();
+    // 7. Patch lineDecorationsWidth
+    if let Ok(re) = regex::Regex::new(r#"lineDecorationsWidth:\d+"#) {
+        result = re.replace_all(&result, "lineDecorationsWidth:0").to_string();
+    }
 
     // 8. Inject config preamble at top
     let preamble = build_webview_preamble(config);
@@ -474,23 +471,43 @@ pub fn restore_official(target: &TargetLocation) -> Result<(), String> {
         .join(".incipit-backup")
         .join(&target.version);
 
+    let webview_dir = target.webview_index_js.parent().ok_or("Invalid webview dir")?;
+
+    // 1. Restore webview/index.js
     let backup_webview = backup_dir.join("webview_index.js");
     if backup_webview.exists() {
         fs::copy(&backup_webview, &target.webview_index_js)
             .map_err(|e| format!("Failed to restore webview/index.js: {}", e))?;
     }
 
-    // Remove patched enhance.js and theme.css
-    let webview_dir = target.webview_index_js.parent().ok_or("Invalid webview dir")?;
-    let _ = fs::remove_file(webview_dir.join("enhance.js"));
-    let _ = fs::remove_file(webview_dir.join("theme.css"));
-    let _ = fs::remove_file(webview_dir.join("enhance_shared.js"));
-    let _ = fs::remove_file(webview_dir.join("runtime_kernel.js"));
+    // 2. Restore extension.js
+    let backup_ext = backup_dir.join("extension.js");
+    let extension_js = target.extensions_dir.join("extension.js");
+    if backup_ext.exists() {
+        fs::copy(&backup_ext, &extension_js)
+            .map_err(|e| format!("Failed to restore extension.js: {}", e))?;
+    }
 
-    // Remove injected asset trees
+    // 3. Remove all patched webview files
+    let patched_files = [
+        "enhance.js", "theme.css", "enhance_shared.js", "runtime_kernel.js",
+        "capability.js", "enhance_footer_badge.js", "enhance_thinking.js",
+        "enhance_typography.js", "mermaid_render.js", "enhance_legacy.js",
+        "host_probe.js", "host-badge.cjs", "checkpoint_timeline.cjs",
+        "markdown_preprocess.js", "protocol_tags.js", "math_tokens.js",
+        "math_rewriter.js", "commit_message_bundle.js", "warm-white-override.css",
+    ];
+    for file in &patched_files {
+        let _ = fs::remove_file(webview_dir.join(file));
+    }
+
+    // 4. Remove injected asset trees
     for tree_name in ASSET_TREES {
         let _ = fs::remove_dir_all(webview_dir.join(tree_name));
     }
+
+    // 5. Remove patched resources (commit message icon)
+    let _ = fs::remove_dir_all(target.extensions_dir.join("resources"));
 
     Ok(())
 }
