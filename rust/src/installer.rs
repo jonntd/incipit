@@ -116,6 +116,8 @@ fn patch_extension_js(content: &str) -> String {
     }
 
     result
+
+    result
 }
 
 // Patch webview/index.js with config preamble and legacy cleanup
