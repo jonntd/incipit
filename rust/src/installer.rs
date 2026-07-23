@@ -110,7 +110,34 @@ fn patch_webview_index(content: &str, config: &Config) -> String {
     ).unwrap();
     result = manifest_re.replace_all(&result, "").to_string();
 
-    // 3. Inject config preamble at top
+    // 3. Strip legacy acquireVsCodeApi wrapper
+    let api_re = regex::Regex::new(
+        r"\(function\(\)\{if\(window\.__cceApiWrap\)[\s\S]*?\}\)\(\);\n"
+    ).unwrap();
+    result = api_re.replace(&result, "").to_string();
+
+    // 4. Patch Monaco diff theme — replace hardcoded theme:"vs-dark"
+    let theme_expr = if config.theme.palette == "warm-white" {
+        "(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette===\"warm-white\"?\"vs\":\"vs-dark\")"
+    } else {
+        "(globalThis.__incipitConfig&&globalThis.__incipitConfig.theme&&globalThis.__incipitConfig.theme.palette===\"warm-white\"?\"vs\":\"vs-dark\")"
+    };
+    let monaco_theme_re = regex::Regex::new(r#"theme:"vs-dark""#).unwrap();
+    result = monaco_theme_re.replace_all(&result, format!("theme:{}", theme_expr).as_str()).to_string();
+
+    // 5. Patch Monaco font size
+    let monaco_font_re = regex::Regex::new(r#"fontSize:12"#).unwrap();
+    result = monaco_font_re.replace_all(&result, "fontSize:13").to_string();
+
+    // 6. Patch lineNumbers:"off" to lineNumbers:"on" for inline diff gutter
+    let line_num_re = regex::Regex::new(r#"lineNumbers:"off""#).unwrap();
+    result = line_num_re.replace_all(&result, "lineNumbers:\"on\"").to_string();
+
+    // 7. Patch lineDecorationsWidth to remove extra glyph column
+    let decor_re = regex::Regex::new(r#"lineDecorationsWidth:\d+"#).unwrap();
+    result = decor_re.replace_all(&result, "lineDecorationsWidth:0").to_string();
+
+    // 8. Inject config preamble at top
     let preamble = build_webview_preamble(config);
     format!("{}{}", preamble, result)
 }
