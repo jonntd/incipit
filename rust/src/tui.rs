@@ -17,84 +17,9 @@ fn ivory() -> Color { Color::Rgb { r: 248, g: 248, b: 246 } }
 fn grey()  -> Color { Color::Rgb { r: 152, g: 152, b: 152 } }
 
 fn tw() -> usize { terminal::size().map(|(w, _)| w as usize).unwrap_or(80).min(100).max(60) }
-fn ind() -> String { "      ".to_string() }
+fn pad(s: &str, w: usize) -> String { let l = s.chars().count(); if l >= w { s.to_string() } else { format!("{}{}", " ".repeat((w - l) / 2), s) } }
 fn ci() -> String { format!("   {}  ", "›".with(terra()).bold()) }
-fn rul(w: usize) -> String { "━".repeat(w) }
 
-fn p(s: &str, w: usize) -> String {
-    let l = s.chars().count(); if l >= w { s.to_string() } else { format!("{}{}", " ".repeat((w - l) / 2), s) }
-}
-
-// ── All rendering goes through one buffered writer per frame ──
-struct Frame<'a> {
-    buf: Vec<u8>,
-    w: usize,
-    _s: std::marker::PhantomData<&'a ()>,
-}
-
-impl<'a> Frame<'a> {
-    fn new(w: usize) -> Self { Self { buf: Vec::with_capacity(4096), w, _s: std::marker::PhantomData } }
-    fn write(&mut self, s: &str) { self.buf.extend_from_slice(s.as_bytes()); }
-    fn rgb_str(c: Color) -> (u8, u8, u8) {
-        match c { Color::Rgb { r, g, b } => (r, g, b), _ => (255, 255, 255) }
-    }
-    fn styled(&mut self, s: &str, c: Color) {
-        let (r, g, b) = Self::rgb_str(c);
-        use std::fmt::Write;
-        write!(self.buf, "\x1b[38;2;{};{};{}m{}\x1b[0m", r, g, b, s).ok();
-    }
-    fn styled_bold(&mut self, s: &str, c: Color) {
-        let (r, g, b) = Self::rgb_str(c);
-        use std::fmt::Write;
-        write!(self.buf, "\x1b[1m\x1b[38;2;{};{};{}m{}\x1b[0m", r, g, b, s).ok();
-    }
-    fn styled_italic(&mut self, s: &str, c: Color) {
-        let (r, g, b) = Self::rgb_str(c);
-        use std::fmt::Write;
-        write!(self.buf, "\x1b[3m\x1b[38;2;{};{};{}m{}\x1b[0m", r, g, b, s).ok();
-    }
-    fn styled_bold_italic(&mut self, s: &str, c: Color) {
-        let (r, g, b) = Self::rgb_str(c);
-        use std::fmt::Write;
-        write!(self.buf, "\x1b[1m\x1b[3m\x1b[38;2;{};{};{}m{}\x1b[0m", r, g, b, s).ok();
-    }
-    fn center(&mut self, s: &str, c: Color, bold: bool, italic: bool) {
-        let pad = " ".repeat((self.w.saturating_sub(s.chars().count())) / 2);
-        self.write(&pad);
-        if bold && italic { self.styled_bold_italic(s, c); }
-        else if bold { self.styled_bold(s, c); }
-        else if italic { self.styled_italic(s, c); }
-        else { self.styled(s, c); }
-        self.write("\n");
-    }
-    fn line(&mut self, s: &str) { self.write(s); self.write("\n"); }
-    fn blank(&mut self) { self.write("\n"); }
-    fn flush(self, stdout: &mut io::Stdout) {
-        let _ = execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
-        stdout.write_all(&self.buf).ok();
-        stdout.flush().ok();
-    }
-}
-
-// ── Title block (shared across all screens) ──
-fn title_block(f: &mut Frame) {
-    f.center(&rul(f.w), grey(), false, false);
-    f.blank();
-    f.center("I  ·  N  ·  C  ·  I  ·  P  ·  I  ·  T", terra(), true, false);
-    f.blank();
-    f.center("A frontend rework of the official", grey(), false, true);
-    f.center("Claude Code VS Code extension", grey(), false, true);
-    f.blank();
-    f.center(&format!("version {}", env!("CARGO_PKG_VERSION")), grey(), false, true);
-    f.blank();
-}
-
-fn footer(f: &mut Frame, hint: &str) {
-    f.center(&rul(f.w), grey(), false, false);
-    f.center(hint, grey(), false, true);
-}
-
-// ── Main menu ──
 const MI: &[(&str, &str)] = &[
     ("apply",     "应用界面补丁"), ("restore",   "恢复官方 Claude Code"),
     ("configure", "配置"),         ("update",    "检查新版本 / 自动升级"),
@@ -111,91 +36,134 @@ const MI_EN: &[(&str, &str)] = &[
 ];
 fn its(lang: &str) -> &[(&str, &str)] { match lang { "en" => MI_EN, _ => MI } }
 
+// ── All output through queue! then single flush ──
+macro_rules! q { ($s:expr, $($t:tt)*) => { queue!($s, $($t)*).ok(); } }
+
+fn hdr(s: &mut io::Stdout, title: &str, w: usize) {
+    let r = "━".repeat(w);
+    q!(s, style::PrintStyledContent(pad(&r, w).with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad("I  ·  N  ·  C  ·  I  ·  P  ·  I  ·  T", w).with(terra()).bold()), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad("A frontend rework of the official", w).with(grey()).italic()), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad("Claude Code VS Code extension", w).with(grey()).italic()), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad(&format!("version {}", env!("CARGO_PKG_VERSION")), w).with(grey()).italic()), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n\n".with(grey())), cursor::MoveToColumn(0));
+    if !title.is_empty() {
+        q!(s, style::PrintStyledContent(pad(title, w).with(grey())), cursor::MoveToColumn(0));
+        q!(s, style::PrintStyledContent("\n\n".with(grey())), cursor::MoveToColumn(0));
+    }
+}
+
+fn ftr(s: &mut io::Stdout, hint: &str, w: usize) {
+    let r = "━".repeat(w);
+    q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad(&r, w).with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent(pad(hint, w).with(grey()).italic()), cursor::MoveToColumn(0));
+    q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+}
+
+// ── Main menu ──
 fn draw_main(s: &mut io::Stdout, items: &[(&str, &str)], sel: usize, lang: &str) {
+    let _ = execute!(s, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
     let w = tw();
-    let mut f = Frame::new(w);
-    title_block(&mut f);
+    let i = "      ";
+
+    hdr(s, "", w);
 
     let tgts = detect_targets();
-    let i = ind();
     if let Some(t) = tgts.first() {
-        let label = format!("{}Target     {}", i, t.label);
-        f.line(&label); // will be styled below
-        // Actually let's do it properly
-        f.write(&i); f.styled("Target     ", grey()); f.styled(&t.label, ivory()); f.write("\n");
+        q!(s, cursor::MoveToColumn(0));
+        q!(s, style::PrintStyledContent(i.to_string().with(grey())));
+        q!(s, style::PrintStyledContent("Target     ".with(grey())));
+        q!(s, style::PrintStyledContent(t.label.clone().with(ivory())));
+        q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
         let en = t.extensions_dir.file_name().unwrap_or_default().to_string_lossy();
-        f.write(&i); f.styled("Extension  ", grey()); f.styled(&en, grey()); f.write("\n");
+        q!(s, cursor::MoveToColumn(0));
+        q!(s, style::PrintStyledContent(i.to_string().with(grey())));
+        q!(s, style::PrintStyledContent("Extension  ".with(grey())));
+        q!(s, style::PrintStyledContent(en.to_string().with(grey())));
+        q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
     } else {
-        f.write(&i); f.styled("Target     ", grey()); f.styled_italic("(no Claude Code detected)", grey()); f.write("\n");
+        q!(s, cursor::MoveToColumn(0));
+        q!(s, style::PrintStyledContent(i.to_string().with(grey())));
+        q!(s, style::PrintStyledContent("Target     ".with(grey())));
+        q!(s, style::PrintStyledContent("(no Claude Code detected)\n".with(grey()).italic()), cursor::MoveToColumn(0));
     }
-    f.blank();
+    q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
 
     for (idx, (_, label)) in items.iter().enumerate() {
         let mark = format!("{}.", idx + 1);
+        q!(s, cursor::MoveToColumn(0));
         if idx == sel {
-            f.write("   "); f.styled_bold("›", terra()); f.write("  ");
-            f.styled_bold(&format!("{:<4}", mark), terra());
-            f.write("  "); f.styled(label, ivory()); f.write("\n");
+            q!(s, style::PrintStyledContent("   ".with(grey())));
+            q!(s, style::PrintStyledContent("›".with(terra()).bold()));
+            q!(s, style::PrintStyledContent("  ".with(grey())));
         } else {
-            f.write(&i);
-            f.styled(&format!("{:<4}", mark), terra());
-            f.styled(label, ivory());
-            f.write("\n");
+            q!(s, style::PrintStyledContent(i.to_string().with(grey())));
         }
+        q!(s, style::PrintStyledContent(format!("{:<4}", mark).with(terra())));
+        q!(s, style::PrintStyledContent(label.to_string().with(ivory())));
+        q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
     }
 
     let hint = if lang == "en" { "↑↓ navigate  ·  Enter confirm  ·  q quit" } else { "↑↓ 导航  ·  回车 确认  ·  q 退出" };
-    footer(&mut f, hint);
-    f.flush(s);
+    ftr(s, hint, w);
+    s.flush().ok();
 }
 
 // ── Configure ──
 fn draw_cfg(s: &mut io::Stdout, c: &Config, sel: usize, lang: &str) {
+    let _ = execute!(s, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
     let w = tw();
-    let mut f = Frame::new(w);
-    title_block(&mut f);
-    f.center(if lang == "en" { "Configure" } else { "配置" }, grey(), false, false);
-    f.blank(); f.blank();
+    let i = "      ";
+
+    hdr(s, if lang == "en" { "Configure" } else { "配置" }, w);
 
     let on = if lang == "en" { "ON" } else { "开启" };
     let off = if lang == "en" { "OFF" } else { "关闭" };
-    let i = ind();
 
-    let rows: Vec<(&str, &str, bool, String)> = vec![
-        ("1.", if lang == "en" { "Math rendering" } else { "数学公式渲染" }, true, if c.features.math { on.into() } else { off.into() }),
-        ("2.", if lang == "en" { "Session usage" } else { "会话用量统计" }, true, if c.features.session_usage { on.into() } else { off.into() }),
-        ("3.", if lang == "en" { "Editor overlay" } else { "编辑器浮层" }, true, if c.features.editor_selection_overlay { on.into() } else { off.into() }),
-        ("4.", if lang == "en" { "Body font size" } else { "正文字号" }, false, format!("{} px", c.theme.body_font_size)),
-        ("5.", if lang == "en" { "Color palette" } else { "主题色" }, false, if c.theme.palette == "warm-white" { if lang == "en" { "Warm White" } else { "暖白" }.into() } else { if lang == "en" { "Warm Black" } else { "暖黑" }.into() }),
-        ("", "", false, "".into()),
-        ("", "", false, "".into()),
-        ("r.", if lang == "en" { "Reset to defaults" } else { "恢复默认设置" }, false, "".into()),
-        ("b.", if lang == "en" { "Back" } else { "返回" }, false, "".into()),
+    let rows: Vec<(bool, &str, &str, String)> = vec![
+        (true,  "1.", if lang == "en" { "Math rendering" } else { "数学公式渲染" }, if c.features.math { on.into() } else { off.into() }),
+        (true,  "2.", if lang == "en" { "Session usage" } else { "会话用量统计" }, if c.features.session_usage { on.into() } else { off.into() }),
+        (true,  "3.", if lang == "en" { "Editor overlay" } else { "编辑器浮层" }, if c.features.editor_selection_overlay { on.into() } else { off.into() }),
+        (false, "4.", if lang == "en" { "Body font size" } else { "正文字号" }, format!("{} px", c.theme.body_font_size)),
+        (false, "5.", if lang == "en" { "Color palette" } else { "主题色" }, if c.theme.palette == "warm-white" { if lang == "en" { "Warm White" } else { "暖白" }.into() } else { if lang == "en" { "Warm Black" } else { "暖黑" }.into() }),
+        (false, "", "", "".into()),
+        (false, "", "", "".into()),
+        (false, "r.", if lang == "en" { "Reset to defaults" } else { "恢复默认设置" }, "".into()),
+        (false, "b.", if lang == "en" { "Back" } else { "返回" }, "".into()),
     ];
 
-    for (idx, (mark, label, is_toggle, val)) in rows.iter().enumerate() {
+    for (idx, (is_toggle, mark, label, val)) in rows.iter().enumerate() {
         if mark.is_empty() { continue; }
+        q!(s, cursor::MoveToColumn(0));
         if idx == sel {
-            f.write("   "); f.styled_bold("›", terra()); f.write("  ");
+            q!(s, style::PrintStyledContent("   ".with(grey())));
+            q!(s, style::PrintStyledContent("›".with(terra()).bold()));
+            q!(s, style::PrintStyledContent("  ".with(grey())));
         } else {
-            f.write(&i);
+            q!(s, style::PrintStyledContent(i.to_string().with(grey())));
         }
-        f.styled(&format!("{:<4}", mark), terra());
+        q!(s, style::PrintStyledContent(format!("{:<4}", mark).with(terra())));
         if *is_toggle {
             let g = if (idx == 0 && c.features.math) || (idx == 1 && c.features.session_usage) || (idx == 2 && c.features.editor_selection_overlay) { "✓" } else { "✗" };
             let gc = if g == "✓" { terra() } else { grey() };
-            f.styled(&format!("{:<4}", g), gc);
-            f.styled(label, ivory());
+            q!(s, style::PrintStyledContent(format!("{:<4}", g).with(gc)));
+            q!(s, style::PrintStyledContent(label.to_string().with(ivory())));
         } else {
-            f.styled(&format!("{:<22}", label), ivory());
-            f.styled(val, ivory());
+            q!(s, style::PrintStyledContent(format!("{:<22}", label).with(ivory())));
+            q!(s, style::PrintStyledContent(val.clone().with(ivory())));
         }
-        f.write("\n");
+        q!(s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
     }
 
     let hint = if lang == "en" { "↑↓ move  ·  Enter toggle  ·  r reset  ·  b back" } else { "↑↓ 移动  ·  回车 切换  ·  r 恢复默认  ·  b 返回" };
-    footer(&mut f, hint);
-    f.flush(s);
+    ftr(s, hint, w);
+    s.flush().ok();
 }
 
 pub fn run_configure(lang: &str) {
@@ -246,45 +214,58 @@ fn run_tgt(lang: &str) {
     terminal::enable_raw_mode().ok();
 
     loop {
+        let _ = execute!(&mut s, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
         let w = tw();
-        let mut f = Frame::new(w);
-        title_block(&mut f);
-        f.center(if lang == "en" { "Manage Targets" } else { "管理目标位置" }, grey(), false, false);
-        f.blank(); f.blank();
+        let i = "      ";
+
+        hdr(&mut s, if lang == "en" { "Manage Targets" } else { "管理目标位置" }, w);
 
         let sub = if lang == "en" { "Detected targets:" } else { "已检测到的目标：" };
-        let i = ind();
-        f.write(&i); f.styled(sub, grey()); f.write("\n");
-        f.blank();
+        q!(&mut s, cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent(format!("{}{}", i, sub).with(grey())));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
 
         if tgts.is_empty() {
             let m = if lang == "en" { "No Claude Code installation detected." } else { "未检测到 Claude Code 安装。" };
-            f.write(&i); f.styled_italic(m, grey()); f.write("\n");
+            q!(&mut s, cursor::MoveToColumn(0));
+            q!(&mut s, style::PrintStyledContent(format!("{}{}", i, m).with(grey()).italic()));
+            q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
         } else {
             for t in &tgts {
                 let en = t.extensions_dir.file_name().unwrap_or_default().to_string_lossy();
-                f.write(&i); f.styled(&t.label, ivory()); f.write("\n");
-                f.write("        "); f.styled_italic(&en, grey()); f.write("\n");
+                q!(&mut s, cursor::MoveToColumn(0));
+                q!(&mut s, style::PrintStyledContent(format!("{}{}", i, t.label).with(ivory())));
+                q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+                q!(&mut s, cursor::MoveToColumn(0));
+                q!(&mut s, style::PrintStyledContent(format!("        {}", en).with(grey()).italic()));
+                q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
             }
         }
-        f.blank();
-        f.write(&i); f.styled(&"─".repeat(w.saturating_sub(8)), grey()); f.write("\n");
-        f.blank();
+
+        let sep = "─".repeat(w.saturating_sub(8));
+        q!(&mut s, cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent(format!("{}{}", i, sep).with(grey())));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
 
         for (idx, (mark, label)) in acts.iter().enumerate() {
+            q!(&mut s, cursor::MoveToColumn(0));
             if idx == sel {
-                f.write("   "); f.styled_bold("›", terra()); f.write("  ");
+                q!(&mut s, style::PrintStyledContent("   ".with(grey())));
+                q!(&mut s, style::PrintStyledContent("›".with(terra()).bold()));
+                q!(&mut s, style::PrintStyledContent("  ".with(grey())));
             } else {
-                f.write(&i);
+                q!(&mut s, style::PrintStyledContent(i.to_string().with(grey())));
             }
-            f.styled(&format!("{:<4}", mark), terra());
-            f.styled(label, ivory());
-            f.write("\n");
+            q!(&mut s, style::PrintStyledContent(format!("{:<4}", mark).with(terra())));
+            q!(&mut s, style::PrintStyledContent(label.to_string().with(ivory())));
+            q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
         }
 
         let hint = if lang == "en" { "↑↓ navigate  ·  Enter select  ·  b back" } else { "↑↓ 导航  ·  回车 确认  ·  b 返回" };
-        footer(&mut f, hint);
-        f.flush(&mut s);
+        ftr(&mut s, hint, w);
+        s.flush().ok();
 
         if let Event::Key(k) = event::read().expect("read") {
             if k.kind != KeyEventKind::Press { continue; }
@@ -307,26 +288,31 @@ fn run_lang(lang: &str) {
     terminal::enable_raw_mode().ok();
 
     loop {
+        let _ = execute!(&mut s, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
         let w = tw();
-        let mut f = Frame::new(w);
-        title_block(&mut f);
-        f.center(if lang == "en" { "CLI Language" } else { "CLI 界面语言" }, grey(), false, false);
-        f.blank(); f.blank();
-        let i = ind();
+        let i = "      ";
+
+        hdr(&mut s, if lang == "en" { "CLI Language" } else { "CLI 界面语言" }, w);
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+
         for (idx, label) in opts.iter().enumerate() {
             let mark = format!("{}.", idx + 1);
+            q!(&mut s, cursor::MoveToColumn(0));
             if idx == sel {
-                f.write("   "); f.styled_bold("›", terra()); f.write("  ");
+                q!(&mut s, style::PrintStyledContent("   ".with(grey())));
+                q!(&mut s, style::PrintStyledContent("›".with(terra()).bold()));
+                q!(&mut s, style::PrintStyledContent("  ".with(grey())));
             } else {
-                f.write(&i);
+                q!(&mut s, style::PrintStyledContent(i.to_string().with(grey())));
             }
-            f.styled(&format!("{:<4}", mark), terra());
-            f.styled(label, ivory());
-            f.write("\n");
+            q!(&mut s, style::PrintStyledContent(format!("{:<4}", mark).with(terra())));
+            q!(&mut s, style::PrintStyledContent(label.to_string().with(ivory())));
+            q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
         }
+
         let hint = if lang == "en" { "↑↓ move  ·  Enter select  ·  b back" } else { "↑↓ 移动  ·  回车 确认  ·  b 返回" };
-        footer(&mut f, hint);
-        f.flush(&mut s);
+        ftr(&mut s, hint, w);
+        s.flush().ok();
 
         if let Event::Key(k) = event::read().expect("read") {
             if k.kind != KeyEventKind::Press { continue; }
