@@ -69,26 +69,50 @@ fn patch_extension_js(content: &str) -> String {
     let mut result = content.to_string();
 
     // 1. Remove legacy enhance script tag
-    let enhance_tag_re = regex::Regex::new(
+    if let Ok(re) = regex::Regex::new(
         r#"<script nonce="\$\{[^}]+\}" src="\$\{[^}]*enhance\.js[^}]*\}"(?: type="module")?><\/script>"#
-    ).unwrap();
-    result = enhance_tag_re.replace_all(&result, "").to_string();
+    ) {
+        result = re.replace_all(&result, "").to_string();
+    }
 
     // 2. Remove legacy module-load diagnostic probe
-    let modload_re = regex::Regex::new(
+    if let Ok(re) = regex::Regex::new(
         r"try\{require\('fs'\)\.appendFileSync\([^)]*MODULE LOADED[^)]*\)\}catch\(e\)\{\};"
-    ).unwrap();
-    result = modload_re.replace_all(&result, "").to_string();
+    ) {
+        result = re.replace_all(&result, "").to_string();
+    }
 
-    // 3. Patch message guard — add __incipit filter
-    let msg_guard_re = regex::Regex::new(
+    // 3. Strip old badge IIFE patterns (view and panel paths)
+    if let Ok(re) = regex::Regex::new(
+        r"(resolveWebviewView\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=\{isVisible:\(\)=>[A-Za-z_$][\w$]*\.visible\};this\.webviews\.add\([A-Za-z_$][\w$]*\),)\(\(\)=>\{[\s\S]*?__cceBadge[\s\S]*?\}\)\(\),(?=[A-Za-z_$][\w$]*\.webview\.options=)"
+    ) {
+        result = re.replace(&result, "$1").to_string();
+    }
+    if let Ok(re) = regex::Regex::new(
+        r"(setupPanel\([A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*,[A-Za-z_$][\w$]*\)\{let [A-Za-z_$][\w$]*=\{isVisible:\(\)=>[A-Za-z_$][\w$]*\.visible\};this\.webviews\.add\([A-Za-z_$][\w$]*\);)\(\(\)=>\{[\s\S]*?__cceBadge[\s\S]*?\}\)\(\);"
+    ) {
+        result = re.replace(&result, "$1").to_string();
+    }
+
+    // 4. Patch badge require — replace old require with new attach
+    if let Ok(re) = regex::Regex::new(
+        r#"require\("\.\/webview\/host-badge\.cjs"\)\.attach\(([A-Za-z_$][\w$]*)(?:,[A-Za-z_$][\w$]*)?\),"#
+    ) {
+        if re.is_match(&result) && !result.contains("host-badge.cjs") {
+            result = re.replace(&result, "require(\"./webview/host-badge.cjs\").attach($1,require(\"vscode\")),").to_string();
+        }
+    }
+
+    // 5. Patch message guard — add __incipit filter
+    if let Ok(re) = regex::Regex::new(
         r"\.webview\.onDidReceiveMessage\(\(([A-Za-z_$][\w$]*)\)=>\{(?!if\(\1&&\1\.__incipit===true\)return;)"
-    ).unwrap();
-    if msg_guard_re.is_match(&result) {
-        result = msg_guard_re.replace_all(&result, |caps: &regex::Captures| {
-            let var = &caps[1];
-            format!(".webview.onDidReceiveMessage(({})=>{{if({}&&{}.__incipit===true)return;", var, var, var)
-        }).to_string();
+    ) {
+        if re.is_match(&result) {
+            result = re.replace_all(&result, |caps: &regex::Captures| {
+                let var = &caps[1];
+                format!(".webview.onDidReceiveMessage(({})=>{{if({}&&{}.__incipit===true)return;", var, var, var)
+            }).to_string();
+        }
     }
 
     result
