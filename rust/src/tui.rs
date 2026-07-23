@@ -366,6 +366,67 @@ fn run_clean(lang: &str) {
     let mut buf = String::new(); io::stdin().read_line(&mut buf).ok();
 }
 
+// ── Target picker ──
+fn pick_target(lang: &str) -> Option<crate::detector::TargetLocation> {
+    let tgts = detect_targets();
+    if tgts.is_empty() { return None; }
+    if tgts.len() == 1 { return Some(tgts[0].clone()); }
+
+    let mut s = io::stdout();
+    let mut sel: usize = 0;
+    terminal::enable_raw_mode().ok();
+
+    loop {
+        let _ = execute!(&mut s, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0));
+        let w = tw();
+        let i = "      ";
+
+        hdr(&mut s, if lang == "en" { "Select Target" } else { "选择目标" }, w);
+        let sub = if lang == "en" { "Multiple Claude Code installations found:" } else { "检测到多个 Claude Code 安装：" };
+        q!(&mut s, cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent(format!("{}{}", i, sub).with(grey())));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+        q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+
+        for (idx, t) in tgts.iter().enumerate() {
+            q!(&mut s, cursor::MoveToColumn(0));
+            if idx == sel {
+                q!(&mut s, style::PrintStyledContent("   ".with(grey())));
+                q!(&mut s, style::PrintStyledContent("›".with(terra()).bold()));
+                q!(&mut s, style::PrintStyledContent("  ".with(grey())));
+            } else {
+                q!(&mut s, style::PrintStyledContent(i.to_string().with(grey())));
+            }
+            q!(&mut s, style::PrintStyledContent(format!("{:<4}", format!("{}.", idx + 1)).with(terra())));
+            q!(&mut s, style::PrintStyledContent(t.label.clone().with(ivory())));
+            q!(&mut s, style::PrintStyledContent("\n".with(grey())), cursor::MoveToColumn(0));
+        }
+
+        let hint = if lang == "en" { "↑↓ navigate  ·  Enter select  ·  b cancel" } else { "↑↓ 导航  ·  回车 确认  ·  b 取消" };
+        ftr(&mut s, hint, w);
+        s.flush().ok();
+
+        if let Event::Key(k) = event::read().expect("read") {
+            if k.kind != KeyEventKind::Press { continue; }
+            match k.code {
+                KeyCode::Up | KeyCode::Char('k') => { sel = if sel > 0 { sel - 1 } else { tgts.len() - 1 }; }
+                KeyCode::Down | KeyCode::Char('j') => { sel = if sel < tgts.len() - 1 { sel + 1 } else { 0 }; }
+                KeyCode::Enter => {
+                    execute!(&mut s, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return Some(tgts[sel].clone());
+                }
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('b') => {
+                    execute!(&mut s, cursor::Show).ok();
+                    terminal::disable_raw_mode().ok();
+                    return None;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 // ── Main ──
 pub fn run_interactive(lang: &str) {
     if !terminal::window_size().is_ok() {
@@ -403,7 +464,10 @@ pub fn run_interactive(lang: &str) {
                             execute!(&mut s, cursor::Show).ok(); terminal::disable_raw_mode().ok();
                             let tg = detect_targets();
                             if tg.is_empty() { eprintln!("\n  ⚠  No Claude Code detected.\n"); }
-                            else { eprintln!("\n  ⏳ Applying to {}...", tg[0].label); match apply_patch(&tg[0]) { Ok(()) => eprintln!("  ✅ Done!\n"), Err(e) => eprintln!("  ❌ {}\n", e) } }
+                            else if let Some(target) = pick_target(lang) {
+                                eprintln!("\n  ⏳ Applying to {}...", target.label);
+                                match apply_patch(&target) { Ok(()) => eprintln!("  ✅ Done!\n"), Err(e) => eprintln!("  ❌ {}\n", e) }
+                            }
                             eprintln!("  Press Enter..."); let mut b = String::new(); io::stdin().read_line(&mut b).ok();
                             terminal::enable_raw_mode().ok(); execute!(&mut s, cursor::Hide).ok(); draw_main(&mut s, items, sel, lang);
                         }
@@ -455,7 +519,7 @@ pub fn run_interactive(lang: &str) {
                             if a == "quit" { execute!(&mut s, cursor::Show).ok(); terminal::disable_raw_mode().ok(); return; }
                             execute!(&mut s, cursor::Show).ok(); terminal::disable_raw_mode().ok();
                             match a {
-                                "apply" => { let tg = detect_targets(); if tg.is_empty() { eprintln!("\n  ⚠  No Claude Code detected.\n"); } else { eprintln!("\n  ⏳ Applying..."); match apply_patch(&tg[0]) { Ok(()) => eprintln!("  ✅ Done!\n"), Err(e) => eprintln!("  ❌ {}\n", e) } } }
+                                "apply" => { let tg = detect_targets(); if tg.is_empty() { eprintln!("\n  ⚠  No Claude Code detected.\n"); } else if let Some(target) = pick_target(lang) { eprintln!("\n  ⏳ Applying to {}...", target.label); match apply_patch(&target) { Ok(()) => eprintln!("  ✅ Done!\n"), Err(e) => eprintln!("  ❌ {}\n", e) } } }
                                 "restore" => { let tg = detect_targets(); if tg.is_empty() { eprintln!("\n  ⚠  No Claude Code detected.\n"); } else { eprintln!("\n  ⏳ Restoring..."); match restore_official(&tg[0]) { Ok(()) => eprintln!("  ✅ Done!\n"), Err(e) => eprintln!("  ❌ {}\n", e) } } }
                                 "update" => { eprintln!("\n  ⏳ Checking..."); if let Err(e) = update_self() { eprintln!("  ❌ {}\n", e); } }
                                 "target" => run_tgt(lang),
