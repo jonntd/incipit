@@ -246,8 +246,108 @@ pub fn apply_patch_with_config(target: &TargetLocation, config: &Config) -> Resu
         }
     }
 
-    // 6. Register companions in extensions.json
+    // 6. Patch extension's package.json — add commit-message command and prune legacy entries
+    patch_package_json(extension_dir)?;
+
+    // 7. Register companions in extensions.json
     register_companions(extension_dir)?;
+
+    Ok(())
+}
+
+fn patch_package_json(extension_dir: &Path) -> Result<(), String> {
+    let pkg_path = extension_dir.join("package.json");
+    if !pkg_path.exists() { return Ok(()); }
+
+    let content = fs::read_to_string(&pkg_path).map_err(|e| e.to_string())?;
+    let mut pkg: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+    let mut modified = false;
+
+    // 1. Remove legacy hunkwise entries
+    if let Some(arr) = pkg.get_mut("enabledApiProposals").and_then(|v| v.as_array_mut()) {
+        let before = arr.len();
+        arr.retain(|v| v.as_str() != Some("editorInsets"));
+        if arr.len() != before { modified = true; }
+        if arr.is_empty() { pkg.as_object_mut().unwrap().remove("enabledApiProposals"); }
+    }
+
+    // 2. Add commit-message command from embedded package.json
+    if let Some(cm_data) = DataAssets::get("data/commit_message_package.json") {
+        if let Ok(cm_pkg) = serde_json::from_slice::<serde_json::Value>(&cm_data.data) {
+            if let Some(cm_contributes) = cm_pkg.get("contributes") {
+                if let Some(pkg_obj) = pkg.as_object_mut() {
+                    if !pkg_obj.contains_key("contributes") {
+                        pkg_obj.insert("contributes".into(), serde_json::json!({}));
+                    }
+                    let contributes = pkg_obj.get_mut("contributes").unwrap().as_object_mut().unwrap();
+
+                    // Merge commands
+                    if let Some(cm_commands) = cm_contributes.get("commands").and_then(|v| v.as_array()) {
+                        if !contributes.contains_key("commands") {
+                            contributes.insert("commands".into(), serde_json::json!([]));
+                        }
+                        let commands = contributes.get_mut("commands").unwrap().as_array_mut().unwrap();
+                        for cmd in cm_commands {
+                            let id = cmd.get("command").and_then(|v| v.as_str());
+                            if !commands.iter().any(|c| c.get("command").and_then(|v| v.as_str()) == id) {
+                                commands.push(cmd.clone());
+                                modified = true;
+                            }
+                        }
+                    }
+
+                    // Merge menus
+                    if let Some(cm_menus) = cm_contributes.get("menus").and_then(|v| v.as_object()) {
+                        if !contributes.contains_key("menus") {
+                            contributes.insert("menus".into(), serde_json::json!({}));
+                        }
+                        let menus = contributes.get_mut("menus").unwrap().as_object_mut().unwrap();
+                        for (key, items) in cm_menus {
+                            if !menus.contains_key(key) {
+                                menus.insert(key.clone(), serde_json::json!([]));
+                            }
+                            let arr = menus.get_mut(key).unwrap().as_array_mut().unwrap();
+                            if let Some(items_arr) = items.as_array() {
+                                for item in items_arr {
+                                    let cmd = item.get("command").and_then(|v| v.as_str());
+                                    if !arr.iter().any(|c| c.get("command").and_then(|v| v.as_str()) == cmd) {
+                                        arr.push(item.clone());
+                                        modified = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Copy icon
+            if let Some(icon_data) = DataAssets::get("data/commit_message_icon.svg") {
+                let icon_dir = extension_dir.join("resources");
+                fs::create_dir_all(&icon_dir).ok();
+                fs::write(icon_dir.join("commit_message_icon.svg"), icon_data.data).ok();
+            }
+        }
+    }
+
+    // 4. Ensure activationEvents includes commit-message command
+    if let Some(pkg_obj) = pkg.as_object_mut() {
+        if !pkg_obj.contains_key("activationEvents") {
+            pkg_obj.insert("activationEvents".into(), serde_json::json!([]));
+        }
+        let events = pkg_obj.get_mut("activationEvents").unwrap().as_array_mut().unwrap();
+        let commit_cmd = "onCommand:incipit.generateCommitMessage";
+        if !events.iter().any(|e| e.as_str() == Some(commit_cmd)) {
+            events.push(serde_json::json!(commit_cmd));
+            modified = true;
+        }
+    }
+
+    if modified {
+        let new_content = serde_json::to_string_pretty(&pkg).map_err(|e| e.to_string())?;
+        fs::write(&pkg_path, &new_content).map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
